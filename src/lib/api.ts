@@ -200,4 +200,10 @@ export const api = {
     invoke("remote_discard_config_changes", { hostId }),
   remoteApplyPendingChanges: (hostId: string): Promise<boolean> =>
     invoke("remote_apply_pending_changes", { hostId }),
+
+  // Upgrade
+  runOpenclawUpgrade: (): Promise<string> =>
+    invoke("run_openclaw_upgrade", {}),
+  remoteRunOpenclawUpgrade: (hostId: string): Promise<string> =>
+    invoke("remote_run_openclaw_upgrade", { hostId }),
 };

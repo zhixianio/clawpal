@@ -24,6 +24,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { CreateAgentDialog } from "@/components/CreateAgentDialog";
+import { UpgradeDialog } from "@/components/UpgradeDialog";
 import { RecipeCard } from "@/components/RecipeCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { StatusLight, AgentOverview, Recipe, BackupInfo, ModelProfile, RemoteSystemStatus } from "../lib/types";
@@ -81,6 +82,7 @@ export function Home({
 
   // Create agent dialog
   const [showCreateAgent, setShowCreateAgent] = useState(false);
+  const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
 
   // Health status with grace period: retry quickly when unhealthy, then slow-poll
   const [statusSettled, setStatusSettled] = useState(false);
@@ -286,37 +288,13 @@ export function Home({
                   >
                     View
                   </Button>
-                  {isRemote ? (
-                    <Button
-                      size="sm"
-                      className="text-xs h-6"
-                      onClick={() => api.openUrl("https://github.com/openclaw/openclaw/releases")}
-                    >
-                      Upgrade
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      className="text-xs h-6"
-                      disabled={backingUp}
-                      onClick={() => {
-                        setBackingUp(true);
-                        setBackupMessage("");
-                        api.backupBeforeUpgrade()
-                          .then((info) => {
-                            setBackupMessage(`Backup: ${info.name}`);
-                            api.openUrl("https://github.com/openclaw/openclaw/releases");
-                          })
-                          .catch((e) => setBackupMessage(`Backup failed: ${e}`))
-                          .finally(() => setBackingUp(false));
-                      }}
-                    >
-                      {backingUp ? "Backing up..." : "Backup & Upgrade"}
-                    </Button>
-                  )}
-                  {backupMessage && (
-                    <span className="text-xs text-muted-foreground">{backupMessage}</span>
-                  )}
+                  <Button
+                    size="sm"
+                    className="text-xs h-6"
+                    onClick={() => setShowUpgradeDialog(true)}
+                  >
+                    Upgrade
+                  </Button>
                 </>
               )}
             </div>
@@ -624,6 +602,16 @@ export function Home({
         onOpenChange={setShowCreateAgent}
         modelProfiles={modelProfiles}
         onCreated={() => refreshAgents()}
+      />
+
+      {/* Upgrade Dialog */}
+      <UpgradeDialog
+        open={showUpgradeDialog}
+        onOpenChange={setShowUpgradeDialog}
+        isRemote={isRemote}
+        instanceId={instanceId}
+        currentVersion={version || ""}
+        latestVersion={updateInfo?.latest || ""}
       />
     </div>
   );

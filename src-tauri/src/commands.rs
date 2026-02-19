@@ -5368,3 +5368,46 @@ pub async fn remote_refresh_model_catalog(
     let cfg: Value = serde_json::from_str(&raw).map_err(|e| format!("Failed to parse remote config: {e}"))?;
     Ok(collect_model_catalog(&cfg))
 }
+
+#[tauri::command]
+pub async fn run_openclaw_upgrade() -> Result<String, String> {
+    let output = Command::new("bash")
+        .args(["-c", "curl -fsSL https://openclaw.ai/install.sh | bash"])
+        .output()
+        .map_err(|e| format!("Failed to run upgrade: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let combined = if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    if output.status.success() {
+        Ok(combined)
+    } else {
+        Err(combined)
+    }
+}
+
+#[tauri::command]
+pub async fn remote_run_openclaw_upgrade(
+    pool: State<'_, SshConnectionPool>,
+    host_id: String,
+) -> Result<String, String> {
+    let result = pool
+        .exec_login(
+            &host_id,
+            "curl -fsSL https://openclaw.ai/install.sh | bash",
+        )
+        .await?;
+    let combined = if result.stderr.is_empty() {
+        result.stdout.clone()
+    } else {
+        format!("{}\n{}", result.stdout, result.stderr)
+    };
+    if result.exit_code == 0 {
+        Ok(combined)
+    } else {
+        Err(combined)
+    }
+}
