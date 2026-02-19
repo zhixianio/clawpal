@@ -7,6 +7,7 @@ import { Settings } from "./pages/Settings";
 import { Doctor } from "./pages/Doctor";
 import { Channels } from "./pages/Channels";
 import { Chat } from "./components/Chat";
+import logoUrl from "./assets/logo.png";
 import { DiffViewer } from "./components/DiffViewer";
 import { InstanceTabBar } from "./components/InstanceTabBar";
 import { InstanceContext } from "./lib/instance-context";
@@ -218,7 +219,10 @@ export function App() {
       />
       <div className="flex flex-1 overflow-hidden">
       <aside className="w-[200px] min-w-[200px] bg-muted border-r border-border flex flex-col py-4">
-        <h1 className="px-4 text-lg font-bold mb-4">ClawPal</h1>
+        <h1 className="px-4 text-lg font-bold mb-4 flex items-center gap-2">
+          <img src={logoUrl} alt="" className="w-9 h-9 rounded-lg" />
+          ClawPal
+        </h1>
         <nav className="flex flex-col gap-1 px-2 flex-1">
           <Button
             variant="ghost"

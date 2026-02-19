@@ -126,7 +126,7 @@ export function Chat() {
           New
         </Button>
       </div>
-      <ScrollArea className="flex-1 mb-2">
+      <ScrollArea className="flex-1 mb-2 overflow-hidden">
         {messages.map((msg, i) => (
           <div key={i} className={cn("mb-2", msg.role === "user" ? "text-right" : "text-left")}>
             <div className={cn(
