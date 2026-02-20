@@ -1,0 +1,12 @@
+name = "clawpal-analytics"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clawpal-analytics"
+database_id = "17491d47-ef3c-48db-b24e-549c07c6957a"
+
+[[routes]]
+pattern = "api.clawpal.zhixian.io"
+custom_domain = true

@@ -37,7 +37,7 @@ import {
 import { cn } from "@/lib/utils";
 import type { DiscordGuildChannel, SshHost } from "./lib/types";
 
-const PING_URL = "";
+const PING_URL = "https://api.clawpal.zhixian.io/ping";
 
 type Route = "home" | "recipes" | "cook" | "history" | "channels" | "doctor" | "settings";
 
