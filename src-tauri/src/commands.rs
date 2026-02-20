@@ -5,7 +5,7 @@ use std::{fs, process::Command, time::{SystemTime, UNIX_EPOCH}};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::config_io::{ensure_dirs, read_openclaw_config, write_json, write_text};
 use crate::doctor::{apply_auto_fixes, run_doctor, DoctorReport};
@@ -5754,4 +5754,326 @@ pub async fn remote_run_openclaw_upgrade(
     } else {
         Err(combined)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cron jobs
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn list_cron_jobs() -> Result<Value, String> {
+    let paths = resolve_paths();
+    let jobs_path = paths.base_dir.join("cron").join("jobs.json");
+    if !jobs_path.exists() {
+        return Ok(Value::Array(vec![]));
+    }
+    let text = std::fs::read_to_string(&jobs_path).map_err(|e| e.to_string())?;
+    let jobs: Value = serde_json::from_str(&text).unwrap_or(Value::Array(vec![]));
+    match jobs {
+        Value::Object(map) => {
+            let arr: Vec<Value> = map.into_iter().map(|(k, mut v)| {
+                if let Value::Object(ref mut obj) = v {
+                    obj.entry("jobId".to_string()).or_insert(Value::String(k));
+                }
+                v
+            }).collect();
+            Ok(Value::Array(arr))
+        }
+        Value::Array(_) => Ok(jobs),
+        _ => Ok(Value::Array(vec![])),
+    }
+}
+
+#[tauri::command]
+pub fn get_cron_runs(job_id: String, limit: Option<usize>) -> Result<Vec<Value>, String> {
+    let paths = resolve_paths();
+    let runs_path = paths.base_dir.join("cron").join("runs").join(format!("{}.jsonl", job_id));
+    if !runs_path.exists() {
+        return Ok(vec![]);
+    }
+    let text = std::fs::read_to_string(&runs_path).map_err(|e| e.to_string())?;
+    let mut runs: Vec<Value> = text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    runs.reverse();
+    let limit = limit.unwrap_or(10);
+    runs.truncate(limit);
+    Ok(runs)
+}
+
+#[tauri::command]
+pub fn trigger_cron_job(job_id: String) -> Result<String, String> {
+    let output = std::process::Command::new("openclaw")
+        .args(["cron", "run", &job_id])
+        .output()
+        .map_err(|e| format!("Failed to run openclaw: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Err(format!("{stdout}\n{stderr}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remote cron jobs
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn remote_list_cron_jobs(pool: State<'_, SshConnectionPool>, host_id: String) -> Result<Value, String> {
+    let raw = pool.sftp_read(&host_id, "~/.openclaw/cron/jobs.json").await;
+    match raw {
+        Ok(text) => {
+            let jobs: Value = serde_json::from_str(&text).unwrap_or(Value::Array(vec![]));
+            match jobs {
+                Value::Object(map) => {
+                    let arr: Vec<Value> = map.into_iter().map(|(k, mut v)| {
+                        if let Value::Object(ref mut obj) = v {
+                            obj.entry("jobId".to_string()).or_insert(Value::String(k));
+                        }
+                        v
+                    }).collect();
+                    Ok(Value::Array(arr))
+                }
+                Value::Array(_) => Ok(jobs),
+                _ => Ok(Value::Array(vec![])),
+            }
+        }
+        Err(_) => Ok(Value::Array(vec![])),
+    }
+}
+
+#[tauri::command]
+pub async fn remote_get_cron_runs(pool: State<'_, SshConnectionPool>, host_id: String, job_id: String, limit: Option<usize>) -> Result<Vec<Value>, String> {
+    let path = format!("~/.openclaw/cron/runs/{}.jsonl", job_id);
+    let raw = pool.sftp_read(&host_id, &path).await;
+    match raw {
+        Ok(text) => {
+            let mut runs: Vec<Value> = text.lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            runs.reverse();
+            let limit = limit.unwrap_or(10);
+            runs.truncate(limit);
+            Ok(runs)
+        }
+        Err(_) => Ok(vec![]),
+    }
+}
+
+#[tauri::command]
+pub async fn remote_trigger_cron_job(pool: State<'_, SshConnectionPool>, host_id: String, job_id: String) -> Result<String, String> {
+    let result = pool.exec_login(&host_id, &format!("openclaw cron run {}", job_id)).await?;
+    if result.exit_code == 0 {
+        Ok(result.stdout)
+    } else {
+        Err(format!("{}\n{}", result.stdout, result.stderr))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Watchdog management
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_watchdog_status() -> Result<Value, String> {
+    let paths = resolve_paths();
+    let wd_dir = paths.base_dir.join("watchdog");
+    let status_path = wd_dir.join("status.json");
+    let pid_path = wd_dir.join("watchdog.pid");
+
+    let mut status = if status_path.exists() {
+        let text = std::fs::read_to_string(&status_path).map_err(|e| e.to_string())?;
+        serde_json::from_str::<Value>(&text).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+
+    let alive = if pid_path.exists() {
+        let pid_str = std::fs::read_to_string(&pid_path).unwrap_or_default();
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if let Value::Object(ref mut map) = status {
+        map.insert("alive".into(), Value::Bool(alive));
+        map.insert("deployed".into(), Value::Bool(wd_dir.join("watchdog.js").exists()));
+    } else {
+        let mut map = serde_json::Map::new();
+        map.insert("alive".into(), Value::Bool(alive));
+        map.insert("deployed".into(), Value::Bool(wd_dir.join("watchdog.js").exists()));
+        status = Value::Object(map);
+    }
+
+    Ok(status)
+}
+
+#[tauri::command]
+pub fn deploy_watchdog(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let paths = resolve_paths();
+    let wd_dir = paths.base_dir.join("watchdog");
+    std::fs::create_dir_all(&wd_dir).map_err(|e| e.to_string())?;
+
+    let resource_path = app_handle.path()
+        .resolve("resources/watchdog.js", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("Failed to resolve watchdog resource: {e}"))?;
+
+    let content = std::fs::read_to_string(&resource_path)
+        .map_err(|e| format!("Failed to read watchdog resource: {e}"))?;
+
+    std::fs::write(wd_dir.join("watchdog.js"), content).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn start_watchdog() -> Result<bool, String> {
+    let paths = resolve_paths();
+    let wd_dir = paths.base_dir.join("watchdog");
+    let script = wd_dir.join("watchdog.js");
+    let pid_path = wd_dir.join("watchdog.pid");
+    let log_path = wd_dir.join("watchdog.log");
+
+    if !script.exists() {
+        return Err("Watchdog not deployed. Deploy first.".into());
+    }
+
+    if pid_path.exists() {
+        let pid_str = std::fs::read_to_string(&pid_path).unwrap_or_default();
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if alive {
+                return Ok(true);
+            }
+        }
+    }
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(&log_path)
+        .map_err(|e| e.to_string())?;
+    let log_err = log_file.try_clone().map_err(|e| e.to_string())?;
+
+    let child = std::process::Command::new("node")
+        .arg(&script)
+        .current_dir(&wd_dir)
+        .stdout(log_file)
+        .stderr(log_err)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start watchdog: {e}"))?;
+
+    std::fs::write(&pid_path, child.id().to_string()).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn stop_watchdog() -> Result<bool, String> {
+    let paths = resolve_paths();
+    let pid_path = paths.base_dir.join("watchdog").join("watchdog.pid");
+
+    if !pid_path.exists() {
+        return Ok(true);
+    }
+
+    let pid_str = std::fs::read_to_string(&pid_path).unwrap_or_default();
+    if let Ok(pid) = pid_str.trim().parse::<u32>() {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .output();
+    }
+
+    let _ = std::fs::remove_file(&pid_path);
+    Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Remote watchdog management
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn remote_get_watchdog_status(pool: State<'_, SshConnectionPool>, host_id: String) -> Result<Value, String> {
+    let status_raw = pool.sftp_read(&host_id, "~/.openclaw/watchdog/status.json").await;
+    let mut status = match status_raw {
+        Ok(text) => serde_json::from_str::<Value>(&text).unwrap_or(Value::Null),
+        Err(_) => Value::Null,
+    };
+
+    let pid_raw = pool.sftp_read(&host_id, "~/.openclaw/watchdog/watchdog.pid").await;
+    let alive = match pid_raw {
+        Ok(pid_str) => {
+            let cmd = format!("kill -0 {} 2>/dev/null && echo alive || echo dead", pid_str.trim());
+            pool.exec(&host_id, &cmd).await
+                .map(|r| r.stdout.trim() == "alive")
+                .unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+
+    let deployed = pool.sftp_read(&host_id, "~/.openclaw/watchdog/watchdog.js").await.is_ok();
+
+    if let Value::Object(ref mut map) = status {
+        map.insert("alive".into(), Value::Bool(alive));
+        map.insert("deployed".into(), Value::Bool(deployed));
+    } else {
+        let mut map = serde_json::Map::new();
+        map.insert("alive".into(), Value::Bool(alive));
+        map.insert("deployed".into(), Value::Bool(deployed));
+        status = Value::Object(map);
+    }
+
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn remote_deploy_watchdog(pool: State<'_, SshConnectionPool>, host_id: String, script_content: String) -> Result<bool, String> {
+    pool.exec(&host_id, "mkdir -p ~/.openclaw/watchdog").await?;
+    pool.sftp_write(&host_id, "~/.openclaw/watchdog/watchdog.js", &script_content).await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn remote_start_watchdog(pool: State<'_, SshConnectionPool>, host_id: String) -> Result<bool, String> {
+    let pid_raw = pool.sftp_read(&host_id, "~/.openclaw/watchdog/watchdog.pid").await;
+    if let Ok(pid_str) = pid_raw {
+        let cmd = format!("kill -0 {} 2>/dev/null && echo alive || echo dead", pid_str.trim());
+        if let Ok(r) = pool.exec(&host_id, &cmd).await {
+            if r.stdout.trim() == "alive" {
+                return Ok(true);
+            }
+        }
+    }
+
+    let cmd = "cd ~/.openclaw/watchdog && nohup node watchdog.js >> watchdog.log 2>&1 & echo $!";
+    let result = pool.exec(&host_id, cmd).await?;
+    let pid = result.stdout.trim();
+    if !pid.is_empty() {
+        pool.sftp_write(&host_id, "~/.openclaw/watchdog/watchdog.pid", pid).await?;
+    }
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn remote_stop_watchdog(pool: State<'_, SshConnectionPool>, host_id: String) -> Result<bool, String> {
+    let pid_raw = pool.sftp_read(&host_id, "~/.openclaw/watchdog/watchdog.pid").await;
+    if let Ok(pid_str) = pid_raw {
+        let _ = pool.exec(&host_id, &format!("kill {} 2>/dev/null", pid_str.trim())).await;
+    }
+    let _ = pool.exec(&host_id, "rm -f ~/.openclaw/watchdog/watchdog.pid").await;
+    Ok(true)
 }

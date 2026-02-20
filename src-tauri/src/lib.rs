@@ -35,6 +35,10 @@ use crate::commands::{
     remote_save_config_baseline, remote_check_config_dirty, remote_discard_config_changes, remote_apply_pending_changes,
     run_openclaw_upgrade, remote_run_openclaw_upgrade,
     remote_backup_before_upgrade, remote_list_backups, remote_restore_from_backup, remote_delete_backup,
+    list_cron_jobs, get_cron_runs, trigger_cron_job,
+    remote_list_cron_jobs, remote_get_cron_runs, remote_trigger_cron_job,
+    get_watchdog_status, deploy_watchdog, start_watchdog, stop_watchdog,
+    remote_get_watchdog_status, remote_deploy_watchdog, remote_start_watchdog, remote_stop_watchdog,
     RemoteConfigBaselines,
 };
 use crate::ssh::SshConnectionPool;
@@ -160,6 +164,20 @@ pub fn run() {
             remote_list_backups,
             remote_restore_from_backup,
             remote_delete_backup,
+            list_cron_jobs,
+            get_cron_runs,
+            trigger_cron_job,
+            remote_list_cron_jobs,
+            remote_get_cron_runs,
+            remote_trigger_cron_job,
+            get_watchdog_status,
+            deploy_watchdog,
+            start_watchdog,
+            stop_watchdog,
+            remote_get_watchdog_status,
+            remote_deploy_watchdog,
+            remote_start_watchdog,
+            remote_stop_watchdog,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");
