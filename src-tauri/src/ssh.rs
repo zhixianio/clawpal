@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use base64::Engine;
 use openssh::{KnownHosts, Session, SessionBuilder};
@@ -44,8 +45,13 @@ pub struct SftpEntry {
 // ---------------------------------------------------------------------------
 
 struct SshConnection {
-    session: Session,
+    session: Arc<Session>,
     home_dir: String,
+}
+
+/// Shell-quote a string using single quotes with proper escaping.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +89,7 @@ impl SshConnectionPool {
         };
 
         let mut builder = SessionBuilder::default();
+        // Match previous behavior (accept all host keys). TODO: tighten to KnownHosts::Add
         builder.known_hosts_check(KnownHosts::Accept);
 
         if config.port != 22 {
@@ -120,19 +127,25 @@ impl SshConnectionPool {
             .unwrap_or_else(|_| "/root".to_string());
 
         let mut pool = self.connections.lock().await;
-        pool.insert(config.id.clone(), SshConnection { session, home_dir });
+        pool.insert(config.id.clone(), SshConnection { session: Arc::new(session), home_dir });
         Ok(())
     }
 
     // -- disconnect -------------------------------------------------------
 
     pub async fn disconnect(&self, id: &str) -> Result<(), String> {
-        let mut pool = self.connections.lock().await;
-        if let Some(conn) = pool.remove(id) {
-            conn.session
-                .close()
-                .await
-                .map_err(|e| format!("SSH disconnect failed: {e}"))?;
+        let conn = {
+            let mut pool = self.connections.lock().await;
+            pool.remove(id)
+        };
+        if let Some(conn) = conn {
+            // Arc<Session> unwrap - if we're the last holder, close it
+            if let Ok(session) = Arc::try_unwrap(conn.session) {
+                session
+                    .close()
+                    .await
+                    .map_err(|e| format!("SSH disconnect failed: {e}"))?;
+            }
         }
         Ok(())
     }
@@ -140,11 +153,14 @@ impl SshConnectionPool {
     // -- is_connected -----------------------------------------------------
 
     pub async fn is_connected(&self, id: &str) -> bool {
-        let pool = self.connections.lock().await;
-        match pool.get(id) {
-            Some(conn) => conn.session.check().await.is_ok(),
-            None => false,
-        }
+        let session = {
+            let pool = self.connections.lock().await;
+            match pool.get(id) {
+                Some(conn) => Arc::clone(&conn.session),
+                None => return false,
+            }
+        };
+        session.check().await.is_ok()
     }
 
     // -- resolve_home (static helper) -------------------------------------
@@ -185,13 +201,15 @@ impl SshConnectionPool {
     // -- exec -------------------------------------------------------------
 
     pub async fn exec(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
-        let pool = self.connections.lock().await;
-        let conn = pool
-            .get(id)
-            .ok_or_else(|| format!("No connection for id: {id}"))?;
+        let session = {
+            let pool = self.connections.lock().await;
+            let conn = pool
+                .get(id)
+                .ok_or_else(|| format!("No connection for id: {id}"))?;
+            Arc::clone(&conn.session)
+        };
 
-        let output = conn
-            .session
+        let output = session
             .raw_command(command)
             .output()
             .await
@@ -233,7 +251,7 @@ impl SshConnectionPool {
     /// Read a remote file via `cat`.
     pub async fn sftp_read(&self, id: &str, path: &str) -> Result<String, String> {
         let resolved = self.resolve_path(id, path).await?;
-        let cmd = format!("cat '{}'", resolved.replace('\'', "'\\''"));
+        let cmd = format!("cat {}", shell_quote(&resolved));
         let result = self.exec(id, &cmd).await?;
         if result.exit_code != 0 {
             return Err(format!(
@@ -247,11 +265,11 @@ impl SshConnectionPool {
     /// Write content to a remote file via base64 encoding.
     pub async fn sftp_write(&self, id: &str, path: &str, content: &str) -> Result<(), String> {
         let resolved = self.resolve_path(id, path).await?;
-        let escaped_path = resolved.replace('\'', "'\\''");
+        let quoted = shell_quote(&resolved);
         let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
         let cmd = format!(
-            "mkdir -p \"$(dirname '{}')\" && printf '%s' '{}' | base64 -d > '{}'",
-            escaped_path, b64, escaped_path
+            "mkdir -p \"$(dirname {})\" && printf '%s' '{}' | base64 -d > {}",
+            quoted, b64, quoted
         );
         let result = self.exec(id, &cmd).await?;
         if result.exit_code != 0 {
@@ -266,12 +284,12 @@ impl SshConnectionPool {
     /// List a remote directory via `stat`.
     pub async fn sftp_list(&self, id: &str, path: &str) -> Result<Vec<SftpEntry>, String> {
         let resolved = self.resolve_path(id, path).await?;
-        let escaped_path = resolved.replace('\'', "'\\''");
+        let quoted = shell_quote(&resolved);
         // Use stat to get name, type, and size in a parseable format.
         // --format is GNU stat (Linux). Output: full_path\tfile_type\tsize
         let cmd = format!(
-            "stat --format='%n\t%F\t%s' '{}'/* 2>/dev/null || true",
-            escaped_path
+            "stat --format='%n\t%F\t%s' {}/* 2>/dev/null || true",
+            quoted
         );
         let result = self.exec(id, &cmd).await?;
 
@@ -308,7 +326,7 @@ impl SshConnectionPool {
     /// Delete a remote file via `rm`.
     pub async fn sftp_remove(&self, id: &str, path: &str) -> Result<(), String> {
         let resolved = self.resolve_path(id, path).await?;
-        let cmd = format!("rm '{}'", resolved.replace('\'', "'\\''"));
+        let cmd = format!("rm {}", shell_quote(&resolved));
         let result = self.exec(id, &cmd).await?;
         if result.exit_code != 0 {
             return Err(format!(
