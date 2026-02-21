@@ -72,6 +72,38 @@ async fn test_04_exec_stderr() {
 }
 
 #[tokio::test]
+#[ignore]
+async fn test_04b_exec_login_simple() {
+    let pool = SshConnectionPool::new();
+    let cfg = vm1_config();
+    pool.connect(&cfg).await.expect("connect failed");
+
+    let result = pool
+        .exec_login(&cfg.id, "echo hello-from-login")
+        .await
+        .expect("exec_login failed");
+    assert_eq!(result.exit_code, 0);
+    assert!(result.stdout.contains("hello-from-login"), "stdout: {}", result.stdout);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_04c_exec_login_openclaw_version() {
+    let pool = SshConnectionPool::new();
+    let cfg = vm1_config();
+    pool.connect(&cfg).await.expect("connect failed");
+
+    let result = pool
+        .exec_login(&cfg.id, "openclaw --version")
+        .await
+        .expect("exec_login openclaw --version failed");
+    eprintln!("openclaw --version stdout: {:?}", result.stdout);
+    eprintln!("openclaw --version stderr: {:?}", result.stderr);
+    eprintln!("openclaw --version exit_code: {}", result.exit_code);
+    // Don't assert exit_code — openclaw may not be installed on vm1
+}
+
+#[tokio::test]
 async fn test_05_sftp_write_read_roundtrip() {
     let pool = SshConnectionPool::new();
     let cfg = vm1_config();

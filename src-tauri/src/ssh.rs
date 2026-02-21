@@ -226,7 +226,7 @@ mod inner {
                 target_bin = target_bin,
                 command = command
             );
-            let wrapped = format!("export __CLP_CMD={}; bash -c \"$__CLP_CMD\"", shell_quote(&inner));
+            let wrapped = format!("bash -c {}", shell_quote(&inner));
             self.exec(id, &wrapped).await
         }
 
@@ -518,7 +518,7 @@ mod inner {
                 target_bin = target_bin,
                 command = command
             );
-            let wrapped = format!("export __CLP_CMD={}; bash -c \"$__CLP_CMD\"", shell_quote(&inner));
+            let wrapped = format!("bash -c {}", shell_quote(&inner));
             self.exec(id, &wrapped).await
         }
 
