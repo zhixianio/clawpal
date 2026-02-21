@@ -188,6 +188,7 @@
   "history.preview": "Preview",
   "history.rollbackBtn": "Rollback",
   "history.rollbackCompleted": "Rollback completed",
+  "history.rollbackQueued": "Rollback queued — preview and apply when ready",
   "history.refresh": "Refresh",
   "history.failedLoad": "Failed to load history",
   "history.rollbackPreview": "Rollback Preview",

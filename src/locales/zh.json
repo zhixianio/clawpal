@@ -188,6 +188,7 @@
   "history.preview": "预览",
   "history.rollbackBtn": "回滚",
   "history.rollbackCompleted": "回滚完成",
+  "history.rollbackQueued": "回滚已加入队列，请预览后应用",
   "history.refresh": "刷新",
   "history.failedLoad": "加载历史失败",
   "history.rollbackPreview": "回滚预览",

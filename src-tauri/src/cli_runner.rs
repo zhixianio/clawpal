@@ -308,6 +308,15 @@ pub async fn preview_queued_commands(
         // Execute each command in sandbox
         let mut errors = Vec::new();
         for cmd in &commands {
+            if cmd.command.first().map(|s| s.as_str()) == Some("__config_write__") {
+                // Internal command: write config content directly
+                if let Some(content) = cmd.command.get(1) {
+                    if let Err(e) = std::fs::write(&preview_config, content) {
+                        errors.push(format!("{}: {}", cmd.label, e));
+                    }
+                }
+                continue;
+            }
             let args: Vec<&str> = cmd.command.iter().skip(1).map(|s| s.as_str()).collect();
             let result = run_openclaw_with_env(&args, Some(&env));
             match result {
@@ -420,6 +429,24 @@ pub async fn apply_queued_commands(
         // Execute each command for real
         let mut applied_count = 0;
         for cmd in &commands {
+            if cmd.command.first().map(|s| s.as_str()) == Some("__config_write__") {
+                // Internal command: write config content directly
+                if let Some(content) = cmd.command.get(1) {
+                    if let Err(e) = crate::config_io::write_text(&paths.config_path, content) {
+                        let _ = crate::config_io::write_text(&paths.config_path, &config_before);
+                        queue_handle.clear();
+                        return Ok(ApplyQueueResult {
+                            ok: false,
+                            applied_count,
+                            total_count,
+                            error: Some(format!("Step {} failed ({}): {}", applied_count + 1, cmd.label, e)),
+                            rolled_back: true,
+                        });
+                    }
+                }
+                applied_count += 1;
+                continue;
+            }
             let args: Vec<&str> = cmd.command.iter().skip(1).map(|s| s.as_str()).collect();
             let result = run_openclaw(&args);
             match result {
