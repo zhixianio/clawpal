@@ -66,10 +66,12 @@ impl client::Handler for SshHandler {
 // Connection wrapper
 // ---------------------------------------------------------------------------
 
-/// Holds a live SSH session handle plus resolved remote home directory.
+/// Holds a live SSH session handle plus resolved remote home directory
+/// and the original config for automatic reconnection.
 struct SshConnection {
-    handle: client::Handle<SshHandler>,
+    handle: Arc<client::Handle<SshHandler>>,
     home_dir: String,
+    config: SshHostConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +215,7 @@ impl SshConnectionPool {
         let mut pool = self.connections.lock().await;
         pool.insert(
             config.id.clone(),
-            SshConnection { handle: session, home_dir },
+            SshConnection { handle: Arc::new(session), home_dir, config: config.clone() },
         );
         Ok(())
     }
@@ -344,26 +346,65 @@ impl SshConnectionPool {
         }
     }
 
+    // -- ensure_alive / reconnect -----------------------------------------
+
+    /// Check if the connection is alive. If stale, attempt to reconnect
+    /// automatically using the stored config. Returns an error only if
+    /// reconnection also fails.
+    async fn ensure_alive(&self, id: &str) -> Result<(), String> {
+        // Atomically check liveness and remove stale entry in one lock acquisition
+        // to prevent TOCTOU races where two callers both try to reconnect.
+        let stale_config = {
+            let mut pool = self.connections.lock().await;
+            match pool.get(id) {
+                Some(conn) if conn.handle.is_closed() => {
+                    // Remove stale entry while we still hold the lock
+                    let conn = pool.remove(id).unwrap();
+                    Some(conn.config)
+                }
+                Some(_) => None, // connection is alive
+                None => return Err(format!("No connection for id: {id}")),
+            }
+        };
+
+        if let Some(config) = stale_config {
+            eprintln!("[ssh] Connection {id} is stale, attempting reconnect...");
+            self.connect(&config).await.map_err(|e| {
+                format!("Connection lost and reconnect failed: {e}")
+            })?;
+            eprintln!("[ssh] Reconnected {id} successfully");
+        }
+        Ok(())
+    }
+
     // -- exec -------------------------------------------------------------
 
     /// Execute a command over SSH and return stdout, stderr and exit code.
     pub async fn exec(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
-        let pool = self.connections.lock().await;
-        let conn = pool.get(id).ok_or_else(|| format!("No connection for id: {id}"))?;
+        self.ensure_alive(id).await?;
 
-        let mut channel = conn
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("Failed to open channel: {e}"))?;
+        // Clone the handle so we don't hold the pool lock across network .await
+        let handle = {
+            let pool = self.connections.lock().await;
+            let conn = pool.get(id).ok_or_else(|| format!("No connection for id: {id}"))?;
+            Arc::clone(&conn.handle)
+        };
+
+        let mut channel = match handle.channel_open_session().await {
+            Ok(ch) => ch,
+            Err(e) => {
+                // Channel open failed even after ensure_alive — connection
+                // may have died between the check and now. Remove stale entry.
+                let mut pool = self.connections.lock().await;
+                pool.remove(id);
+                return Err(format!("Failed to open channel: {e}"));
+            }
+        };
 
         channel
             .exec(true, command)
             .await
             .map_err(|e| format!("Failed to exec command: {e}"))?;
-
-        // Drop the pool lock before blocking on channel messages
-        drop(pool);
 
         let mut stdout_bytes: Vec<u8> = Vec::new();
         let mut stderr_bytes: Vec<u8> = Vec::new();
@@ -437,26 +478,36 @@ impl SshConnectionPool {
     /// Open an SFTP session on the given connection. The caller is responsible
     /// for calling `sftp.close()` when done.
     async fn open_sftp(&self, id: &str) -> Result<SftpSession, String> {
-        let pool = self.connections.lock().await;
-        let conn = pool.get(id).ok_or_else(|| format!("No connection for id: {id}"))?;
+        self.ensure_alive(id).await?;
 
-        let channel = conn
-            .handle
-            .channel_open_session()
-            .await
-            .map_err(|e| format!("Failed to open SFTP channel: {e}"))?;
+        // Arc-clone the handle so we don't hold the pool lock across network .await
+        let handle = {
+            let pool = self.connections.lock().await;
+            let conn = pool.get(id).ok_or_else(|| format!("No connection for id: {id}"))?;
+            Arc::clone(&conn.handle)
+        };
+
+        let channel = match handle.channel_open_session().await {
+            Ok(ch) => ch,
+            Err(e) => {
+                let mut pool = self.connections.lock().await;
+                pool.remove(id);
+                return Err(format!("Failed to open SFTP channel: {e}"));
+            }
+        };
 
         channel
             .request_subsystem(true, "sftp")
             .await
             .map_err(|e| format!("Failed to request SFTP subsystem: {e}"))?;
 
-        // Drop pool lock before the potentially long SFTP init handshake
-        drop(pool);
-
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|e| format!("Failed to initialize SFTP session: {e}"))?;
+        let sftp = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            SftpSession::new(channel.into_stream()),
+        )
+        .await
+        .map_err(|_| "SFTP session initialization timed out (15s)".to_string())?
+        .map_err(|e| format!("Failed to initialize SFTP session: {e}"))?;
 
         Ok(sftp)
     }
@@ -467,11 +518,11 @@ impl SshConnectionPool {
     pub async fn sftp_read(&self, id: &str, path: &str) -> Result<String, String> {
         let resolved = self.resolve_path(id, path).await?;
         let sftp = self.open_sftp(id).await?;
-        let data = sftp
-            .read(&resolved)
-            .await
-            .map_err(|e| format!("SFTP read failed for {resolved}: {e}"))?;
-        let _ = sftp.close().await;
+        let result = sftp.read(&resolved).await;
+        if let Err(e) = sftp.close().await {
+            eprintln!("[ssh] SFTP close error (non-fatal): {e}");
+        }
+        let data = result.map_err(|e| format!("SFTP read failed for {resolved}: {e}"))?;
         String::from_utf8(data).map_err(|e| format!("File is not valid UTF-8: {e}"))
     }
 
@@ -481,24 +532,31 @@ impl SshConnectionPool {
     pub async fn sftp_write(&self, id: &str, path: &str, content: &str) -> Result<(), String> {
         let resolved = self.resolve_path(id, path).await?;
         let sftp = self.open_sftp(id).await?;
-        let mut file = sftp
-            .create(&resolved)
-            .await
-            .map_err(|e| format!("SFTP create failed for {resolved}: {e}"))?;
 
-        use tokio::io::AsyncWriteExt;
-        file.write_all(content.as_bytes())
-            .await
-            .map_err(|e| format!("SFTP write failed for {resolved}: {e}"))?;
-        file.flush()
-            .await
-            .map_err(|e| format!("SFTP flush failed for {resolved}: {e}"))?;
-        file.shutdown()
-            .await
-            .map_err(|e| format!("SFTP shutdown failed for {resolved}: {e}"))?;
+        let result = async {
+            let mut file = sftp
+                .create(&resolved)
+                .await
+                .map_err(|e| format!("SFTP create failed for {resolved}: {e}"))?;
 
-        let _ = sftp.close().await;
-        Ok(())
+            use tokio::io::AsyncWriteExt;
+            file.write_all(content.as_bytes())
+                .await
+                .map_err(|e| format!("SFTP write failed for {resolved}: {e}"))?;
+            file.flush()
+                .await
+                .map_err(|e| format!("SFTP flush failed for {resolved}: {e}"))?;
+            file.shutdown()
+                .await
+                .map_err(|e| format!("SFTP shutdown failed for {resolved}: {e}"))?;
+            Ok::<(), String>(())
+        }
+        .await;
+
+        if let Err(e) = sftp.close().await {
+            eprintln!("[ssh] SFTP close error (non-fatal): {e}");
+        }
+        result
     }
 
     // -- sftp_list --------------------------------------------------------
@@ -507,12 +565,13 @@ impl SshConnectionPool {
     pub async fn sftp_list(&self, id: &str, path: &str) -> Result<Vec<SftpEntry>, String> {
         let resolved = self.resolve_path(id, path).await?;
         let sftp = self.open_sftp(id).await?;
-        let read_dir = sftp
-            .read_dir(&resolved)
-            .await
-            .map_err(|e| format!("SFTP read_dir failed for {resolved}: {e}"))?;
+        let result = sftp.read_dir(&resolved).await;
+        if let Err(e) = sftp.close().await {
+            eprintln!("[ssh] SFTP close error (non-fatal): {e}");
+        }
+        let read_dir = result.map_err(|e| format!("SFTP read_dir failed for {resolved}: {e}"))?;
 
-        let entries: Vec<SftpEntry> = read_dir
+        Ok(read_dir
             .map(|entry| {
                 let metadata = entry.metadata();
                 SftpEntry {
@@ -521,10 +580,7 @@ impl SshConnectionPool {
                     size: metadata.size.unwrap_or(0),
                 }
             })
-            .collect();
-
-        let _ = sftp.close().await;
-        Ok(entries)
+            .collect())
     }
 
     // -- sftp_remove ------------------------------------------------------
@@ -533,11 +589,11 @@ impl SshConnectionPool {
     pub async fn sftp_remove(&self, id: &str, path: &str) -> Result<(), String> {
         let resolved = self.resolve_path(id, path).await?;
         let sftp = self.open_sftp(id).await?;
-        sftp.remove_file(&resolved)
-            .await
-            .map_err(|e| format!("SFTP remove failed for {resolved}: {e}"))?;
-        let _ = sftp.close().await;
-        Ok(())
+        let result = sftp.remove_file(&resolved).await;
+        if let Err(e) = sftp.close().await {
+            eprintln!("[ssh] SFTP close error (non-fatal): {e}");
+        }
+        result.map_err(|e| format!("SFTP remove failed for {resolved}: {e}"))
     }
 }
 
