@@ -394,13 +394,15 @@ impl SshConnectionPool {
         let lock = self.reconnect_lock(id).await;
         let _guard = lock.lock().await;
 
-        // Re-check under the lock — another caller may have already reconnected
+        // Re-check under the lock — another caller may have already reconnected.
+        // IMPORTANT: Do NOT remove the connection from the pool here. Other
+        // concurrent callers need pool.get(id) to succeed while we reconnect.
+        // We clone the config and replace the entry atomically after reconnect.
         let stale_config = {
-            let mut pool = self.connections.lock().await;
+            let pool = self.connections.lock().await;
             match pool.get(id) {
                 Some(conn) if force || conn.handle.is_closed() => {
-                    let conn = pool.remove(id).unwrap();
-                    Some(conn.config)
+                    Some(conn.config.clone())
                 }
                 Some(_) => None, // another caller already reconnected
                 None => return Err(format!("No connection for id: {id}")),
@@ -409,6 +411,7 @@ impl SshConnectionPool {
 
         if let Some(config) = stale_config {
             eprintln!("[ssh] Connection {id} is stale, attempting reconnect...");
+            // connect() will insert the new connection, replacing the stale one
             self.connect(&config).await.map_err(|e| {
                 format!("Connection lost and reconnect failed: {e}")
             })?;
