@@ -8,7 +8,7 @@ import { api } from "./api";
  * inject hostId and check connection state.
  */
 export function useApi() {
-  const { instanceId, isRemote, isConnected } = useInstance();
+  const { instanceId, isRemote, isConnected, discordGuildChannels } = useInstance();
 
   const dispatch = useCallback(
     <TArgs extends unknown[], TResult>(
@@ -36,6 +36,7 @@ export function useApi() {
       instanceId,
       isRemote,
       isConnected,
+      discordGuildChannels,
 
       // Status
       getInstanceStatus: dispatch(
@@ -220,6 +221,6 @@ export function useApi() {
       // Remote-only
       remoteWriteRawConfig: api.remoteWriteRawConfig,
     }),
-    [dispatch, instanceId, isRemote, isConnected],
+    [dispatch, instanceId, isRemote, isConnected, discordGuildChannels],
   );
 }

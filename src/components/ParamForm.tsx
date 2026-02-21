@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import type { AgentOverview, ModelProfile, Recipe, RecipeParam } from "../lib/types";
 import { useApi } from "@/lib/use-api";
-import { useInstance } from "@/lib/instance-context";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -59,7 +58,7 @@ export function ParamForm({
 }) {
   const { t } = useTranslation();
   const ua = useApi();
-  const { discordGuildChannels } = useInstance();
+  const { discordGuildChannels } = ua;
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [agents, setAgents] = useState<AgentOverview[]>([]);

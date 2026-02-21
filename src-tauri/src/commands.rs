@@ -4659,7 +4659,7 @@ pub async fn remote_create_agent(
     host_id: String,
     agent_id: String,
     model_value: Option<String>,
-) -> Result<Value, String> {
+) -> Result<AgentOverview, String> {
     let agent_id = agent_id.trim().to_string();
     if agent_id.is_empty() {
         return Err("Agent ID is required".into());
@@ -4698,15 +4698,15 @@ pub async fn remote_create_agent(
 
     remote_write_config_with_snapshot(&pool, &host_id, &current_text, &cfg, "create-agent")
         .await?;
-    Ok(serde_json::json!({
-        "id": agent_id,
-        "name": null,
-        "emoji": null,
-        "model": model_value,
-        "channels": [],
-        "online": false,
-        "workspace": null,
-    }))
+    Ok(AgentOverview {
+        id: agent_id,
+        name: None,
+        emoji: None,
+        model: model_value,
+        channels: Vec::new(),
+        online: false,
+        workspace: None,
+    })
 }
 
 #[tauri::command]
