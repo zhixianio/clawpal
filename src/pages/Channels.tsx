@@ -168,7 +168,25 @@ export function Channels({
     const key = `${platform}:${peerId}`;
     setSaving(key);
     try {
-      await ua.assignChannelAgent(platform, peerId, agentId === "__default__" ? null : agentId);
+      const resolvedAgent = agentId === "__default__" ? null : agentId;
+      // Build new bindings array: remove existing binding for this peer, optionally add new one
+      const newBindings = bindings.filter((b) => {
+        const ch = b.match?.channel;
+        const pid = b.match?.peer?.id;
+        return !(ch === platform && pid === peerId);
+      });
+      if (resolvedAgent) {
+        newBindings.push({
+          agentId: resolvedAgent,
+          match: { channel: platform, peer: { kind: "channel", id: peerId } },
+        });
+      }
+      await ua.queueCommand(
+        resolvedAgent
+          ? `Bind ${platform}:${peerId} → ${resolvedAgent}`
+          : `Unbind ${platform}:${peerId}`,
+        ["openclaw", "config", "set", "bindings", JSON.stringify(newBindings), "--json"],
+      );
       refreshBindings();
     } catch (e) {
       showToast?.(String(e), "error");
@@ -345,10 +363,11 @@ export function Channels({
             if (result.persona && pendingChannel.platform === "discord") {
               const ch = (discordChannels || []).find((c) => c.channelId === pendingChannel.peerId);
               if (ch) {
-                const patch = JSON.stringify({
-                  channels: { discord: { guilds: { [ch.guildId]: { channels: { [ch.channelId]: { systemPrompt: result.persona } } } } } },
-                });
-                ua.applyConfigPatch(patch, {}).catch((e) => showToast?.(String(e), "error"));
+                const path = `channels.discord.guilds.${ch.guildId}.channels.${ch.channelId}.systemPrompt`;
+                ua.queueCommand(
+                  `Set persona for Discord channel ${ch.channelName || ch.channelId}`,
+                  ["openclaw", "config", "set", path, result.persona],
+                ).catch((e) => showToast?.(String(e), "error"));
               }
             }
             setPendingChannel(null);

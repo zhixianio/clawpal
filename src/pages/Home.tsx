@@ -217,9 +217,10 @@ export function Home({
 
   const handleDeleteAgent = (agentId: string) => {
     if (ua.isRemote && !ua.isConnected) return;
-    ua.deleteAgent(agentId)
-      .then(() => refreshAgents())
-      .catch((e) => showToast?.(String(e), "error"));
+    ua.queueCommand(
+      `Delete agent: ${agentId}`,
+      ["openclaw", "agents", "delete", agentId, "--force"],
+    ).catch((e) => showToast?.(String(e), "error"));
   };
 
   return (
@@ -281,9 +282,16 @@ export function Home({
                     if (val === "__raw__") return;
                     setSavingModel(true);
                     const modelValue = resolveModelValue(val === "__none__" ? null : val);
-                    ua.setGlobalModel(modelValue)
-                      .then(() => fetchStatus())
-                      .catch((e) => showToast?.(String(e), "error"))
+                    const p = modelValue
+                      ? ua.queueCommand(
+                          `Set global model: ${modelValue}`,
+                          ["openclaw", "config", "set", "agents.defaults.model.primary", modelValue],
+                        )
+                      : ua.queueCommand(
+                          "Clear global model override",
+                          ["openclaw", "config", "unset", "agents.defaults.model.primary"],
+                        );
+                    p.catch((e) => showToast?.(String(e), "error"))
                       .finally(() => setSavingModel(false));
                   }}
                   disabled={savingModel}
@@ -359,9 +367,16 @@ export function Home({
                             })()}
                             onValueChange={(val) => {
                               const modelValue = resolveModelValue(val === "__none__" ? null : val);
-                              ua.setAgentModel(agent.id, modelValue)
-                                .then(() => refreshAgents())
-                                .catch((e) => showToast?.(String(e), "error"));
+                              const p = modelValue
+                                ? ua.queueCommand(
+                                    `Set model for ${agent.id}: ${modelValue}`,
+                                    ["openclaw", "config", "set", `agents.list[id=${agent.id}].model`, modelValue],
+                                  )
+                                : ua.queueCommand(
+                                    `Clear model override for ${agent.id}`,
+                                    ["openclaw", "config", "unset", `agents.list[id=${agent.id}].model`],
+                                  );
+                              p.catch((e) => showToast?.(String(e), "error"));
                             }}
                           >
                             <SelectTrigger size="sm" className="text-xs h-6 w-auto min-w-[120px] max-w-[200px]">
