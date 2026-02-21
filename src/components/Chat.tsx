@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { api } from "../lib/api";
+import { useApi } from "@/lib/use-api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
@@ -12,7 +12,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useInstance } from "@/lib/instance-context";
 
 interface Message {
   role: "user" | "assistant";
@@ -42,7 +41,7 @@ User message: `;
 
 export function Chat() {
   const { t } = useTranslation();
-  const { instanceId, isRemote, isConnected } = useInstance();
+  const ua = useApi();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -54,19 +53,14 @@ export function Chat() {
   useEffect(() => {
     setMessages([]);
     setAgentId(AGENT_ID);
-    setSessionId(loadSessionId(instanceId, AGENT_ID));
-  }, [instanceId]);
+    setSessionId(loadSessionId(ua.instanceId, AGENT_ID));
+  }, [ua.instanceId]);
 
   useEffect(() => {
-    if (isRemote) {
-      if (!isConnected) return;
-      api.remoteListAgentsOverview(instanceId)
-        .then((agents) => setAgents(agents.map((a) => a.id)))
-        .catch((e) => console.error("Failed to load remote agent IDs:", e));
-    } else {
-      api.listAgentsOverview().then((agents) => setAgents(agents.map((a) => a.id))).catch((e) => console.error("Failed to load agent IDs:", e));
-    }
-  }, [isRemote, isConnected, instanceId]);
+    ua.listAgents()
+      .then((agents) => setAgents(agents.map((a) => a.id)))
+      .catch((e) => console.error("Failed to load agent IDs:", e));
+  }, [ua]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -74,7 +68,7 @@ export function Chat() {
 
   const send = useCallback(async () => {
     if (!input.trim() || loading) return;
-    if (isRemote && !isConnected) return;
+    if (ua.isRemote && !ua.isConnected) return;
 
     const userMsg: Message = { role: "user", content: input.trim() };
     setMessages((prev) => [...prev, userMsg]);
@@ -84,16 +78,14 @@ export function Chat() {
     try {
       // Inject ClawPal context on first message of a session
       const payload = sessionId ? userMsg.content : CLAWPAL_CONTEXT + userMsg.content;
-      const result = isRemote
-        ? await api.remoteChatViaOpenclaw(instanceId, agentId, payload, sessionId)
-        : await api.chatViaOpenclaw(agentId, payload, sessionId);
+      const result = await ua.chatViaOpenclaw(agentId, payload, sessionId);
       // Extract session ID for conversation continuity
       const meta = result.meta as Record<string, unknown> | undefined;
       const agentMeta = meta?.agentMeta as Record<string, unknown> | undefined;
       if (agentMeta?.sessionId) {
         const sid = agentMeta.sessionId as string;
         setSessionId(sid);
-        saveSessionId(instanceId, agentId, sid);
+        saveSessionId(ua.instanceId, agentId, sid);
       }
       // Extract reply text
       const payloads = result.payloads as Array<{ text?: string }> | undefined;
@@ -104,12 +96,12 @@ export function Chat() {
     } finally {
       setLoading(false);
     }
-  }, [input, loading, agentId, sessionId, isRemote, isConnected, instanceId, t]);
+  }, [input, loading, agentId, sessionId, ua, t]);
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 mb-2">
-        <Select value={agentId} onValueChange={(a) => { setAgentId(a); setSessionId(loadSessionId(instanceId, a)); setMessages([]); }}>
+        <Select value={agentId} onValueChange={(a) => { setAgentId(a); setSessionId(loadSessionId(ua.instanceId, a)); setMessages([]); }}>
           <SelectTrigger size="sm" className="w-auto text-xs">
             <SelectValue />
           </SelectTrigger>
@@ -123,7 +115,7 @@ export function Chat() {
           variant="ghost"
           size="sm"
           className="text-xs opacity-70"
-          onClick={() => { clearSessionId(instanceId, agentId); setSessionId(undefined); setMessages([]); }}
+          onClick={() => { clearSessionId(ua.instanceId, agentId); setSessionId(undefined); setMessages([]); }}
         >
           {t('chat.new')}
         </Button>

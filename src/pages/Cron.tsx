@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { api } from "@/lib/api";
-import { useInstance } from "@/lib/instance-context";
+import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import type {
   CronJob,
@@ -117,7 +116,7 @@ const TrashIcon = () => (
 export function Cron() {
   const { t, i18n } = useTranslation();
   const lang = i18n.language;
-  const { instanceId, isRemote } = useInstance();
+  const ua = useApi();
 
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [watchdog, setWatchdog] = useState<(WatchdogStatus & { alive: boolean; deployed: boolean }) | null>(null);
@@ -128,9 +127,9 @@ export function Cron() {
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastSuccess, setLastSuccess] = useState<string | null>(null);
 
-  const loadJobs = useCallback(() => { (isRemote ? api.remoteListCronJobs(instanceId) : api.listCronJobs()).then(setJobs).catch(() => {}); }, [isRemote, instanceId]);
-  const loadWd = useCallback(() => { (isRemote ? api.remoteGetWatchdogStatus(instanceId) : api.getWatchdogStatus()).then(setWatchdog).catch(() => setWatchdog(null)); }, [isRemote, instanceId]);
-  const loadRuns = useCallback((id: string) => { (isRemote ? api.remoteGetCronRuns(instanceId, id, 10) : api.getCronRuns(id, 10)).then(r => setRuns(p => ({ ...p, [id]: r }))).catch(() => {}); }, [isRemote, instanceId]);
+  const loadJobs = useCallback(() => { ua.listCronJobs().then(setJobs).catch(() => {}); }, [ua]);
+  const loadWd = useCallback(() => { ua.getWatchdogStatus().then(setWatchdog).catch(() => setWatchdog(null)); }, [ua]);
+  const loadRuns = useCallback((id: string) => { ua.getCronRuns(id, 10).then(r => setRuns(p => ({ ...p, [id]: r }))).catch(() => {}); }, [ua]);
 
   useEffect(() => { loadJobs(); loadWd(); const iv = setInterval(() => { loadJobs(); loadWd(); }, 10_000); return () => clearInterval(iv); }, [loadJobs, loadWd]);
   useEffect(() => { if (expandedJob) loadRuns(expandedJob); }, [expandedJob, loadRuns]);
@@ -140,15 +139,14 @@ export function Cron() {
 
   const doTrigger = (id: string) => {
     setTriggering(id);
-    const p = isRemote ? api.remoteTriggerCronJob(instanceId, id) : api.triggerCronJob(id);
-    p.then(() => { loadJobs(); loadRuns(id); showOk(t("cron.triggerSuccess")); }).catch(showErr).finally(() => setTriggering(null));
+    ua.triggerCronJob(id).then(() => { loadJobs(); loadRuns(id); showOk(t("cron.triggerSuccess")); }).catch(showErr).finally(() => setTriggering(null));
   };
-  const doDelete = async (id: string) => { try { if (isRemote) await api.remoteDeleteCronJob(instanceId, id); else await api.deleteCronJob(id); loadJobs(); } catch (e) { showErr(e); } };
+  const doDelete = async (id: string) => { try { await ua.deleteCronJob(id); loadJobs(); } catch (e) { showErr(e); } };
   const pollUntilAlive = () => {
     let tries = 0;
     const iv = setInterval(() => {
       tries++;
-      (isRemote ? api.remoteGetWatchdogStatus(instanceId) : api.getWatchdogStatus())
+      ua.getWatchdogStatus()
         .then(s => { setWatchdog(s); if (s?.alive || tries >= 15) { clearInterval(iv); setWdAction(null); } })
         .catch(() => { if (tries >= 15) { clearInterval(iv); setWdAction(null); } });
     }, 2000);
@@ -156,10 +154,10 @@ export function Cron() {
   const doDeploy = async (andStart = false) => {
     setWdAction("deploying");
     try {
-      if (isRemote) await api.remoteDeployWatchdog(instanceId); else await api.deployWatchdog();
+      await ua.deployWatchdog();
       if (andStart) {
         setWdAction("starting");
-        if (isRemote) await api.remoteStartWatchdog(instanceId); else await api.startWatchdog();
+        await ua.startWatchdog();
         pollUntilAlive();
         return; // wdAction cleared by pollUntilAlive
       }
@@ -169,12 +167,12 @@ export function Cron() {
   const doStart = async () => {
     setWdAction("starting");
     try {
-      if (isRemote) await api.remoteStartWatchdog(instanceId); else await api.startWatchdog();
+      await ua.startWatchdog();
       pollUntilAlive(); // wdAction cleared when alive detected
     } catch (e) { showErr(e); setWdAction(null); }
   };
-  const doStop = async () => { setWdAction("stopping"); try { if (isRemote) await api.remoteStopWatchdog(instanceId); else await api.stopWatchdog(); loadWd(); } catch (e) { showErr(e); } finally { setWdAction(null); } };
-  const doUninstall = async () => { setWdAction("uninstalling"); try { if (isRemote) await api.remoteUninstallWatchdog(instanceId); else await api.uninstallWatchdog(); loadWd(); } catch (e) { showErr(e); } finally { setWdAction(null); } };
+  const doStop = async () => { setWdAction("stopping"); try { await ua.stopWatchdog(); loadWd(); } catch (e) { showErr(e); } finally { setWdAction(null); } };
+  const doUninstall = async () => { setWdAction("uninstalling"); try { await ua.uninstallWatchdog(); loadWd(); } catch (e) { showErr(e); } finally { setWdAction(null); } };
 
   // watchdog status
   let wdDot = "bg-gray-400", wdText = t("watchdog.notDeployed");

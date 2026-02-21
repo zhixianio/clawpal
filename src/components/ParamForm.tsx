@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "@/i18n";
 import type { AgentOverview, ModelProfile, Recipe, RecipeParam } from "../lib/types";
-import { api } from "../lib/api";
+import { useApi } from "@/lib/use-api";
 import { useInstance } from "@/lib/instance-context";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -58,7 +58,8 @@ export function ParamForm({
   submitLabel?: string;
 }) {
   const { t } = useTranslation();
-  const { instanceId, isRemote, isConnected, discordGuildChannels } = useInstance();
+  const ua = useApi();
+  const { discordGuildChannels } = useInstance();
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [agents, setAgents] = useState<AgentOverview[]>([]);
@@ -67,25 +68,15 @@ export function ParamForm({
   const needsProfiles = recipe.params.some((p) => p.type === "model_profile");
   useEffect(() => {
     if (!needsProfiles) return;
-    if (isRemote) {
-      if (!isConnected) return;
-      api.remoteListModelProfiles(instanceId).then(setModelProfiles).catch((e) => console.error("Failed to load remote model profiles:", e));
-    } else {
-      api.listModelProfiles().then(setModelProfiles).catch((e) => console.error("Failed to load model profiles:", e));
-    }
-  }, [needsProfiles, isRemote, isConnected, instanceId]);
+    ua.listModelProfiles().then(setModelProfiles).catch((e) => console.error("Failed to load model profiles:", e));
+  }, [needsProfiles, ua]);
 
   // Lazily load agents if any param needs them
   const needsAgents = recipe.params.some((p) => p.type === "agent");
   useEffect(() => {
     if (!needsAgents) return;
-    if (isRemote) {
-      if (!isConnected) return;
-      api.remoteListAgentsOverview(instanceId).then(setAgents).catch((e) => console.error("Failed to load remote agents:", e));
-    } else {
-      api.listAgentsOverview().then(setAgents).catch((e) => console.error("Failed to load agents:", e));
-    }
-  }, [needsAgents, isRemote, isConnected, instanceId]);
+    ua.listAgents().then(setAgents).catch((e) => console.error("Failed to load agents:", e));
+  }, [needsAgents, ua]);
 
   const uniqueGuilds = useMemo(() => {
     const seen = new Map<string, string>();
