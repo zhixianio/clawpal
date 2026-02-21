@@ -8,7 +8,59 @@ permissions:
   contents: write
 
 jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.changelog.outputs.body }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Find previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --oneline --no-merges "${TAG}")
+          else
+            COMMITS=$(git log --oneline --no-merges "${PREV_TAG}..${TAG}")
+          fi
+
+          # Group commits by type
+          FEATURES=""
+          FIXES=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            MSG="${line#* }"  # strip hash
+            case "$MSG" in
+              feat*|feat\(*) FEATURES="${FEATURES}\n- ${MSG}" ;;
+              fix*|fix\(*)   FIXES="${FIXES}\n- ${MSG}" ;;
+              docs*|chore*|refactor*) OTHER="${OTHER}\n- ${MSG}" ;;
+              *)             OTHER="${OTHER}\n- ${MSG}" ;;
+            esac
+          done <<< "$COMMITS"
+
+          BODY=""
+          [ -n "$FEATURES" ] && BODY="${BODY}### Features\n${FEATURES}\n\n"
+          [ -n "$FIXES" ]    && BODY="${BODY}### Fixes\n${FIXES}\n\n"
+          [ -n "$OTHER" ]    && BODY="${BODY}### Other\n${OTHER}\n\n"
+
+          # Write to output (multiline-safe)
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo -e "$BODY"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: changelog
     strategy:
       fail-fast: false
       matrix:
@@ -115,6 +167,10 @@ jobs:
           releaseName: ClawPal ${{ github.ref_name }}
           releaseBody: |
             ## ClawPal ${{ github.ref_name }}
+
+            ${{ needs.changelog.outputs.body }}
+
+            ---
 
             ### Installation
 
