@@ -23,7 +23,8 @@ async function resolveProfileToModelValue(
 }
 
 export interface ActionDef {
-  execute: (args: Record<string, unknown>, ctx?: ActionContext) => Promise<unknown>;
+  /** Returns (label, command[]) tuples to queue instead of executing directly. */
+  toCommands: (args: Record<string, unknown>, ctx?: ActionContext) => Promise<[string, string[]][]>;
   describe: (args: Record<string, unknown>) => string;
 }
 
@@ -34,7 +35,6 @@ function renderArgs(
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     if (typeof value === "string") {
-      // If the entire value is a single template like "{{param}}", resolve to native type
       const singleMatch = value.match(/^\{\{(\w+)\}\}$/);
       if (singleMatch) {
         const paramValue = params[singleMatch[1]] ?? "";
@@ -57,19 +57,15 @@ function renderArgs(
 
 const registry: Record<string, ActionDef> = {
   create_agent: {
-    execute: async (args, ctx) => {
+    toCommands: async (args, ctx) => {
       const modelValue = await resolveProfileToModelValue(
         args.modelProfileId as string | undefined,
         ctx,
       );
-      if (ctx?.isRemote) {
-        return api.remoteCreateAgent(ctx.instanceId, args.agentId as string, modelValue);
-      }
-      return api.createAgent(
-        args.agentId as string,
-        modelValue,
-        args.independent as boolean | undefined,
-      );
+      const cmd: string[] = ["openclaw", "agents", "add", args.agentId as string, "--non-interactive"];
+      if (modelValue) cmd.push("--model", modelValue);
+      if (args.independent) cmd.push("--workspace", args.agentId as string);
+      return [[`Create agent: ${args.agentId}`, cmd]];
     },
     describe: (args) => {
       const model = args.modelProfileId as string | undefined;
@@ -78,13 +74,11 @@ const registry: Record<string, ActionDef> = {
     },
   },
   setup_identity: {
-    execute: (args, ctx) => {
-      if (ctx?.isRemote) return Promise.resolve(); // Not supported for remote yet — skip silently
-      return api.setupAgentIdentity(
-        args.agentId as string,
-        args.name as string,
-        args.emoji as string | undefined,
-      );
+    toCommands: async (args) => {
+      // Identity setup is a filesystem operation, not a config set.
+      // Queue as a config set for the agent's display name/emoji via the workspace.
+      // For now, skip — identity is set during agent add or via CLI manually.
+      return [];
     },
     describe: (args) => {
       const emoji = args.emoji ? ` ${args.emoji}` : "";
@@ -92,50 +86,89 @@ const registry: Record<string, ActionDef> = {
     },
   },
   bind_channel: {
-    execute: (args, ctx) => {
-      if (ctx?.isRemote) {
-        return api.remoteAssignChannelAgent(
-          ctx.instanceId,
-          args.channelType as string,
-          args.peerId as string,
-          args.agentId as string,
-        );
-      }
-      return api.assignChannelAgent(
-        args.channelType as string,
-        args.peerId as string,
-        args.agentId as string,
-      );
+    toCommands: async (args, ctx) => {
+      const agentId = args.agentId as string;
+      const channelType = args.channelType as string;
+      const peerId = args.peerId as string;
+      // Read current bindings, add new binding, set full array
+      const bindings: unknown[] = ctx?.isRemote
+        ? await api.remoteListBindings(ctx.instanceId)
+        : await api.listBindings();
+      // Remove existing binding for same channel+peer
+      const filtered = (bindings as Array<Record<string, unknown>>).filter((b) => {
+        const m = b.match as Record<string, unknown> | undefined;
+        if (!m) return true;
+        const ch = m.channel;
+        const peer = m.peer as Record<string, unknown> | undefined;
+        return !(ch === channelType && peer?.id === peerId);
+      });
+      filtered.push({
+        agentId,
+        match: { channel: channelType, peer: { kind: "channel", id: peerId } },
+      });
+      return [[
+        `Bind ${channelType}:${peerId} → ${agentId}`,
+        ["openclaw", "config", "set", "bindings", JSON.stringify(filtered), "--json"],
+      ]];
     },
     describe: (args) =>
       `Bind ${args.channelType} channel → agent "${args.agentId}"`,
   },
   config_patch: {
-    execute: (args, ctx) => {
-      if (ctx?.isRemote) {
-        return api.remoteApplyConfigPatch(
-          ctx.instanceId,
-          args.patchTemplate as string,
-          args.params as Record<string, string>,
-        );
+    toCommands: async (args) => {
+      const patchTemplate = args.patchTemplate as string;
+      const params = args.params as Record<string, string>;
+      // Render the template
+      let rendered = patchTemplate;
+      for (const [key, value] of Object.entries(params)) {
+        rendered = rendered.split(`{{${key}}}`).join(value);
       }
-      return api.applyConfigPatch(
-        args.patchTemplate as string,
-        args.params as Record<string, string>,
-      );
+      // Parse as JSON and walk top-level keys to produce config set commands
+      try {
+        const patch = JSON.parse(rendered);
+        const commands: [string, string[]][] = [];
+        const walk = (obj: Record<string, unknown>, path: string) => {
+          for (const [key, value] of Object.entries(obj)) {
+            const fullPath = path ? `${path}.${key}` : key;
+            if (value && typeof value === "object" && !Array.isArray(value)) {
+              walk(value as Record<string, unknown>, fullPath);
+            } else {
+              const jsonVal = JSON.stringify(value);
+              commands.push([
+                `Set ${fullPath}`,
+                ["openclaw", "config", "set", fullPath, jsonVal, "--json"],
+              ]);
+            }
+          }
+        };
+        walk(patch, "");
+        return commands;
+      } catch {
+        // Fallback: treat entire patch as a single set
+        return [[
+          "Apply config patch",
+          ["openclaw", "config", "set", ".", rendered, "--json"],
+        ]];
+      }
     },
     describe: () => "",
   },
   set_global_model: {
-    execute: async (args, ctx) => {
+    toCommands: async (args, ctx) => {
       const modelValue = await resolveProfileToModelValue(
         args.profileId as string | undefined,
         ctx,
       ) ?? null;
-      if (ctx?.isRemote) {
-        return api.remoteSetGlobalModel(ctx.instanceId, modelValue);
+      if (modelValue) {
+        return [[
+          `Set global model: ${modelValue}`,
+          ["openclaw", "config", "set", "agents.defaults.model.primary", modelValue],
+        ]];
       }
-      return api.setGlobalModel(modelValue);
+      return [[
+        "Clear global model",
+        ["openclaw", "config", "unset", "agents.defaults.model.primary"],
+      ]];
     },
     describe: (args) => `Set default model to ${args.profileId}`,
   },
@@ -163,7 +196,6 @@ export function resolveSteps(
     if (step.action === "config_patch") {
       resolved.params = params;
     }
-    // A step is skippable if any template variable in its args references an empty param
     const skippable = Object.values(step.args).some((origValue) => {
       if (typeof origValue !== "string") return false;
       const matches = origValue.match(/\{\{(\w+)\}\}/g);
@@ -187,10 +219,14 @@ export function resolveSteps(
   });
 }
 
-export async function executeStep(step: ResolvedStep, ctx?: ActionContext): Promise<void> {
+/** Convert a resolved step into CLI commands for the queue. */
+export async function stepToCommands(
+  step: ResolvedStep,
+  ctx?: ActionContext,
+): Promise<[string, string[]][]> {
   const actionDef = getAction(step.action);
   if (!actionDef) {
     throw new Error(`Unknown action type: ${step.action}`);
   }
-  await actionDef.execute(step.args, ctx);
+  return actionDef.toCommands(step.args, ctx);
 }

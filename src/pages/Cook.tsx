@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { api } from "../lib/api";
 import { ParamForm } from "../components/ParamForm";
-import { resolveSteps, executeStep, type ResolvedStep } from "../lib/actions";
+import { resolveSteps, stepToCommands, type ResolvedStep } from "../lib/actions";
+import { useApi } from "@/lib/use-api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Recipe } from "../lib/types";
 import { useInstance } from "@/lib/instance-context";
+
 
 type Phase = "params" | "confirm" | "execute" | "done";
 type StepStatus = "pending" | "running" | "done" | "failed" | "skipped";
@@ -22,7 +23,8 @@ export function Cook({
   recipeSource?: string;
 }) {
   const { t } = useTranslation();
-  const { instanceId, isRemote, discordGuildChannels } = useInstance();
+  const ua = useApi();
+  const { instanceId, isRemote } = useInstance();
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(true);
   const [params, setParams] = useState<Record<string, string>>({});
@@ -34,7 +36,7 @@ export function Cook({
 
   useEffect(() => {
     setLoading(true);
-    api.listRecipes(recipeSource).then((recipes) => {
+    ua.listRecipes(recipeSource).then((recipes) => {
       const found = recipes.find((it) => it.id === recipeId);
       setRecipe(found || null);
       if (found) {
@@ -81,9 +83,7 @@ export function Cook({
 
     if (Object.keys(configPaths).length === 0) return;
 
-    const readConfig = isRemote
-      ? api.remoteReadRawConfig(instanceId)
-      : api.readRawConfig();
+    const readConfig = ua.readRawConfig();
 
     readConfig.then((raw) => {
       try {
@@ -122,7 +122,10 @@ export function Cook({
       statuses[i] = "running";
       setStepStatuses([...statuses]);
       try {
-        await executeStep(resolvedStepList[i], { instanceId, isRemote });
+        const commands = await stepToCommands(resolvedStepList[i], { instanceId, isRemote });
+        for (const [label, cmd] of commands) {
+          await ua.queueCommand(label, cmd);
+        }
         statuses[i] = "done";
       } catch (err) {
         statuses[i] = "failed";
