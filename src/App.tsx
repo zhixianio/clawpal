@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { check } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
@@ -12,30 +12,12 @@ import { Channels } from "./pages/Channels";
 import { Cron } from "./pages/Cron";
 import { Chat } from "./components/Chat";
 import logoUrl from "./assets/logo.png";
-import { DiffViewer } from "./components/DiffViewer";
 import { PendingChangesBar } from "./components/PendingChangesBar";
 import { InstanceTabBar } from "./components/InstanceTabBar";
 import { InstanceContext } from "./lib/instance-context";
 import { api } from "./lib/api";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import type { DiscordGuildChannel, SshHost } from "./lib/types";
 
@@ -143,52 +125,10 @@ export function App() {
     }
   }, [showToast, t]);
 
-  // Config dirty state
-  const [dirty, setDirty] = useState(false);
-  const [showApplyDialog, setShowApplyDialog] = useState(false);
-  const [showDiscardDialog, setShowDiscardDialog] = useState(false);
-  const [applyDiffBaseline, setApplyDiffBaseline] = useState("");
-  const [applyDiffCurrent, setApplyDiffCurrent] = useState("");
-  const [applying, setApplying] = useState(false);
-  const [applyError, setApplyError] = useState("");
   const [configVersion, setConfigVersion] = useState(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isRemote = activeInstance !== "local";
   const isConnected = !isRemote || connectionStatus[activeInstance] === "connected";
-
-  // Establish baseline on startup or instance change
-  useEffect(() => {
-    if (isRemote) {
-      if (!isConnected) return;
-      api.remoteSaveConfigBaseline(activeInstance).catch((e) => console.error("Failed to save remote config baseline:", e));
-    } else {
-      api.saveConfigBaseline().catch((e) => console.error("Failed to save config baseline:", e));
-    }
-  }, [activeInstance, isRemote, isConnected]);
-
-  // Poll for dirty state
-  const checkDirty = useCallback(() => {
-    if (isRemote) {
-      if (!isConnected) return;
-      api.remoteCheckConfigDirty(activeInstance)
-        .then((state) => setDirty(state.dirty))
-        .catch((e) => console.error("Failed to check remote config dirty state:", e));
-    } else {
-      api.checkConfigDirty()
-        .then((state) => setDirty(state.dirty))
-        .catch((e) => console.error("Failed to check config dirty state:", e));
-    }
-  }, [isRemote, isConnected, activeInstance]);
-
-  useEffect(() => {
-    setDirty(false); // Reset dirty on instance change
-    checkDirty();
-    pollRef.current = setInterval(checkDirty, isRemote ? 5000 : 2000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [checkDirty]);
 
   // Load Discord data + extract profiles on startup or instance change
   useEffect(() => {
@@ -231,52 +171,6 @@ export function App() {
     setConfigVersion((v) => v + 1);
   }, []);
 
-  const handleApplyClick = () => {
-    if (isRemote && !isConnected) return;
-    // Load diff data for the dialog
-    const checkPromise = isRemote
-      ? api.remoteCheckConfigDirty(activeInstance)
-      : api.checkConfigDirty();
-    checkPromise
-      .then((state) => {
-        setApplyDiffBaseline(state.baseline);
-        setApplyDiffCurrent(state.current);
-        setApplyError("");
-        setShowApplyDialog(true);
-      })
-      .catch((e) => console.error("Failed to load config diff:", e));
-  };
-
-  const handleApplyConfirm = () => {
-    setApplying(true);
-    setApplyError("");
-    const applyPromise = isRemote
-      ? api.remoteApplyPendingChanges(activeInstance)
-      : api.applyPendingChanges();
-    applyPromise
-      .then(() => {
-        setShowApplyDialog(false);
-        setDirty(false);
-        bumpConfigVersion();
-        showToast(t('config.gatewayRestarted'));
-      })
-      .catch((e) => setApplyError(String(e)))
-      .finally(() => setApplying(false));
-  };
-
-  const handleDiscardConfirm = () => {
-    const discardPromise = isRemote
-      ? api.remoteDiscardConfigChanges(activeInstance)
-      : api.discardConfigChanges();
-    discardPromise
-      .then(() => {
-        setShowDiscardDialog(false);
-        setDirty(false);
-        bumpConfigVersion();
-        showToast(t('config.changesDiscarded'));
-      })
-      .catch((e) => showToast(t('config.discardFailed', { error: String(e) }), "error"));
-  };
 
   return (
     <>
@@ -393,28 +287,6 @@ export function App() {
           </a>
         </div>
 
-        {/* Dirty config action bar */}
-        {dirty && (
-          <div className="px-2 pb-2 space-y-1.5">
-            <Separator className="mb-2" />
-            <p className="text-xs text-center text-muted-foreground px-1">{t('config.pendingChanges')}</p>
-            <Button
-              className="w-full"
-              size="sm"
-              onClick={handleApplyClick}
-            >
-              {t('config.applyChanges')}
-            </Button>
-            <Button
-              className="w-full"
-              size="sm"
-              variant="outline"
-              onClick={() => setShowDiscardDialog(true)}
-            >
-              {t('config.discard')}
-            </Button>
-          </div>
-        )}
         <PendingChangesBar
           showToast={showToast}
           onApplied={bumpConfigVersion}
@@ -504,51 +376,6 @@ export function App() {
       </div>
       </InstanceContext.Provider>
     </div>
-
-    {/* Apply Changes Dialog */}
-    <Dialog open={showApplyDialog} onOpenChange={setShowApplyDialog}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>{t('config.applyTitle')}</DialogTitle>
-        </DialogHeader>
-        <p className="text-sm text-muted-foreground">
-          {t('config.applyDescription')}
-        </p>
-        <DiffViewer oldValue={applyDiffBaseline} newValue={applyDiffCurrent} />
-        {applyError && (
-          <p className="text-sm text-destructive">{applyError}</p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setShowApplyDialog(false)} disabled={applying}>
-            {t('config.cancel')}
-          </Button>
-          <Button onClick={handleApplyConfirm} disabled={applying}>
-            {applying ? t('config.applying') : t('config.applyRestart')}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-
-    {/* Discard Changes Dialog */}
-    <AlertDialog open={showDiscardDialog} onOpenChange={setShowDiscardDialog}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{t('config.discardTitle')}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {t('config.discardDescription')}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t('config.cancel')}</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            onClick={handleDiscardConfirm}
-          >
-            {t('config.discard')}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
 
     {/* Toast Stack */}
     {toasts.length > 0 && (

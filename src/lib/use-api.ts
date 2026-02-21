@@ -107,22 +107,6 @@ export function useApi() {
         api.applyConfigPatch,
         api.remoteApplyConfigPatch,
       ),
-      saveConfigBaseline: dispatch(
-        api.saveConfigBaseline,
-        api.remoteSaveConfigBaseline,
-      ),
-      checkConfigDirty: dispatch(
-        api.checkConfigDirty,
-        api.remoteCheckConfigDirty,
-      ),
-      discardConfigChanges: dispatch(
-        api.discardConfigChanges,
-        api.remoteDiscardConfigChanges,
-      ),
-      applyPendingChanges: dispatch(
-        api.applyPendingChanges,
-        api.remoteApplyPendingChanges,
-      ),
       restartGateway: dispatch(api.restartGateway, api.remoteRestartGateway),
 
       // Doctor
