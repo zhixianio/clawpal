@@ -323,6 +323,9 @@ pub struct StatusLight {
 /// Fast status: reads config + quick TCP probe of gateway port.
 #[tauri::command]
 pub fn get_status_light() -> Result<StatusLight, String> {
+    use std::sync::OnceLock;
+    static OPENCLAW_VERSION: OnceLock<Option<String>> = OnceLock::new();
+
     let paths = resolve_paths();
     let cfg = read_openclaw_config(&paths)?;
     let explicit_count = cfg
@@ -344,15 +347,18 @@ pub fn get_status_light() -> Result<StatusLight, String> {
         .unwrap_or(18789) as u16;
     let healthy = std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], gateway_port)),
-        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(200),
     ).is_ok();
 
-    let openclaw_version = std::process::Command::new("openclaw")
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    // Cache openclaw version (doesn't change during app lifetime)
+    let openclaw_version = OPENCLAW_VERSION.get_or_init(|| {
+        std::process::Command::new("openclaw")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    }).clone();
 
     Ok(StatusLight {
         healthy,
@@ -2137,10 +2143,14 @@ fn normalize_model_ref(raw: &str) -> String {
 }
 
 fn resolve_openclaw_version() -> String {
-    match run_openclaw_raw(&["--version"]) {
-        Ok(output) => extract_version_from_text(&output.stdout).unwrap_or_else(|| "unknown".into()),
-        Err(_) => "unknown".into(),
-    }
+    use std::sync::OnceLock;
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        match run_openclaw_raw(&["--version"]) {
+            Ok(output) => extract_version_from_text(&output.stdout).unwrap_or_else(|| "unknown".into()),
+            Err(_) => "unknown".into(),
+        }
+    }).clone()
 }
 
 fn check_openclaw_update_cached(paths: &crate::models::OpenClawPaths, force: bool) -> Result<OpenclawUpdateCheck, String> {

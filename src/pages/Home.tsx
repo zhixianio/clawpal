@@ -210,7 +210,7 @@ export function Home({
         }).catch((e) => console.error("Failed to fetch system status:", e))
           .finally(() => setCheckingUpdate(false));
       }
-    }, 500);
+    }, 2000); // Defer to avoid blocking startup with heavy CLI calls
     return () => clearTimeout(timer);
   }, [ua]);
 
