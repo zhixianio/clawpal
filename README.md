@@ -30,14 +30,13 @@ Prerequisites: [Node.js](https://nodejs.org/) 20+, [Rust](https://www.rust-lang.
 
 ```bash
 npm install
-npm run dev          # Vite dev server + Tauri window
+npx tauri dev        # Vite dev server + Tauri window
 ```
 
 ### Build
 
 ```bash
-npm run build
-cd src-tauri && cargo build
+npx tauri build
 ```
 
 ### Release
