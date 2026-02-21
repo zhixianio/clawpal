@@ -333,7 +333,7 @@ mod inner {
 
     /// Create an ssh Command with hidden console window on Windows.
     fn ssh_command() -> Command {
-        let mut cmd = ssh_command();
+        let mut cmd = Command::new("ssh");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
