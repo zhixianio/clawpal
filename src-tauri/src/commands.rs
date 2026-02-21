@@ -12,20 +12,10 @@ use crate::doctor::{apply_auto_fixes, run_doctor, DoctorReport};
 use crate::history::{add_snapshot, list_snapshots, read_snapshot};
 use crate::models::resolve_paths;
 use crate::ssh::{SshConnectionPool, SshHostConfig, SshExecResult, SftpEntry};
-use std::sync::Mutex;
 
 /// Escape a string for safe inclusion in a single-quoted shell argument.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// Stores remote config baselines keyed by host_id for dirty tracking.
-pub struct RemoteConfigBaselines(Mutex<HashMap<String, String>>);
-
-impl RemoteConfigBaselines {
-    pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
-    }
 }
 
 use crate::recipe::{
@@ -1270,34 +1260,6 @@ fn expand_tilde(path: &str) -> String {
         }
     }
     path.to_string()
-}
-
-fn parse_identity_content(content: &str) -> (Option<String>, Option<String>) {
-    let mut name = None;
-    let mut emoji = None;
-    for line in content.lines() {
-        let trimmed = line.trim().trim_start_matches('-').trim();
-        // Handle both "Name: X" and "**Name:** X"
-        let trimmed = trimmed.replace("**", "");
-        if let Some(val) = trimmed.strip_prefix("Name:") {
-            let val = val.trim();
-            if !val.is_empty() {
-                name = Some(val.to_string());
-            }
-        } else if let Some(val) = trimmed.strip_prefix("Emoji:") {
-            let val = val.trim();
-            if !val.is_empty() {
-                emoji = Some(val.to_string());
-            }
-        }
-    }
-    (name, emoji)
-}
-
-fn parse_identity_md(workspace: &str) -> Option<(Option<String>, Option<String>)> {
-    let identity_path = std::path::Path::new(workspace).join("IDENTITY.md");
-    let content = fs::read_to_string(&identity_path).ok()?;
-    Some(parse_identity_content(&content))
 }
 
 #[tauri::command]
@@ -3638,93 +3600,6 @@ pub fn read_raw_config() -> Result<String, String> {
     serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
 }
 
-// ---- Config baseline for dirty tracking ----
-
-fn baseline_path(paths: &crate::models::OpenClawPaths) -> std::path::PathBuf {
-    paths.clawpal_dir.join("config-baseline.json")
-}
-
-#[tauri::command]
-pub fn save_config_baseline() -> Result<bool, String> {
-    let paths = resolve_paths();
-    let cfg = read_openclaw_config(&paths)?;
-    let text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    let bp = baseline_path(&paths);
-    fs::create_dir_all(bp.parent().unwrap()).map_err(|e| e.to_string())?;
-    fs::write(&bp, text).map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigDirtyState {
-    pub dirty: bool,
-    pub baseline: String,
-    pub current: String,
-}
-
-#[tauri::command]
-pub fn check_config_dirty() -> Result<ConfigDirtyState, String> {
-    let paths = resolve_paths();
-    let cfg = read_openclaw_config(&paths)?;
-    let current = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    let bp = baseline_path(&paths);
-    let baseline = if bp.exists() {
-        fs::read_to_string(&bp).map_err(|e| e.to_string())?
-    } else {
-        // No baseline yet — treat current as clean, save it
-        fs::create_dir_all(bp.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(&bp, &current).map_err(|e| e.to_string())?;
-        current.clone()
-    };
-    let dirty = baseline.trim() != current.trim();
-    Ok(ConfigDirtyState { dirty, baseline, current })
-}
-
-#[tauri::command]
-pub fn discard_config_changes() -> Result<bool, String> {
-    let paths = resolve_paths();
-    let bp = baseline_path(&paths);
-    if !bp.exists() {
-        return Err("No baseline config found".into());
-    }
-    let baseline_text = fs::read_to_string(&bp).map_err(|e| e.to_string())?;
-    let baseline: Value = serde_json::from_str(&baseline_text).map_err(|e| e.to_string())?;
-
-    // Save current as snapshot before discarding
-    let cfg = read_openclaw_config(&paths)?;
-    let current_text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    let _ = add_snapshot(
-        &paths.history_dir,
-        &paths.metadata_path,
-        None,
-        "discard-changes",
-        true,
-        &current_text,
-        None,
-    );
-
-    write_json(&paths.config_path, &baseline)?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub async fn apply_pending_changes() -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let paths = resolve_paths();
-        // Save current config as new baseline
-        let cfg = read_openclaw_config(&paths)?;
-        let text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-        let bp = baseline_path(&paths);
-        fs::create_dir_all(bp.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(&bp, &text).map_err(|e| e.to_string())?;
-
-        // Restart gateway (30s timeout to prevent indefinite hang)
-        run_openclaw_raw_timeout(&["gateway", "restart"], Some(30))?;
-        Ok(true)
-    }).await.map_err(|e| e.to_string())?
-}
-
 // resolve_full_api_key is intentionally not exposed as a Tauri command.
 // It returns raw API keys which should never be sent to the frontend.
 #[allow(dead_code)]
@@ -4468,79 +4343,6 @@ pub async fn remote_restart_gateway(
     Ok(true)
 }
 
-#[tauri::command]
-pub async fn remote_save_config_baseline(
-    pool: State<'_, SshConnectionPool>,
-    baselines: State<'_, RemoteConfigBaselines>,
-    host_id: String,
-) -> Result<bool, String> {
-    let raw = pool.sftp_read(&host_id, "~/.openclaw/openclaw.json").await?;
-    let cfg: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse remote config: {e}"))?;
-    let text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    baselines.0.lock().unwrap_or_else(|e| e.into_inner()).insert(host_id, text);
-    Ok(true)
-}
-
-#[tauri::command]
-pub async fn remote_check_config_dirty(
-    pool: State<'_, SshConnectionPool>,
-    baselines: State<'_, RemoteConfigBaselines>,
-    host_id: String,
-) -> Result<ConfigDirtyState, String> {
-    let raw = pool.sftp_read(&host_id, "~/.openclaw/openclaw.json").await?;
-    let cfg: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse remote config: {e}"))?;
-    let current = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    let mut map = baselines.0.lock().unwrap_or_else(|e| e.into_inner());
-    let baseline = match map.get(&host_id) {
-        Some(b) => b.clone(),
-        None => {
-            // No baseline yet — treat current as clean, save it
-            map.insert(host_id, current.clone());
-            current.clone()
-        }
-    };
-    let dirty = baseline.trim() != current.trim();
-    Ok(ConfigDirtyState { dirty, baseline, current })
-}
-
-#[tauri::command]
-pub async fn remote_discard_config_changes(
-    pool: State<'_, SshConnectionPool>,
-    baselines: State<'_, RemoteConfigBaselines>,
-    host_id: String,
-) -> Result<bool, String> {
-    let baseline = {
-        let map = baselines.0.lock().unwrap_or_else(|e| e.into_inner());
-        map.get(&host_id).cloned()
-            .ok_or_else(|| "No baseline config found for this host".to_string())?
-    };
-    let baseline_val: Value = serde_json::from_str(&baseline)
-        .map_err(|e| format!("Failed to parse baseline: {e}"))?;
-    // Save current as snapshot before discarding
-    let current = pool.sftp_read(&host_id, "~/.openclaw/openclaw.json").await
-        .unwrap_or_default();
-    remote_write_config_with_snapshot(&pool, &host_id, &current, &baseline_val, "discard-changes").await?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub async fn remote_apply_pending_changes(
-    pool: State<'_, SshConnectionPool>,
-    baselines: State<'_, RemoteConfigBaselines>,
-    host_id: String,
-) -> Result<bool, String> {
-    // Save current config as new baseline
-    let raw = pool.sftp_read(&host_id, "~/.openclaw/openclaw.json").await?;
-    let cfg: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse remote config: {e}"))?;
-    let text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    baselines.0.lock().unwrap_or_else(|e| e.into_inner()).insert(host_id.clone(), text);
-    // Restart gateway
-    pool.exec_login(&host_id, "openclaw gateway restart").await?;
-    Ok(true)
-}
 
 #[tauri::command]
 pub async fn remote_apply_config_patch(

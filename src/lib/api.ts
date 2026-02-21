@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, ConfigDirtyState, CronJob, CronRun, DiscordGuildChannel, HistoryItem, InstanceStatus, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, HistoryItem, InstanceStatus, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
 
 export const api = {
   getSystemStatus: (): Promise<SystemStatus> =>
@@ -84,15 +84,6 @@ export const api = {
     invoke("list_bindings", {}),
   assignChannelAgent: (channelType: string, peerId: string, agentId: string | null): Promise<boolean> =>
     invoke("assign_channel_agent", { channelType, peerId, agentId }),
-  saveConfigBaseline: (): Promise<boolean> =>
-    invoke("save_config_baseline", {}),
-  checkConfigDirty: (): Promise<ConfigDirtyState> =>
-    invoke("check_config_dirty", {}),
-  discardConfigChanges: (): Promise<boolean> =>
-    invoke("discard_config_changes", {}),
-  applyPendingChanges: (): Promise<boolean> =>
-    invoke("apply_pending_changes", {}),
-
   // SSH host management
   listSshHosts: (): Promise<SshHost[]> =>
     invoke("list_ssh_hosts", {}),
@@ -176,15 +167,6 @@ export const api = {
     invoke("remote_chat_via_openclaw", { hostId, agentId, message, sessionId }),
   remoteCheckOpenclawUpdate: (hostId: string): Promise<{ upgradeAvailable: boolean; latestVersion: string | null; installedVersion: string }> =>
     invoke("remote_check_openclaw_update", { hostId }),
-  remoteSaveConfigBaseline: (hostId: string): Promise<boolean> =>
-    invoke("remote_save_config_baseline", { hostId }),
-  remoteCheckConfigDirty: (hostId: string): Promise<ConfigDirtyState> =>
-    invoke("remote_check_config_dirty", { hostId }),
-  remoteDiscardConfigChanges: (hostId: string): Promise<boolean> =>
-    invoke("remote_discard_config_changes", { hostId }),
-  remoteApplyPendingChanges: (hostId: string): Promise<boolean> =>
-    invoke("remote_apply_pending_changes", { hostId }),
-
   // Remote backup
   remoteBackupBeforeUpgrade: (hostId: string): Promise<BackupInfo> =>
     invoke("remote_backup_before_upgrade", { hostId }),

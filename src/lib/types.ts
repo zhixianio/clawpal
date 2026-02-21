@@ -230,12 +230,6 @@ export interface Binding {
   match: { channel: string; peer?: { id: string; kind: string } };
 }
 
-export interface ConfigDirtyState {
-  dirty: boolean;
-  baseline: string;
-  current: string;
-}
-
 export interface BackupInfo {
   name: string;
   path: string;

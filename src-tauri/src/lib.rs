@@ -16,7 +16,6 @@ use crate::commands::{
     set_agent_model,
     list_bindings,
     assign_channel_agent,
-    save_config_baseline, check_config_dirty, discard_config_changes, apply_pending_changes,
     list_ssh_hosts, upsert_ssh_host, delete_ssh_host,
     ssh_connect, ssh_disconnect, ssh_status,
     ssh_exec, sftp_read_file, sftp_write_file, sftp_list_dir, sftp_remove_file,
@@ -32,7 +31,6 @@ use crate::commands::{
     remote_list_model_profiles, remote_upsert_model_profile, remote_delete_model_profile, remote_resolve_api_keys,
     remote_extract_model_profiles_from_config, remote_refresh_model_catalog,
     remote_chat_via_openclaw, remote_check_openclaw_update,
-    remote_save_config_baseline, remote_check_config_dirty, remote_discard_config_changes, remote_apply_pending_changes,
     run_openclaw_upgrade, remote_run_openclaw_upgrade,
     remote_backup_before_upgrade, remote_list_backups, remote_restore_from_backup, remote_delete_backup,
     list_cron_jobs, get_cron_runs, trigger_cron_job, delete_cron_job,
@@ -40,7 +38,6 @@ use crate::commands::{
     get_watchdog_status, deploy_watchdog, start_watchdog, stop_watchdog, uninstall_watchdog,
     remote_get_watchdog_status, remote_deploy_watchdog, remote_start_watchdog, remote_stop_watchdog, remote_uninstall_watchdog,
     read_app_log, read_error_log, remote_read_app_log, remote_read_error_log,
-    RemoteConfigBaselines,
 };
 use crate::cli_runner::{
     queue_command, remove_queued_command, list_queued_commands,
@@ -68,7 +65,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(SshConnectionPool::new())
-        .manage(RemoteConfigBaselines::new())
         .manage(CommandQueue::new())
         .manage(RemoteCommandQueues::new())
         .manage(CliCache::new())
@@ -115,10 +111,6 @@ pub fn run() {
             set_agent_model,
             list_bindings,
             assign_channel_agent,
-            save_config_baseline,
-            check_config_dirty,
-            discard_config_changes,
-            apply_pending_changes,
             list_ssh_hosts,
             upsert_ssh_host,
             delete_ssh_host,
@@ -163,10 +155,6 @@ pub fn run() {
             remote_refresh_model_catalog,
             remote_chat_via_openclaw,
             remote_check_openclaw_update,
-            remote_save_config_baseline,
-            remote_check_config_dirty,
-            remote_discard_config_changes,
-            remote_apply_pending_changes,
             run_openclaw_upgrade,
             remote_run_openclaw_upgrade,
             remote_backup_before_upgrade,
