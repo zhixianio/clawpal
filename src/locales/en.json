@@ -306,7 +306,7 @@
   "instance.authPassword": "Password",
   "instance.keyPath": "Key Path",
   "instance.password": "Password",
-  "instance.passwordWarning": "Password auth requires sshpass on the system. Recommended: use SSH Config / Agent mode instead.",
+  "instance.passwordWarning": "Password authentication is not supported. Please use SSH Config or Private Key mode instead.",
   "instance.cancel": "Cancel",
   "instance.saving": "Saving...",
   "instance.update": "Update",

@@ -306,7 +306,7 @@
   "instance.authPassword": "密码",
   "instance.keyPath": "密钥路径",
   "instance.password": "密码",
-  "instance.passwordWarning": "密码认证需要系统安装 sshpass。推荐使用 SSH Config / Agent 模式。",
+  "instance.passwordWarning": "不支持密码认证，请使用 SSH Config 或私钥模式。",
   "instance.cancel": "取消",
   "instance.saving": "保存中...",
   "instance.update": "更新",
