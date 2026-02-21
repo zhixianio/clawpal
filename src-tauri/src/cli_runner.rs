@@ -412,10 +412,15 @@ pub async fn apply_queued_commands(
         // Save snapshot before applying (for rollback)
         let config_before = crate::config_io::read_text(&paths.config_path)?;
         // Build a descriptive label from command labels
-        let summary = commands.iter()
+        let mut summary = commands.iter()
             .map(|c| c.label.as_str())
             .collect::<Vec<_>>()
             .join(", ");
+        // Truncate to avoid excessively long snapshot IDs/filenames
+        if summary.len() > 80 {
+            summary.truncate(80);
+            summary.push_str("...");
+        }
         let _ = crate::history::add_snapshot(
             &paths.history_dir,
             &paths.metadata_path,

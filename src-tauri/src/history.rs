@@ -64,7 +64,12 @@ pub fn add_snapshot(
     let ts = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
     let snapshot_recipe_id = recipe_id.clone().unwrap_or_else(|| "manual".into());
     let id = format!("{}-{}", ts, snapshot_recipe_id);
-    let snapshot_path = paths.join(format!("{}.json", id.replace(':', "-")));
+    // Sanitize for safe filename: replace path separators and other problematic chars
+    let safe_id: String = id.chars().map(|c| match c {
+        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+        _ => c,
+    }).collect();
+    let snapshot_path = paths.join(format!("{}.json", safe_id));
     fs::write(&snapshot_path, current_config).map_err(|e| e.to_string())?;
 
     let mut next = index;
