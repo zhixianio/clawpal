@@ -4,188 +4,77 @@ Date: 2026-02-22
 
 ## Overview
 
-Add AI-powered diagnostic and repair capabilities to ClawPal's existing Doctor feature. When static checks can't fix the problem (or when openclaw itself is broken), an external AI agent steps in to diagnose and fix issues through a multi-turn tool-use conversation.
+Add AI-powered diagnostic and repair capabilities to ClawPal's Doctor feature. When static checks can't fix the problem (or openclaw is broken), an external AI agent steps in via a chat-based tool-use conversation.
+
+Core idea: **ClawPal connects as an openclaw node** to a gateway running a doctor agent. The gateway sends tool calls via `node.invoke`, ClawPal executes locally (with user confirmation for writes), and returns results.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│  UI Layer: Doctor.tsx + Chat.tsx (extended)  │
-│  - Doctor page adds "AI Diagnose" section   │
-│  - Click opens Chat in doctor mode          │
-│  - Chat gains tool-call display + confirm   │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│  Agent Source (user selects manually):       │
-│  1. Local openclaw instance agent           │
-│  2. Other SSH openclaw instance agent       │
-│  3. Remote doctor service (hosted by us)    │
-│  4. (v2) codex / claude code                │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│  Tool Execution: reuse existing Tauri cmds  │
-│  - read_file → sftp_read / fs::read         │
-│  - write_file → sftp_write / fs::write      │
-│  - run_command → ssh_exec / Command::new    │
-│  - read_config, validate_config, etc.       │
-│  All write ops require user confirmation    │
-└─────────────────────────────────────────────┘
+Doctor Gateway (local / SSH remote / hosted service)
+    ↕ WebSocket (openclaw node protocol v3)
+ClawPal (node client)
+    → receives node.invoke → shows to user → executes locally → returns result
 ```
 
-Key decisions:
-- ClawPal acts as middleman — agent never directly accesses the target
-- HTTP POST per-turn communication (fits user confirmation rhythm)
-- Doctor context auto-collected (config, logs, system info) as initial prompt
+All three agent sources use the same protocol — only the WebSocket URL differs:
 
-## Agent Source Selection
-
-User manually selects from available sources on the Doctor page:
-
-| Source | Communication | Notes |
+| Source | URL | Notes |
 |---|---|---|
-| Local openclaw instance | Reuse `chatViaOpenclaw()` POST to local gateway | When current instance is healthy |
-| SSH remote openclaw instance | Reuse `remote_chat_via_openclaw()` via SSH | User's other configured SSH hosts |
-| Remote doctor service | New HTTP POST to hosted API | Needs new API endpoint |
-| codex/claude code | TBD (v2) | Optional, not in MVP |
+| Local openclaw | `ws://localhost:18789` | Current instance's gateway |
+| SSH remote openclaw | `ws://localhost:<forwarded>` | SSH port forward to remote:18789 |
+| Remote doctor service | `wss://doctor.openclaw.ai` | Hosted by us |
 
-First two sources fully reuse existing code — only the chat context/prompt differs. Remote doctor service needs a new HTTP client.
+User selects the source manually on the Doctor page.
 
-Unavailable sources shown as disabled with reason tooltip.
+## Node Protocol
 
-## Chat.tsx Extension — Tool-use Support
+JSON over WebSocket. Three frame types: `req`, `res`, `event`. See `openclaw/clawgo` (~1400 lines Go) as reference implementation.
 
-### New Props
+**Connection lifecycle:** `pair-request` → `pair-ok` (first time) → `hello` → `hello-ok` (every reconnect) → steady state.
 
-```typescript
-interface ChatProps {
-  mode?: "chat" | "doctor";  // default "chat"
-  targetInstance?: string;    // doctor mode: instance being diagnosed
-  agentSource?: AgentSource;  // doctor mode: which agent to use
-}
+**Tool-use cycle:**
+1. ClawPal sends `agent` req with diagnostic context
+2. Agent streams text replies via `chat` events (`delta` / `final`)
+3. Agent tool calls arrive as `node.invoke` req
+4. ClawPal shows to user → auto-executes reads, confirms writes → sends `res` back
+5. Repeat 2-4 until agent is done
 
-type AgentSource =
-  | { type: "local" }
-  | { type: "ssh"; hostId: string }
-  | { type: "remote-doctor" }
-```
+**Advertised commands** (in `hello.commands`):
 
-### Extended Message Type
+| Command | Type | Description |
+|---|---|---|
+| `read_file` | read | Read file contents |
+| `list_files` | read | List directory |
+| `read_config` | read | Read openclaw.json |
+| `system_info` | read | OS, PATH, version |
+| `validate_config` | read | Run doctor checks |
+| `write_file` | write | Write/overwrite file |
+| `run_command` | write | Execute shell command |
 
-```typescript
-interface Message {
-  role: "user" | "assistant" | "tool_call" | "tool_result";
-  content: string;
-  toolCall?: {
-    id: string;
-    name: string;           // e.g. "read_file", "write_file"
-    args: Record<string, unknown>;
-    status: "pending" | "approved" | "rejected" | "executed";
-    result?: string;
-  };
-}
-```
+All map to existing ClawPal Tauri commands (local fs ops or SSH equivalents).
 
-### UI Behavior
+## UI
 
-- Normal assistant messages → chat bubbles (same as now)
-- `tool_call` messages → card showing what agent wants to do, with "Execute" and "Skip" buttons
-- Read operations (read_file, list_files) → auto-execute, no confirmation needed
-- Write operations (write_file, run_command) → require user click "Execute" to confirm
-- `tool_result` → collapsible display of execution result
+- Doctor.tsx: add agent source selector + "Start Diagnosis" button
+- Chat.tsx: extend with `mode: "doctor"` — adds tool-call cards with Execute/Skip buttons, streaming agent text
+- Read ops auto-execute; write ops require user click
 
-### Doctor Context Auto-collection
+**Doctor context** auto-collected on start: openclaw version, config content, doctor report, error logs, system info.
 
-On entering doctor mode, ClawPal auto-collects target instance info as the first system message:
-- openclaw version / availability
-- config content
-- doctor report (existing static check results)
-- recent error log (last 50 lines)
-- system info (OS, PATH, etc.)
+## Rust Backend
 
-## Rust Backend Changes
+New module `node_client.rs` using `tokio-tungstenite`. New Tauri commands:
 
-Only 2 new Tauri commands needed:
+- `doctor_connect(url)` / `doctor_disconnect()`
+- `doctor_start(context)` / `doctor_send(message)`
+- `doctor_approve_invoke(id)` / `doctor_reject_invoke(id, reason)`
+- `collect_doctor_context(instance_id)`
 
-### 1. Remote doctor service HTTP client
-
-```rust
-#[tauri::command]
-async fn doctor_chat(
-    endpoint: String,       // remote doctor service URL
-    messages: Vec<Message>, // context + conversation history + tool results
-) -> Result<DoctorResponse, String>
-
-struct DoctorResponse {
-    message: Option<String>,      // agent's text reply
-    tool_calls: Vec<ToolCall>,    // operations agent wants to perform
-    done: bool,                   // whether diagnosis is complete
-}
-```
-
-### 2. Diagnostic context collector
-
-```rust
-#[tauri::command]
-fn collect_doctor_context(instance_id: String) -> DoctorContext {
-    // Bundles: config, version, doctor report, error logs, system info
-    // Works for both local and SSH instances (reuses existing code)
-}
-```
-
-Everything else is reused — no new tool execution logic needed in backend.
-
-## Doctor.tsx Integration
-
-Add "AI Diagnose" section next to existing Health card:
-
-```
-┌─ Health ──────────────┐  ┌─ AI Diagnose ─────────┐
-│ Score: 85             │  │ Select assistant:      │
-│ ⚠ WARN: field.agents │  │ [Local] [SSH-1] [Remote]│
-│ [Fix All] [Refresh]   │  │                        │
-└───────────────────────┘  │ [Start Diagnosis]      │
-                           └────────────────────────┘
-```
-
-## User Flow
-
-```
-User opens Doctor page → sees static check results
-    → static fix works → click Fix All, done
-    → doesn't work → select agent source → click "Start Diagnosis"
-        → Chat opens in doctor mode, auto-sends diagnostic context
-        → Agent: "I see config issues, let me read the error log"
-        → [read_file: ~/.openclaw/logs/error.log] ← auto-executed
-        → Agent: "Found corrupted session, I need to delete and rebuild"
-        → [write_file: ~/.openclaw/sessions/xxx] ← user clicks "Execute"
-        → Agent: "Fixed. Let me verify."
-        → [run_command: openclaw doctor] ← user clicks "Execute"
-        → Agent: "All checks pass. Repair complete ✓"
-```
-
-Error handling:
-- Agent source unavailable → button disabled + reason shown
-- Agent response timeout → show retry button
-- Tool execution fails → result sent back to agent, it tries another approach
+Tauri events emitted to React: `doctor:connected`, `doctor:disconnected`, `doctor:chat-delta`, `doctor:chat-final`, `doctor:invoke`, `doctor:invoke-result`, `doctor:error`.
 
 ## Scope
 
-### MVP (v1)
-- Chat.tsx extended with doctor mode (tool call display + confirmation flow)
-- Doctor.tsx adds agent source selection + start diagnosis entry
-- `collect_doctor_context` command
-- `doctor_chat` command (remote doctor service)
-- Local/SSH openclaw instances reuse existing chat channel
+**MVP:** node client + doctor mode in Chat + Doctor page integration. No auth (internal testing).
 
-### Not in MVP
-- codex / claude code integration (v2)
-- Automatic agent source selection/priority
-- Tool call diff preview (e.g. showing file changes before write_file)
-- Diagnosis history persistence
-- Parallel diagnosis of multiple issues
-
-### Dependencies
-- Remote doctor service: deploy an openclaw agent on server, expose HTTP API
-- That API must support receiving tool results and continuing conversation (multi-turn tool-use)
+**Not MVP:** codex/claude code integration, diff preview for writes, diagnosis history, auto agent selection.
