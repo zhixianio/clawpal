@@ -142,6 +142,7 @@ pub async fn collect_doctor_context_remote(
     // Collect config path and content
     let config_path_result = pool.exec_login(&host_id, "openclaw config-path 2>/dev/null || echo ~/.config/openclaw/openclaw.json").await?;
     let config_path = config_path_result.stdout.trim().to_string();
+    validate_not_sensitive(&config_path)?;
     let config_content = pool.sftp_read(&host_id, &config_path).await
         .unwrap_or_else(|_| "(unable to read remote config)".into());
 
@@ -191,6 +192,7 @@ const SENSITIVE_PATH_PATTERNS: &[&str] = &[
     "/.kube/config",
     "/.docker/config.json",
     "/.netrc",
+    "/.npmrc",
     "/.env",
     "/.bash_history",
     "/.zsh_history",
@@ -448,6 +450,9 @@ async fn execute_local_command(command: &str, args: &Value) -> Result<Value, Str
 }
 
 /// Execute a command on a remote SSH host on behalf of the doctor agent.
+/// Note: remote reads are not restricted to openclaw directories (unlike local reads)
+/// because remote config locations vary. Security relies on the sensitive path blacklist
+/// plus the frontend approval mechanism (first-time read requires user click).
 async fn execute_remote_command(
     pool: &SshConnectionPool,
     host_id: &str,
@@ -513,7 +518,7 @@ async fn execute_remote_command(
             let content = args.get("content").and_then(|v| v.as_str())
                 .ok_or("write_file: missing 'content' argument")?;
             validate_not_sensitive(path)?;
-            // Check for symlink on remote before writing
+            // Best-effort symlink check (TOCTOU gap: file could change between check and write)
             let resolved = pool.resolve_path(host_id, path).await?;
             let stat_result = pool.exec(host_id, &format!("test -L '{}' && echo SYMLINK || echo OK", resolved.replace('\'', "'\\''"))).await?;
             if stat_result.stdout.trim() == "SYMLINK" {
