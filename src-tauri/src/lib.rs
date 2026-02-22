@@ -59,6 +59,7 @@ pub mod history;
 pub mod logging;
 pub mod models;
 pub mod recipe;
+pub mod path_fix;
 pub mod ssh;
 
 pub fn run() {
