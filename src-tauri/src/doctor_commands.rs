@@ -1,0 +1,412 @@
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::node_client::NodeClient;
+use crate::models::resolve_paths;
+use crate::ssh::SshConnectionPool;
+
+#[tauri::command]
+pub async fn doctor_connect(
+    client: State<'_, NodeClient>,
+    app: AppHandle,
+    url: String,
+) -> Result<(), String> {
+    client.connect(&url, app).await
+}
+
+#[tauri::command]
+pub async fn doctor_disconnect(
+    client: State<'_, NodeClient>,
+) -> Result<(), String> {
+    client.disconnect().await
+}
+
+#[tauri::command]
+pub async fn doctor_start_diagnosis(
+    client: State<'_, NodeClient>,
+    context: String,
+) -> Result<(), String> {
+    let context_value: Value = serde_json::from_str(&context)
+        .unwrap_or_else(|_| Value::String(context.clone()));
+
+    // Fire-and-forget: results arrive via streaming chat events
+    client.send_request_fire("agent", json!({
+        "action": "diagnose",
+        "context": context_value,
+    })).await
+}
+
+#[tauri::command]
+pub async fn doctor_send_message(
+    client: State<'_, NodeClient>,
+    message: String,
+) -> Result<(), String> {
+    // Fire-and-forget: results arrive via streaming chat events
+    client.send_request_fire("agent", json!({
+        "action": "message",
+        "text": message,
+    })).await
+}
+
+#[tauri::command]
+pub async fn doctor_approve_invoke(
+    client: State<'_, NodeClient>,
+    app: AppHandle,
+    invoke_id: String,
+) -> Result<Value, String> {
+    let invoke = client.take_invoke(&invoke_id).await
+        .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
+
+    let command = invoke.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let args = invoke.get("args").cloned().unwrap_or(Value::Null);
+
+    // Execute the command locally
+    let result = execute_local_command(command, &args).await?;
+
+    // Send result back to gateway
+    client.send_response(&invoke_id, result.clone()).await?;
+
+    let _ = app.emit("doctor:invoke-result", json!({
+        "id": invoke_id,
+        "result": result,
+    }));
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn doctor_reject_invoke(
+    client: State<'_, NodeClient>,
+    invoke_id: String,
+    reason: String,
+) -> Result<(), String> {
+    let _invoke = client.take_invoke(&invoke_id).await
+        .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
+
+    client.send_error_response(&invoke_id, &format!("Rejected by user: {reason}")).await
+}
+
+#[tauri::command]
+pub async fn collect_doctor_context() -> Result<String, String> {
+    let paths = resolve_paths();
+
+    let config_content = std::fs::read_to_string(&paths.config_path)
+        .unwrap_or_else(|_| "(unable to read config)".into());
+
+    let doctor_report = crate::doctor::run_doctor(&paths);
+
+    let version = crate::cli_runner::run_openclaw(&["--version"])
+        .map(|o| o.stdout)
+        .unwrap_or_else(|_| "unknown".into());
+
+    // Collect recent error log
+    let error_log = crate::logging::read_log_tail("error.log", 100)
+        .unwrap_or_default();
+
+    let context = json!({
+        "openclawVersion": version.trim(),
+        "configPath": paths.config_path.to_string_lossy(),
+        "configContent": config_content,
+        "doctorReport": {
+            "ok": doctor_report.ok,
+            "score": doctor_report.score,
+            "issues": doctor_report.issues.iter().map(|i| json!({
+                "id": i.id,
+                "severity": i.severity,
+                "message": i.message,
+            })).collect::<Vec<_>>(),
+        },
+        "errorLog": error_log,
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+    });
+
+    serde_json::to_string(&context).map_err(|e| format!("Failed to serialize context: {e}"))
+}
+
+// SSH port forwarding — not yet implemented, reserved for future release
+#[tauri::command]
+pub async fn doctor_ssh_forward(
+    _pool: State<'_, SshConnectionPool>,
+    _host_id: String,
+) -> Result<u16, String> {
+    Err("SSH port forwarding is not yet implemented. Please use Local Gateway or Hosted Service.".into())
+}
+
+#[tauri::command]
+pub async fn doctor_ssh_forward_close(
+    _host_id: String,
+) -> Result<(), String> {
+    // TODO: Kill the port-forward process
+    Ok(())
+}
+
+/// Sensitive paths that are ALWAYS blocked for both read and write.
+/// Checked after tilde expansion, before any other path validation.
+const SENSITIVE_PATH_PATTERNS: &[&str] = &[
+    "/.ssh/",
+    "/.ssh",
+    "/.gnupg/",
+    "/.gnupg",
+    "/.aws/",
+    "/.aws",
+    "/.config/gcloud/",
+    "/.azure/",
+    "/.kube/config",
+    "/.docker/config.json",
+    "/.netrc",
+    "/.env",
+    "/.bash_history",
+    "/.zsh_history",
+    "/etc/shadow",
+    "/etc/sudoers",
+];
+
+fn validate_not_sensitive(path: &str) -> Result<(), String> {
+    let expanded = shellexpand::tilde(path).to_string();
+    for pattern in SENSITIVE_PATH_PATTERNS {
+        if expanded.contains(pattern) {
+            return Err(format!(
+                "Access to {path} is blocked — matches sensitive path pattern: {pattern}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Allowed directories for read_file / list_files (auto-executed without user approval).
+/// Paths are canonicalized and must start with one of these prefixes.
+fn allowed_read_dirs() -> Vec<std::path::PathBuf> {
+    let paths = resolve_paths();
+    let mut dirs = vec![
+        paths.openclaw_dir.clone(),
+        paths.clawpal_dir.clone(),
+        paths.config_path.parent().unwrap_or(&paths.openclaw_dir).to_path_buf(),
+    ];
+    // Also allow /etc/openclaw for system-wide config
+    let etc_openclaw = std::path::PathBuf::from("/etc/openclaw");
+    if etc_openclaw.exists() {
+        dirs.push(etc_openclaw);
+    }
+    dirs
+}
+
+/// Check that a resolved, canonicalized path falls within allowed directories.
+fn validate_read_path(path: &str) -> Result<std::path::PathBuf, String> {
+    validate_not_sensitive(path)?;
+    let expanded = shellexpand::tilde(path).to_string();
+    let canonical = std::fs::canonicalize(&expanded)
+        .map_err(|e| format!("Cannot resolve path {path}: {e}"))?;
+    let allowed = allowed_read_dirs();
+    for dir in &allowed {
+        if let Ok(canon_dir) = std::fs::canonicalize(dir) {
+            if canonical.starts_with(&canon_dir) {
+                return Ok(canonical);
+            }
+        }
+    }
+    Err(format!(
+        "Path {path} is outside allowed directories. Reads are restricted to openclaw config and data directories."
+    ))
+}
+
+/// Validate write path — must be within openclaw directories.
+fn validate_write_path(path: &str) -> Result<std::path::PathBuf, String> {
+    validate_not_sensitive(path)?;
+    let expanded = shellexpand::tilde(path).to_string();
+    let target = std::path::PathBuf::from(&expanded);
+    // For writes, the file may not exist yet, so check the parent directory
+    let parent = target.parent()
+        .ok_or_else(|| format!("Invalid path: {path}"))?;
+    let canon_parent = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Cannot resolve parent directory of {path}: {e}"))?;
+    let allowed = allowed_read_dirs();
+    for dir in &allowed {
+        if let Ok(canon_dir) = std::fs::canonicalize(dir) {
+            if canon_parent.starts_with(&canon_dir) {
+                return Ok(target);
+            }
+        }
+    }
+    Err(format!(
+        "Path {path} is outside allowed directories. Writes are restricted to openclaw config and data directories."
+    ))
+}
+
+/// Allowed command prefixes for run_command.
+const ALLOWED_COMMAND_PREFIXES: &[&str] = &[
+    "openclaw ",
+    "openclaw\t",
+    "cat ",
+    "ls ",
+    "head ",
+    "tail ",
+    "wc ",
+    "grep ",
+    "find ",
+    "systemctl status",
+    "journalctl ",
+    "ps ",
+    "which ",
+    "echo ",
+    "date",
+    "uname",
+    "hostname",
+    "df ",
+    "free ",
+    "uptime",
+];
+
+/// Maximum output size from run_command (256 KB).
+const MAX_COMMAND_OUTPUT: usize = 256 * 1024;
+
+/// Timeout for run_command (30 seconds).
+const COMMAND_TIMEOUT_SECS: u64 = 30;
+
+/// Shell metacharacters that enable command chaining / injection.
+const DANGEROUS_PATTERNS: &[&str] = &[";", "|", "&&", "||", "`", "$(", ">", "<", "\n", "\r"];
+
+fn validate_command(cmd: &str) -> Result<(), String> {
+    let trimmed = cmd.trim();
+
+    // Reject shell metacharacters that enable command chaining
+    for pat in DANGEROUS_PATTERNS {
+        if trimmed.contains(pat) {
+            return Err(format!(
+                "Command contains disallowed shell characters: {pat}"
+            ));
+        }
+    }
+
+    // Allow exact matches for simple commands
+    let exact_allowed = ["date", "uname", "uptime", "hostname"];
+    if exact_allowed.contains(&trimmed) {
+        return Ok(());
+    }
+    for prefix in ALLOWED_COMMAND_PREFIXES {
+        if trimmed.starts_with(prefix) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "Command not allowed: {trimmed}. Only openclaw, diagnostic, and read-only system commands are permitted."
+    ))
+}
+
+fn truncate_output(s: &[u8]) -> String {
+    let text = String::from_utf8_lossy(s);
+    if text.len() > MAX_COMMAND_OUTPUT {
+        let mut truncated = text[..MAX_COMMAND_OUTPUT].to_string();
+        truncated.push_str("\n... (output truncated)");
+        truncated
+    } else {
+        text.into_owned()
+    }
+}
+
+/// Execute a command locally on behalf of the doctor agent.
+async fn execute_local_command(command: &str, args: &Value) -> Result<Value, String> {
+    match command {
+        "read_file" => {
+            let path = args.get("path").and_then(|v| v.as_str())
+                .ok_or("read_file: missing 'path' argument")?;
+            let canonical = validate_read_path(path)?;
+            let content = tokio::fs::read_to_string(&canonical)
+                .await
+                .map_err(|e| format!("Failed to read {path}: {e}"))?;
+            Ok(json!({"content": content}))
+        }
+        "list_files" => {
+            let path = args.get("path").and_then(|v| v.as_str())
+                .ok_or("list_files: missing 'path' argument")?;
+            let canonical = validate_read_path(path)?;
+            let mut entries = Vec::new();
+            let mut dir = tokio::fs::read_dir(&canonical)
+                .await
+                .map_err(|e| format!("Failed to list {path}: {e}"))?;
+            while let Some(entry) = dir.next_entry().await.map_err(|e| e.to_string())? {
+                let meta = entry.metadata().await.map_err(|e| e.to_string())?;
+                entries.push(json!({
+                    "name": entry.file_name().to_string_lossy(),
+                    "isDir": meta.is_dir(),
+                    "size": meta.len(),
+                }));
+            }
+            Ok(json!({"entries": entries}))
+        }
+        "read_config" => {
+            let paths = resolve_paths();
+            let content = std::fs::read_to_string(&paths.config_path)
+                .map_err(|e| format!("Failed to read config: {e}"))?;
+            Ok(json!({"content": content, "path": paths.config_path.to_string_lossy()}))
+        }
+        "system_info" => {
+            let paths = resolve_paths();
+            let version = crate::cli_runner::run_openclaw(&["--version"])
+                .map(|o| o.stdout)
+                .unwrap_or_else(|_| "unknown".into());
+            Ok(json!({
+                "platform": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "openclawVersion": version.trim(),
+                "configPath": paths.config_path.to_string_lossy(),
+                "openclawDir": paths.openclaw_dir.to_string_lossy(),
+            }))
+        }
+        "validate_config" => {
+            let paths = resolve_paths();
+            let report = crate::doctor::run_doctor(&paths);
+            Ok(json!({
+                "ok": report.ok,
+                "score": report.score,
+                "issues": report.issues.iter().map(|i| json!({
+                    "id": i.id,
+                    "severity": i.severity,
+                    "message": i.message,
+                    "autoFixable": i.auto_fixable,
+                })).collect::<Vec<_>>(),
+            }))
+        }
+        "write_file" => {
+            let path = args.get("path").and_then(|v| v.as_str())
+                .ok_or("write_file: missing 'path' argument")?;
+            let content = args.get("content").and_then(|v| v.as_str())
+                .ok_or("write_file: missing 'content' argument")?;
+            let validated = validate_write_path(path)?;
+            // Refuse to write through symlinks to prevent escaping allowed directories
+            if validated.is_symlink() {
+                return Err(format!("write_file: refusing to write through symlink at {path}"));
+            }
+            tokio::fs::write(&validated, content)
+                .await
+                .map_err(|e| format!("Failed to write {path}: {e}"))?;
+            Ok(json!({"ok": true}))
+        }
+        "run_command" => {
+            let cmd = args.get("command").and_then(|v| v.as_str())
+                .ok_or("run_command: missing 'command' argument")?;
+            validate_command(cmd)?;
+            let child = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|e| format!("Failed to spawn command: {e}"))?;
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS),
+                child.wait_with_output(),
+            )
+            .await
+            .map_err(|_| format!("Command timed out after {COMMAND_TIMEOUT_SECS}s"))?
+            .map_err(|e| format!("Failed to run command: {e}"))?;
+            Ok(json!({
+                "stdout": truncate_output(&output.stdout),
+                "stderr": truncate_output(&output.stderr),
+                "exitCode": output.status.code().unwrap_or(1),
+            }))
+        }
+        _ => Err(format!("Unknown command: {command}")),
+    }
+}
