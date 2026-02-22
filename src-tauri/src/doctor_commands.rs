@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::node_client::NodeClient;
+use crate::bridge_client::BridgeClient;
 use crate::models::resolve_paths;
 use crate::ssh::SshConnectionPool;
 
@@ -17,8 +18,26 @@ pub async fn doctor_connect(
 #[tauri::command]
 pub async fn doctor_disconnect(
     client: State<'_, NodeClient>,
+    bridge: State<'_, BridgeClient>,
 ) -> Result<(), String> {
+    let _ = bridge.disconnect().await;
     client.disconnect().await
+}
+
+#[tauri::command]
+pub async fn doctor_bridge_connect(
+    bridge: State<'_, BridgeClient>,
+    app: AppHandle,
+    addr: String,
+) -> Result<(), String> {
+    bridge.connect(&addr, app).await
+}
+
+#[tauri::command]
+pub async fn doctor_bridge_disconnect(
+    bridge: State<'_, BridgeClient>,
+) -> Result<(), String> {
+    bridge.disconnect().await
 }
 
 #[tauri::command]
@@ -56,13 +75,19 @@ pub async fn doctor_send_message(
 #[tauri::command]
 pub async fn doctor_approve_invoke(
     client: State<'_, NodeClient>,
+    bridge: State<'_, BridgeClient>,
     pool: State<'_, SshConnectionPool>,
     app: AppHandle,
     invoke_id: String,
     target: String,
 ) -> Result<Value, String> {
-    let invoke = client.take_invoke(&invoke_id).await
-        .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
+    // Try bridge first (invokes come from bridge in dual-connection mode)
+    // Fall back to operator client (for operator-only mode)
+    let invoke = match bridge.take_invoke(&invoke_id).await {
+        Some(inv) => inv,
+        None => client.take_invoke(&invoke_id).await
+            .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?,
+    };
 
     let command = invoke.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let args = invoke.get("args").cloned().unwrap_or(Value::Null);
@@ -74,8 +99,12 @@ pub async fn doctor_approve_invoke(
         execute_remote_command(&pool, &target, command, &args).await?
     };
 
-    // Send result back to gateway
-    client.send_response(&invoke_id, result.clone()).await?;
+    // Send result back via bridge if connected, otherwise via operator
+    if bridge.is_connected().await {
+        bridge.send_invoke_result(&invoke_id, result.clone()).await?;
+    } else {
+        client.send_response(&invoke_id, result.clone()).await?;
+    }
 
     let _ = app.emit("doctor:invoke-result", json!({
         "id": invoke_id,
@@ -88,13 +117,22 @@ pub async fn doctor_approve_invoke(
 #[tauri::command]
 pub async fn doctor_reject_invoke(
     client: State<'_, NodeClient>,
+    bridge: State<'_, BridgeClient>,
     invoke_id: String,
     reason: String,
 ) -> Result<(), String> {
-    let _invoke = client.take_invoke(&invoke_id).await
-        .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
+    // Remove from whichever client holds it
+    let _invoke = match bridge.take_invoke(&invoke_id).await {
+        Some(inv) => inv,
+        None => client.take_invoke(&invoke_id).await
+            .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?,
+    };
 
-    client.send_error_response(&invoke_id, &format!("Rejected by user: {reason}")).await
+    if bridge.is_connected().await {
+        bridge.send_invoke_error(&invoke_id, "REJECTED", &format!("Rejected by user: {reason}")).await
+    } else {
+        client.send_error_response(&invoke_id, &format!("Rejected by user: {reason}")).await
+    }
 }
 
 #[tauri::command]
