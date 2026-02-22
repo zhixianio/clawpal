@@ -203,8 +203,18 @@ mod inner {
 
         /// Execute a command with login shell setup (sources profile for PATH).
         /// Forces bash to avoid zsh glob/nomatch quirks.
+        /// Security: target_bin is sanitized and command is shell-quoted to prevent injection.
         pub async fn exec_login(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
+            // Extract binary name and sanitize - only allow safe chars to prevent injection
             let target_bin = command.split_whitespace().next().unwrap_or("");
+            let safe_bin: String = target_bin
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+                .collect();
+
+            // Shell-quote the command for safe interpolation
+            let safe_cmd = shell_quote(command);
+
             let wrapped = format!(
                 concat!(
                     "setopt nonomatch 2>/dev/null; shopt -s nullglob 2>/dev/null; ",
@@ -215,17 +225,17 @@ mod inner {
                     "export NVM_DIR=\"${{NVM_DIR:-$HOME/.nvm}}\"; ",
                     "[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" 2>/dev/null; ",
                     "for _fnm in \"$HOME/.fnm/fnm\" \"$HOME/.local/bin/fnm\"; do ",
-                      "[ -x \"$_fnm\" ] && eval \"$($_fnm env --shell bash 2>/dev/null || $_fnm env 2>/dev/null)\" 2>/dev/null && break; ",
+                      "[ -x \"$_fnm\" ] && {{{{ $_fnm env --shell bash 2>/dev/null || $_fnm env 2>/dev/null; }}}} | . /dev/stdin 2>/dev/null && break; ",
                     "done; ",
-                    "if ! command -v {target_bin} >/dev/null 2>&1; then ",
+                    "if ! command -v {safe_bin} >/dev/null 2>&1; then ",
                       "for d in \"$HOME\"/.nvm/versions/node/*/bin; do ",
-                        "[ -x \"$d/{target_bin}\" ] && export PATH=\"$d:$PATH\" && break; ",
+                        "[ -x \"$d/{safe_bin}\" ] && export PATH=\"$d:$PATH\" && break; ",
                       "done; ",
                     "fi; ",
-                    "{command}"
+                    "sh -c {safe_cmd}"
                 ),
-                target_bin = target_bin,
-                command = command
+                safe_bin = safe_bin,
+                safe_cmd = safe_cmd
             );
             self.exec(id, &wrapped).await
         }

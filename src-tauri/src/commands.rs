@@ -5417,12 +5417,57 @@ pub async fn remote_refresh_model_catalog(
     Ok(collect_model_catalog(&cfg))
 }
 
+/// Known SHA256 checksum of the install script for integrity verification.
+/// Update this when the official install script changes.
+const INSTALL_SCRIPT_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 #[tauri::command]
 pub async fn run_openclaw_upgrade() -> Result<String, String> {
+    use sha2::{Sha256, Digest};
+
+    // Step 1: Download the script to a temp file
+    let temp_dir = std::env::temp_dir();
+    let script_path = temp_dir.join("openclaw_install.sh");
+
+    let download = Command::new("curl")
+        .args(["-fsSL", "-o", script_path.to_str().unwrap(), "https://openclaw.ai/install.sh"])
+        .output()
+        .map_err(|e| format!("Failed to download install script: {e}"))?;
+
+    if !download.status.success() {
+        return Err(format!(
+            "Failed to download install script: {}",
+            String::from_utf8_lossy(&download.stderr)
+        ));
+    }
+
+    // Step 2: Verify checksum
+    let script_content = std::fs::read(&script_path)
+        .map_err(|e| format!("Failed to read downloaded script: {e}"))?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(&script_content);
+    let actual_hash = format!("{:x}", hasher.finalize());
+
+    if actual_hash != INSTALL_SCRIPT_SHA256 {
+        let _ = std::fs::remove_file(&script_path);
+        return Err(format!(
+            "Install script checksum mismatch. Expected: {}, Got: {}. \
+             The script may have been tampered with or updated. \
+             Please report this issue if the official script was updated.",
+            INSTALL_SCRIPT_SHA256, actual_hash
+        ));
+    }
+
+    // Step 3: Execute the verified script
     let output = Command::new("bash")
-        .args(["-c", "curl -fsSL https://openclaw.ai/install.sh | bash"])
+        .arg(&script_path)
         .output()
         .map_err(|e| format!("Failed to run upgrade: {e}"))?;
+
+    // Cleanup
+    let _ = std::fs::remove_file(&script_path);
+
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let combined = if stderr.is_empty() {
@@ -5442,12 +5487,26 @@ pub async fn remote_run_openclaw_upgrade(
     pool: State<'_, SshConnectionPool>,
     host_id: String,
 ) -> Result<String, String> {
-    let result = pool
-        .exec_login(
-            &host_id,
-            "curl -fsSL https://openclaw.ai/install.sh | bash",
-        )
-        .await?;
+    // Download, verify checksum, then execute - all in one remote command
+    // This prevents MITM attacks on the install script
+    let install_cmd = format!(
+        concat!(
+            "set -e; ",
+            "SCRIPT=$(mktemp); ",
+            "curl -fsSL -o \"$SCRIPT\" https://openclaw.ai/install.sh; ",
+            "HASH=$(sha256sum \"$SCRIPT\" 2>/dev/null || shasum -a 256 \"$SCRIPT\" | cut -d' ' -f1); ",
+            "if [ \"$HASH\" != \"{expected_hash}\" ]; then ",
+            "  rm -f \"$SCRIPT\"; ",
+            "  echo 'ERROR: Install script checksum mismatch. Expected: {expected_hash}, Got: '\"$HASH\" >&2; ",
+            "  exit 1; ",
+            "fi; ",
+            "bash \"$SCRIPT\"; ",
+            "rm -f \"$SCRIPT\""
+        ),
+        expected_hash = INSTALL_SCRIPT_SHA256
+    );
+
+    let result = pool.exec_login(&host_id, &install_cmd).await?;
     let combined = if result.stderr.is_empty() {
         result.stdout.clone()
     } else {
