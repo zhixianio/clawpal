@@ -19,6 +19,7 @@ thiserror = "1.0.63"
 uuid = { version = "1.11.0", features = ["v4"] }
 chrono = { version = "0.4.38", features = ["clock"] }
 base64 = "0.22"
+sha2 = "0.10"
 tokio = { version = "1", features = ["sync", "process"] }
 shellexpand = "3.1"
 tauri-plugin-updater = "2"
