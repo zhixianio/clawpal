@@ -40,6 +40,11 @@ use crate::commands::{
     read_app_log, read_error_log, read_gateway_log, read_gateway_error_log,
     remote_read_app_log, remote_read_error_log, remote_read_gateway_log, remote_read_gateway_error_log,
 };
+use crate::doctor_commands::{
+    doctor_connect, doctor_disconnect, doctor_start_diagnosis, doctor_send_message,
+    doctor_approve_invoke, doctor_reject_invoke, collect_doctor_context,
+    collect_doctor_context_remote,
+};
 use crate::cli_runner::{
     queue_command, remove_queued_command, list_queued_commands,
     discard_queued_commands, queued_commands_count,
@@ -49,15 +54,18 @@ use crate::cli_runner::{
     remote_preview_queued_commands, remote_apply_queued_commands, RemoteCommandQueues,
     CliCache,
 };
+use crate::node_client::NodeClient;
 use crate::ssh::SshConnectionPool;
 
 pub mod cli_runner;
 pub mod commands;
 pub mod config_io;
 pub mod doctor;
+pub mod doctor_commands;
 pub mod history;
 pub mod logging;
 pub mod models;
+pub mod node_client;
 pub mod recipe;
 pub mod ssh;
 
@@ -66,6 +74,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(SshConnectionPool::new())
+        .manage(NodeClient::new())
         .manage(CommandQueue::new())
         .manage(RemoteCommandQueues::new())
         .manage(CliCache::new())
@@ -202,6 +211,14 @@ pub fn run() {
             remote_queued_commands_count,
             remote_preview_queued_commands,
             remote_apply_queued_commands,
+            doctor_connect,
+            doctor_disconnect,
+            doctor_start_diagnosis,
+            doctor_send_message,
+            doctor_approve_invoke,
+            doctor_reject_invoke,
+            collect_doctor_context,
+            collect_doctor_context_remote,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

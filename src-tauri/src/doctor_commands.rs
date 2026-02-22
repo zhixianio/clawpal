@@ -124,21 +124,51 @@ pub async fn collect_doctor_context() -> Result<String, String> {
     serde_json::to_string(&context).map_err(|e| format!("Failed to serialize context: {e}"))
 }
 
-// SSH port forwarding — not yet implemented, reserved for future release
 #[tauri::command]
-pub async fn doctor_ssh_forward(
-    _pool: State<'_, SshConnectionPool>,
-    _host_id: String,
-) -> Result<u16, String> {
-    Err("SSH port forwarding is not yet implemented. Please use Local Gateway or Hosted Service.".into())
-}
+pub async fn collect_doctor_context_remote(
+    pool: State<'_, SshConnectionPool>,
+    host_id: String,
+) -> Result<String, String> {
+    // Collect openclaw version
+    let version_result = pool.exec_login(&host_id, "openclaw --version 2>/dev/null || echo unknown").await?;
+    let version = version_result.stdout.trim().to_string();
 
-#[tauri::command]
-pub async fn doctor_ssh_forward_close(
-    _host_id: String,
-) -> Result<(), String> {
-    // TODO: Kill the port-forward process
-    Ok(())
+    // Collect config path and content
+    let config_path_result = pool.exec_login(&host_id, "openclaw config-path 2>/dev/null || echo ~/.config/openclaw/openclaw.json").await?;
+    let config_path = config_path_result.stdout.trim().to_string();
+    let config_content = pool.sftp_read(&host_id, &config_path).await
+        .unwrap_or_else(|_| "(unable to read remote config)".into());
+
+    // Run doctor on remote
+    let doctor_result = pool.exec_login(&host_id, "openclaw doctor --json 2>/dev/null").await?;
+    let doctor_report: Value = serde_json::from_str(&doctor_result.stdout)
+        .unwrap_or_else(|_| json!({
+            "ok": false,
+            "error": "Failed to parse doctor output",
+            "raw": doctor_result.stdout.trim(),
+        }));
+
+    // Collect recent error log
+    let error_log_result = pool.exec(&host_id, "tail -100 ~/.config/openclaw/error.log 2>/dev/null || echo ''").await?;
+    let error_log = error_log_result.stdout;
+
+    // System info
+    let platform_result = pool.exec(&host_id, "uname -s").await?;
+    let arch_result = pool.exec(&host_id, "uname -m").await?;
+
+    let context = json!({
+        "openclawVersion": version,
+        "configPath": config_path,
+        "configContent": config_content,
+        "doctorReport": doctor_report,
+        "errorLog": error_log,
+        "platform": platform_result.stdout.trim().to_lowercase(),
+        "arch": arch_result.stdout.trim(),
+        "remote": true,
+        "hostId": host_id,
+    });
+
+    serde_json::to_string(&context).map_err(|e| format!("Failed to serialize context: {e}"))
 }
 
 /// Sensitive paths that are ALWAYS blocked for both read and write.
