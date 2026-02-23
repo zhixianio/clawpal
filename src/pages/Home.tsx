@@ -28,7 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { InstanceStatus, StatusExtra, AgentOverview, Recipe, BackupInfo, ModelProfile } from "../lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
 import { useApi } from "@/lib/use-api";
-import { groupAgents } from "@/lib/agent-utils";
+import { groupAgents, findProfileIdByModelValue } from "@/lib/agent-utils";
 
 export function Home({
   onCook,
@@ -193,18 +193,10 @@ export function Home({
   }, [ua]);
 
   // Match current global model value to a profile ID
-  const currentModelProfileId = useMemo(() => {
-    const modelVal = status?.globalDefaultModel;
-    if (!modelVal) return null;
-    const normalized = modelVal.toLowerCase();
-    for (const p of modelProfiles) {
-      const profileVal = p.model.includes("/") ? p.model : `${p.provider}/${p.model}`;
-      if (profileVal.toLowerCase() === normalized || p.model.toLowerCase() === normalized) {
-        return p.id;
-      }
-    }
-    return null;
-  }, [status?.globalDefaultModel, modelProfiles]);
+  const currentModelProfileId = useMemo(
+    () => findProfileIdByModelValue(status?.globalDefaultModel, modelProfiles),
+    [status?.globalDefaultModel, modelProfiles],
+  );
 
   const agentGroups = useMemo(() => groupAgents(agents || []), [agents]);
 
@@ -492,17 +484,7 @@ export function Home({
                         <div className="flex items-center gap-2.5">
                           <code className="text-sm text-foreground font-medium">{agent.id}</code>
                           <Select
-                            value={(() => {
-                              if (!agent.model) return "__none__";
-                              const normalized = agent.model.toLowerCase();
-                              for (const p of modelProfiles) {
-                                const profileVal = p.model.includes("/") ? p.model : `${p.provider}/${p.model}`;
-                                if (profileVal.toLowerCase() === normalized || p.model.toLowerCase() === normalized) {
-                                  return p.id;
-                                }
-                              }
-                              return "__none__";
-                            })()}
+                            value={findProfileIdByModelValue(agent.model, modelProfiles) ?? "__none__"}
                             onValueChange={async (val) => {
                               const modelValue = resolveModelValue(val === "__none__" ? null : val);
                               try {
