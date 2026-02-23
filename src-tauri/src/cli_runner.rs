@@ -25,7 +25,7 @@ pub fn run_openclaw_with_env(
     args: &[&str],
     env: Option<&HashMap<String, String>>,
 ) -> Result<CliOutput, String> {
-    let mut cmd = Command::new("openclaw");
+    let mut cmd = Command::new(crate::commands::resolve_openclaw_bin());
     cmd.args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

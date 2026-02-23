@@ -157,6 +157,8 @@
 body {
   margin: 0;
   font-family: "LXGW WenKai TC", "Nunito", ui-sans-serif, -apple-system, sans-serif;
+  color: var(--foreground);
+  background-color: var(--background);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

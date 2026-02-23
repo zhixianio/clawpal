@@ -222,6 +222,7 @@ export interface InstanceStatus {
   healthy: boolean;
   activeAgents: number;
   globalDefaultModel?: string;
+  fallbackModels?: string[];
   openclawVersion?: string;
 }
 

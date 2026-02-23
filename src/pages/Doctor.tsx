@@ -277,7 +277,7 @@ export function Doctor({ sshHosts }: DoctorProps) {
                         : sshHosts.find((h) => h.id === agentSource)?.label || agentSource}
                   </Badge>
                   <Badge variant="outline" className="text-xs flex items-center gap-1.5">
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-gray-400"}`} />
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
                     {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
                   </Badge>
                 </div>

@@ -49,8 +49,6 @@ export function useApi() {
         api.listAgentsOverview,
         api.remoteListAgentsOverview,
       ),
-      createAgent: dispatch(api.createAgent, api.remoteCreateAgent),
-      deleteAgent: dispatch(api.deleteAgent, api.remoteDeleteAgent),
       setupAgentIdentity: dispatch(
         api.setupAgentIdentity,
         api.remoteSetupAgentIdentity,
@@ -62,10 +60,6 @@ export function useApi() {
         api.remoteListChannelsMinimal,
       ),
       listBindings: dispatch(api.listBindings, api.remoteListBindings),
-      assignChannelAgent: dispatch(
-        api.assignChannelAgent,
-        api.remoteAssignChannelAgent,
-      ),
       listDiscordGuildChannels: dispatch(
         api.listDiscordGuildChannels,
         api.remoteListDiscordGuildChannels,
@@ -77,8 +71,6 @@ export function useApi() {
       ),
 
       // Models
-      setGlobalModel: dispatch(api.setGlobalModel, api.remoteSetGlobalModel),
-      setAgentModel: dispatch(api.setAgentModel, api.remoteSetAgentModel),
       listModelProfiles: dispatch(
         api.listModelProfiles,
         api.remoteListModelProfiles,

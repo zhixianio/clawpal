@@ -70,9 +70,9 @@ export function Home({
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [savingModel, setSavingModel] = useState(false);
+  const [fallbackSelectKey, setFallbackSelectKey] = useState(0);
   const [backingUp, setBackingUp] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
-
 
   // Create agent dialog
   const [showCreateAgent, setShowCreateAgent] = useState(false);
@@ -106,10 +106,10 @@ export function Home({
     if (hasPendingRef.current) return; // Don't overwrite optimistic UI
     ua.getInstanceStatus().then((s) => {
       setStatus(s);
+      if (s.openclawVersion) setVersion(s.openclawVersion);
       if (ua.isRemote) {
         setStatusSettled(true);
         remoteErrorShownRef.current = false;
-        if (s.openclawVersion) setVersion(s.openclawVersion);
       } else {
         if (s.healthy) {
           setStatusSettled(true);
@@ -212,28 +212,14 @@ export function Home({
     setCheckingUpdate(true);
     setUpdateInfo(null);
     const timer = setTimeout(() => {
-      if (ua.isRemote) {
-        if (!ua.isConnected) { setCheckingUpdate(false); return; }
-        ua.checkOpenclawUpdate().then((u) => {
-          setUpdateInfo({ available: u.upgradeAvailable, latest: u.latestVersion ?? undefined });
-        }).catch((e) => console.error("Failed to check remote update:", e))
-          .finally(() => setCheckingUpdate(false));
-      } else {
-        ua.getSystemStatus().then((s) => {
-          setVersion(s.openclawVersion);
-          if (s.openclawUpdate) {
-            setUpdateInfo({
-              available: s.openclawUpdate.upgradeAvailable,
-              latest: s.openclawUpdate.latestVersion,
-            });
-          }
-        }).catch((e) => console.error("Failed to fetch system status:", e))
-          .finally(() => setCheckingUpdate(false));
-      }
+      if (ua.isRemote && !ua.isConnected) { setCheckingUpdate(false); return; }
+      ua.checkOpenclawUpdate()
+        .then((u) => setUpdateInfo({ available: u.upgradeAvailable, latest: u.latestVersion ?? undefined }))
+        .catch((e) => console.error("Failed to check update:", e))
+        .finally(() => setCheckingUpdate(false));
     }, 2000); // Defer to avoid blocking startup with heavy CLI calls
     return () => clearTimeout(timer);
   }, [ua]);
-
 
   const handleDeleteAgent = (agentId: string) => {
     if (ua.isRemote && !ua.isConnected) return;
@@ -343,6 +329,110 @@ export function Home({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : (
+                <span className="text-sm">...</span>
+              )}
+            </div>
+
+            <span className="text-sm text-muted-foreground font-medium">{t('home.fallbackModels')}</span>
+            <div className="max-w-xs">
+              {status ? (
+                <div className="space-y-1.5">
+                  {(status.fallbackModels ?? []).length === 0 ? (
+                    <span className="text-xs text-muted-foreground">{t('home.noFallbacks')}</span>
+                  ) : (
+                    <div className="space-y-1">
+                      {(status.fallbackModels ?? []).map((fb, idx) => (
+                        <div key={`${fb}-${idx}`} className="flex items-center gap-1">
+                          <Badge variant="secondary" className="text-xs font-normal">
+                            {fb}
+                          </Badge>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+                            disabled={idx === 0}
+                            onClick={() => {
+                              const arr = [...(status.fallbackModels ?? [])];
+                              [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
+                              setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
+                              ua.queueCommand(
+                                `Reorder fallback models`,
+                                ["openclaw", "config", "set", "agents.defaults.model.fallbacks", JSON.stringify(arr), "--json"],
+                              ).catch((e) => showToast?.(String(e), "error"));
+                            }}
+                          >
+                            ↑
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+                            disabled={idx === (status.fallbackModels ?? []).length - 1}
+                            onClick={() => {
+                              const arr = [...(status.fallbackModels ?? [])];
+                              [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]];
+                              setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
+                              ua.queueCommand(
+                                `Reorder fallback models`,
+                                ["openclaw", "config", "set", "agents.defaults.model.fallbacks", JSON.stringify(arr), "--json"],
+                              ).catch((e) => showToast?.(String(e), "error"));
+                            }}
+                          >
+                            ↓
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive"
+                            onClick={() => {
+                              const arr = (status.fallbackModels ?? []).filter((_, i) => i !== idx);
+                              setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
+                              const cmd = arr.length > 0
+                                ? ua.queueCommand(
+                                    `Remove fallback model: ${fb}`,
+                                    ["openclaw", "config", "set", "agents.defaults.model.fallbacks", JSON.stringify(arr), "--json"],
+                                  )
+                                : ua.queueCommand(
+                                    `Remove last fallback model`,
+                                    ["openclaw", "config", "unset", "agents.defaults.model.fallbacks"],
+                                  );
+                              cmd.catch((e) => showToast?.(String(e), "error"));
+                            }}
+                          >
+                            ✕
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <Select
+                    key={fallbackSelectKey}
+                    onValueChange={(val) => {
+                      if (!val) return;
+                      const modelValue = resolveModelValue(val);
+                      if (!modelValue) return;
+                      const arr = [...(status.fallbackModels ?? []), modelValue];
+                      setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
+                      ua.queueCommand(
+                        `Add fallback model: ${modelValue}`,
+                        ["openclaw", "config", "set", "agents.defaults.model.fallbacks", JSON.stringify(arr), "--json"],
+                      ).catch((e) => showToast?.(String(e), "error"));
+                      setFallbackSelectKey((k) => k + 1);
+                    }}
+                  >
+                    <SelectTrigger size="sm" className="text-xs h-7 w-auto">
+                      <SelectValue placeholder={t('home.addFallback')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {modelProfiles.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.provider}/{p.model}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               ) : (
                 <span className="text-sm">...</span>
               )}

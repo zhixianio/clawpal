@@ -43,6 +43,34 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Check if an SSH exec error is likely transient (worth retrying) vs permanent.
+fn is_transient_ssh_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    // Permanent errors — do not retry
+    let permanent = [
+        "authentication failed",
+        "permission denied",
+        "no such host",
+        "host key verification",
+        "no connection for id",
+    ];
+    if permanent.iter().any(|p| lower.contains(p)) {
+        return false;
+    }
+    // Known transient patterns
+    let transient = [
+        "could not be executed",
+        "broken pipe",
+        "connection reset",
+        "channel open",
+        "session is closed",
+        "end of file",
+        "timed out",
+    ];
+    transient.iter().any(|t| lower.contains(t))
+        || lower.contains("failed to exec") // our own wrapper message
+}
+
 // ---------------------------------------------------------------------------
 // Unix implementation (uses openssh)
 // ---------------------------------------------------------------------------
@@ -51,7 +79,7 @@ fn shell_quote(s: &str) -> String {
 mod inner {
     use super::*;
     use std::sync::Arc;
-    use openssh::{ForwardType, KnownHosts, Session, SessionBuilder, Socket};
+    use openssh::{ControlPersist, ForwardType, KnownHosts, Session, SessionBuilder, Socket};
 
     struct SshConnection {
         session: Arc<Session>,
@@ -95,6 +123,14 @@ mod inner {
 
             builder.server_alive_interval(std::time::Duration::from_secs(30));
             builder.connect_timeout(std::time::Duration::from_secs(15));
+            // Use a short ControlPersist so idle ControlMasters auto-exit
+            // instead of living forever (which leaks sshd processes on the remote).
+            builder.control_persist(ControlPersist::IdleFor(
+                std::num::NonZeroUsize::new(5).unwrap(),
+            ));
+            // Clean up stale ControlMaster temp dirs from previous sessions
+            // (e.g., after app crash or force-quit).
+            builder.clean_history_control_directory(true);
 
             if config.auth_method == "key" {
                 if let Some(ref key_path) = config.key_path {
@@ -116,6 +152,20 @@ mod inner {
             let home_dir = Self::resolve_home_via_session(&session)
                 .await
                 .unwrap_or_else(|_| "/root".to_string());
+
+            // Close any existing connection for this id before inserting the new one.
+            // This prevents leaking ControlMaster processes on the remote.
+            {
+                let mut pool = self.connections.lock().await;
+                if let Some(old) = pool.remove(&config.id) {
+                    // Best-effort close — don't fail the new connection if old close fails
+                    if let Ok(old_session) = Arc::try_unwrap(old.session) {
+                        let _ = old_session.close().await;
+                    }
+                    // If try_unwrap fails, the Arc drop will trigger Session::Drop
+                    // which sends ssh -O exit to the ControlMaster.
+                }
+            }
 
             let mut pool = self.connections.lock().await;
             pool.insert(config.id.clone(), SshConnection { session: Arc::new(session), home_dir, config: config.clone() });
@@ -140,11 +190,16 @@ mod inner {
                 pool.remove(id)
             };
             if let Some(conn) = conn {
-                if let Ok(session) = Arc::try_unwrap(conn.session) {
-                    session
-                        .close()
-                        .await
-                        .map_err(|e| format!("SSH disconnect failed: {e}"))?;
+                match Arc::try_unwrap(conn.session) {
+                    Ok(session) => {
+                        let _ = session.close().await;
+                    }
+                    Err(arc) => {
+                        // Other references exist (in-flight exec). Drop the Arc —
+                        // when the last reference drops, Session::Drop will send
+                        // ssh -O exit to the ControlMaster.
+                        drop(arc);
+                    }
                 }
             }
             Ok(())
@@ -215,6 +270,29 @@ mod inner {
         }
 
         pub async fn exec(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
+            match self.exec_once(id, command).await {
+                Ok(result) => Ok(result),
+                Err(first_err) if is_transient_ssh_error(&first_err) => {
+                    // Transient failure — ControlMaster may not be fully ready.
+                    // Wait briefly and retry once before attempting reconnect.
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    match self.exec_once(id, command).await {
+                        Ok(result) => Ok(result),
+                        Err(_) => {
+                            // Retry failed — try reconnect + one more attempt
+                            if self.reconnect(id).await.is_ok() {
+                                self.exec_once(id, command).await
+                            } else {
+                                Err(first_err)
+                            }
+                        }
+                    }
+                }
+                Err(permanent_err) => Err(permanent_err),
+            }
+        }
+
+        async fn exec_once(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
             let session = {
                 let pool = self.connections.lock().await;
                 let conn = pool
@@ -566,6 +644,26 @@ mod inner {
         }
 
         pub async fn exec(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
+            match self.exec_once(id, command).await {
+                Ok(result) => Ok(result),
+                Err(first_err) if is_transient_ssh_error(&first_err) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    match self.exec_once(id, command).await {
+                        Ok(result) => Ok(result),
+                        Err(_) => {
+                            if self.reconnect(id).await.is_ok() {
+                                self.exec_once(id, command).await
+                            } else {
+                                Err(first_err)
+                            }
+                        }
+                    }
+                }
+                Err(permanent_err) => Err(permanent_err),
+            }
+        }
+
+        async fn exec_once(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
             let args = {
                 let pool = self.connections.lock().await;
                 let conn = pool

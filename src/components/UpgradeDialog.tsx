@@ -169,7 +169,7 @@ export function UpgradeDialog({
                 {t('upgrade.backup')} <code>{backupName}</code>
               </p>
             )}
-            <p className="text-sm font-medium text-green-600">
+            <p className="text-sm font-medium text-green-600 dark:text-green-400">
               {t('upgrade.upgradeSuccess')}
             </p>
             {output && (

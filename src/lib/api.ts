@@ -82,8 +82,6 @@ export const api = {
     invoke("set_agent_model", { agentId, modelValue }),
   listBindings: (): Promise<Binding[]> =>
     invoke("list_bindings", {}),
-  assignChannelAgent: (channelType: string, peerId: string, agentId: string | null): Promise<boolean> =>
-    invoke("assign_channel_agent", { channelType, peerId, agentId }),
   // SSH host management
   listSshHosts: (): Promise<SshHost[]> =>
     invoke("list_ssh_hosts", {}),
@@ -115,16 +113,6 @@ export const api = {
     invoke("remote_restart_gateway", { hostId }),
   remoteApplyConfigPatch: (hostId: string, patchTemplate: string, params: Record<string, string>): Promise<ApplyResult> =>
     invoke("remote_apply_config_patch", { hostId, patchTemplate, params }),
-  remoteCreateAgent: (hostId: string, agentId: string, modelValue?: string): Promise<AgentOverview> =>
-    invoke("remote_create_agent", { hostId, agentId, modelValue }),
-  remoteDeleteAgent: (hostId: string, agentId: string): Promise<boolean> =>
-    invoke("remote_delete_agent", { hostId, agentId }),
-  remoteAssignChannelAgent: (hostId: string, channelType: string, peerId: string, agentId: string | null): Promise<boolean> =>
-    invoke("remote_assign_channel_agent", { hostId, channelType, peerId, agentId }),
-  remoteSetGlobalModel: (hostId: string, modelValue: string | null): Promise<boolean> =>
-    invoke("remote_set_global_model", { hostId, modelValue }),
-  remoteSetAgentModel: (hostId: string, agentId: string, modelValue: string | null): Promise<boolean> =>
-    invoke("remote_set_agent_model", { hostId, agentId, modelValue }),
   remoteListDiscordGuildChannels: (hostId: string): Promise<DiscordGuildChannel[]> =>
     invoke("remote_list_discord_guild_channels", { hostId }),
   remoteRunDoctor: (hostId: string): Promise<DoctorReport> =>
@@ -179,11 +167,7 @@ export const api = {
 
   // Upgrade
   checkOpenclawUpdate: (): Promise<{ upgradeAvailable: boolean; latestVersion: string | null; installedVersion: string }> =>
-    invoke<SystemStatus>("get_system_status").then((s) => ({
-      upgradeAvailable: s.openclawUpdate?.upgradeAvailable ?? false,
-      latestVersion: s.openclawUpdate?.latestVersion ?? null,
-      installedVersion: s.openclawVersion ?? "",
-    })),
+    invoke("check_openclaw_update"),
   runOpenclawUpgrade: (): Promise<string> =>
     invoke("run_openclaw_upgrade", {}),
   remoteRunOpenclawUpgrade: (hostId: string): Promise<string> =>
