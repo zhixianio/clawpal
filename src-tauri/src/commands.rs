@@ -4303,22 +4303,23 @@ pub async fn remote_get_system_status(pool: State<'_, SshConnectionPool>, host_i
         Err(_) => None,
     };
 
-    // 2. Read remote config via CLI
+    // 2. Read remote agents config via CLI
     let config_output = crate::cli_runner::run_openclaw_remote(
-        &pool, &host_id, &["config", "get", "--json"]
+        &pool, &host_id, &["config", "get", "agents", "--json"]
     ).await;
     let (active_agents, global_default_model, fallback_models) = match config_output {
         Ok(ref output) if output.exit_code == 0 => {
             let cfg: Value = crate::cli_runner::parse_json_output(output).unwrap_or(Value::Null);
-            let explicit = cfg.pointer("/agents/list")
+            // CLI returns the "agents" subtree directly, so paths are relative to it
+            let explicit = cfg.pointer("/list")
                 .and_then(Value::as_array)
                 .map(|a| a.len() as u32)
                 .unwrap_or(0);
-            let agents = if explicit == 0 && cfg.get("agents").is_some() { 1 } else { explicit };
-            let model = cfg.pointer("/agents/defaults/model")
+            let agents = if explicit == 0 { 1 } else { explicit };
+            let model = cfg.pointer("/defaults/model")
                 .and_then(|v| read_model_value(v))
-                .or_else(|| cfg.pointer("/agents/default/model").and_then(|v| read_model_value(v)));
-            let fallbacks = cfg.pointer("/agents/defaults/model/fallbacks")
+                .or_else(|| cfg.pointer("/default/model").and_then(|v| read_model_value(v)));
+            let fallbacks = cfg.pointer("/defaults/model/fallbacks")
                 .and_then(Value::as_array)
                 .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect())
                 .unwrap_or_default();
