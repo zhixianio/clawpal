@@ -34,6 +34,11 @@ export function Doctor({ sshHosts }: DoctorProps) {
   // Agent source: an instance id ("local" / host uuid) or "remote" (hosted doctor)
   const [agentSource, setAgentSource] = useState("remote");
   const [diagnosing, setDiagnosing] = useState(false);
+  const selectableSources = [
+    ...(doctor.target !== "local" ? ["local"] : []),
+    ...sshHosts.filter((h) => h.id !== doctor.target).map((h) => h.id),
+  ];
+  const canStartDiagnosis = selectableSources.includes(agentSource);
 
   // Full-auto confirmation dialog
   const [fullAutoConfirmOpen, setFullAutoConfirmOpen] = useState(false);
@@ -61,6 +66,14 @@ export function Doctor({ sshHosts }: DoctorProps) {
       doctor.setTarget("local");
     }
   }, [instanceId, isRemote, doctor.setTarget]);
+
+  // Keep selected source valid when target/hosts change.
+  useEffect(() => {
+    if (canStartDiagnosis) return;
+    if (selectableSources.length > 0) {
+      setAgentSource(selectableSources[0]);
+    }
+  }, [canStartDiagnosis, selectableSources]);
 
   const handleStartDiagnosis = async () => {
     setDiagnosing(true);
@@ -235,7 +248,7 @@ export function Doctor({ sshHosts }: DoctorProps) {
                   )}
                 </div>
               )}
-              <Button onClick={handleStartDiagnosis} disabled={diagnosing}>
+              <Button onClick={handleStartDiagnosis} disabled={diagnosing || !canStartDiagnosis}>
                 {diagnosing ? t("doctor.connecting") : t("doctor.startDiagnosis")}
               </Button>
             </>
