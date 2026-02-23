@@ -161,8 +161,14 @@ export function Home({
   }, [ua]);
 
   useEffect(() => {
+    // Delay for remote to avoid SSH burst (tier 1 + tier 2 = 4 concurrent SSH
+    // processes on Windows which has no ControlMaster multiplexing).
+    if (ua.isRemote) {
+      const timer = setTimeout(fetchStatusExtra, 3000);
+      return () => clearTimeout(timer);
+    }
     fetchStatusExtra();
-  }, [fetchStatusExtra]);
+  }, [fetchStatusExtra, ua.isRemote]);
 
   const refreshAgents = useCallback(() => {
     if (ua.isRemote && !ua.isConnected) return; // Wait for SSH connection
@@ -237,7 +243,11 @@ export function Home({
     const timer = setTimeout(() => {
       if (ua.isRemote && !ua.isConnected) { setCheckingUpdate(false); return; }
       ua.checkOpenclawUpdate()
-        .then((u) => setUpdateInfo({ available: u.upgradeAvailable, latest: u.latestVersion ?? undefined }))
+        .then((u) => {
+          setUpdateInfo({ available: u.upgradeAvailable, latest: u.latestVersion ?? undefined });
+          // Fallback: set version from update check if tier 2 hasn't provided it yet
+          if (u.installedVersion) setVersion((prev) => prev || u.installedVersion);
+        })
         .catch((e) => console.error("Failed to check update:", e))
         .finally(() => setCheckingUpdate(false));
     }, 2000); // Defer to avoid blocking startup with heavy CLI calls
