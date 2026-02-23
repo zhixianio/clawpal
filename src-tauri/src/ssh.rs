@@ -43,6 +43,20 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Base64 decode pipeline compatible with GNU coreutils and BSD/macOS.
+fn base64_decode_pipeline() -> &'static str {
+    "base64 -d 2>/dev/null || base64 -D 2>/dev/null"
+}
+
+/// Build a safe remote write command using base64 transport.
+fn build_sftp_write_command(path: &str, b64: &str) -> String {
+    let quoted = shell_quote(path);
+    format!(
+        "mkdir -p \"$(dirname {quoted})\" && printf '%s' '{b64}' | ({decode}) > {quoted}",
+        decode = base64_decode_pipeline(),
+    )
+}
+
 /// Check if an SSH exec error is likely transient (worth retrying) vs permanent.
 fn is_transient_ssh_error(err: &str) -> bool {
     let lower = err.to_lowercase();
@@ -80,6 +94,7 @@ mod inner {
     use super::*;
     use std::sync::Arc;
     use openssh::{ControlPersist, ForwardType, KnownHosts, Session, SessionBuilder, Socket};
+    use tokio::net::TcpStream;
 
     struct SshConnection {
         session: Arc<Session>,
@@ -89,16 +104,21 @@ mod inner {
 
     pub struct SshConnectionPool {
         connections: Mutex<HashMap<String, SshConnection>>,
+        forwards: Mutex<HashMap<String, (u16, u16)>>,
+        lifecycle: Mutex<()>,
     }
 
     impl SshConnectionPool {
         pub fn new() -> Self {
             Self {
                 connections: Mutex::new(HashMap::new()),
+                forwards: Mutex::new(HashMap::new()),
+                lifecycle: Mutex::new(()),
             }
         }
 
         pub async fn connect(&self, config: &SshHostConfig) -> Result<(), String> {
+            let _lifecycle_guard = self.lifecycle.lock().await;
             if config.auth_method == "password" {
                 return Err(
                     "Password authentication is not supported with openssh. \
@@ -115,7 +135,7 @@ mod inner {
             };
 
             let mut builder = SessionBuilder::default();
-            builder.known_hosts_check(KnownHosts::Accept);
+            builder.known_hosts_check(KnownHosts::Add);
 
             if config.port != 22 {
                 builder.port(config.port);
@@ -185,6 +205,8 @@ mod inner {
                     }
                 }
             }
+            // Drop any cached local forward bound to an old session.
+            self.forwards.lock().await.remove(&config.id);
             Ok(())
         }
 
@@ -203,6 +225,7 @@ mod inner {
         }
 
         pub async fn disconnect(&self, id: &str) -> Result<(), String> {
+            let _lifecycle_guard = self.lifecycle.lock().await;
             let conn = {
                 let mut pool = self.connections.lock().await;
                 pool.remove(id)
@@ -233,6 +256,7 @@ mod inner {
                     }
                 }
             }
+            self.forwards.lock().await.remove(id);
             Ok(())
         }
 
@@ -250,6 +274,31 @@ mod inner {
         /// Create a local port forward: localhost:<local_port> → remote 127.0.0.1:<remote_port>.
         /// Binds to a random local port (port 0) and returns the actual port assigned.
         pub async fn request_port_forward(&self, id: &str, remote_port: u16) -> Result<u16, String> {
+            let _lifecycle_guard = self.lifecycle.lock().await;
+            // Reuse an existing forward when possible to avoid accumulating
+            // duplicate local forwards for repeated doctor sessions.
+            let cached = {
+                let fwd = self.forwards.lock().await;
+                fwd.get(id).copied()
+            };
+            if let Some((cached_remote_port, cached_local_port)) = cached {
+                if cached_remote_port == remote_port {
+                    let alive = match tokio::time::timeout(
+                        std::time::Duration::from_millis(250),
+                        TcpStream::connect(("127.0.0.1", cached_local_port)),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => true,
+                        _ => false,
+                    };
+                    if alive {
+                        return Ok(cached_local_port);
+                    }
+                    self.forwards.lock().await.remove(id);
+                }
+            }
+
             let session = {
                 let pool = self.connections.lock().await;
                 let conn = pool.get(id).ok_or_else(|| format!("No connection for id: {id}"))?;
@@ -266,6 +315,10 @@ mod inner {
                 )
                 .await
                 .map_err(|e| format!("SSH port forward failed: {e}"))?;
+            self.forwards
+                .lock()
+                .await
+                .insert(id.to_string(), (remote_port, local_port));
             Ok(local_port)
         }
 
@@ -393,12 +446,8 @@ mod inner {
 
         pub async fn sftp_write(&self, id: &str, path: &str, content: &str) -> Result<(), String> {
             let resolved = self.resolve_path(id, path).await?;
-            let quoted = shell_quote(&resolved);
             let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
-            let cmd = format!(
-                "mkdir -p \"$(dirname {})\" && printf '%s' '{}' | base64 -d > {}",
-                quoted, b64, quoted
-            );
+            let cmd = build_sftp_write_command(&resolved, &b64);
             let result = self.exec(id, &cmd).await?;
             if result.exit_code != 0 {
                 return Err(format!(
@@ -476,6 +525,7 @@ mod inner {
 #[cfg(not(unix))]
 mod inner {
     use super::*;
+    use tokio::net::TcpStream;
     use tokio::process::Command;
 
     /// Create an ssh Command with hidden console window on Windows.
@@ -493,6 +543,12 @@ mod inner {
     struct SshConnection {
         config: SshHostConfig,
         home_dir: String,
+    }
+
+    struct PortForwardHandle {
+        remote_port: u16,
+        local_port: u16,
+        child: tokio::process::Child,
     }
 
     impl SshConnection {
@@ -530,7 +586,8 @@ mod inner {
     pub struct SshConnectionPool {
         connections: Mutex<HashMap<String, SshConnection>>,
         /// Tracked port-forward processes (killed on disconnect or new forward).
-        port_forwards: Mutex<HashMap<String, tokio::process::Child>>,
+        port_forwards: Mutex<HashMap<String, PortForwardHandle>>,
+        lifecycle: Mutex<()>,
     }
 
     impl SshConnectionPool {
@@ -538,10 +595,12 @@ mod inner {
             Self {
                 connections: Mutex::new(HashMap::new()),
                 port_forwards: Mutex::new(HashMap::new()),
+                lifecycle: Mutex::new(()),
             }
         }
 
         pub async fn connect(&self, config: &SshHostConfig) -> Result<(), String> {
+            let _lifecycle_guard = self.lifecycle.lock().await;
             if config.auth_method == "password" {
                 return Err(
                     "Password authentication is not supported. \
@@ -575,16 +634,31 @@ mod inner {
 
             let mut pool = self.connections.lock().await;
             pool.insert(config.id.clone(), conn);
+            drop(pool);
+            // Old forwarding processes (if any) belong to a previous connection.
+            let mut old_fwd = {
+                let mut fwd = self.port_forwards.lock().await;
+                fwd.remove(&config.id)
+            };
+            if let Some(ref mut pf) = old_fwd {
+                let _ = pf.child.kill().await;
+            }
             Ok(())
         }
 
         pub async fn disconnect(&self, id: &str) -> Result<(), String> {
-            let mut pool = self.connections.lock().await;
-            pool.remove(id);
+            let _lifecycle_guard = self.lifecycle.lock().await;
+            {
+                let mut pool = self.connections.lock().await;
+                pool.remove(id);
+            }
             // Kill any tracked port-forward process for this host
-            let mut fwd = self.port_forwards.lock().await;
-            if let Some(mut child) = fwd.remove(id) {
-                let _ = child.kill().await;
+            let mut old = {
+                let mut fwd = self.port_forwards.lock().await;
+                fwd.remove(id)
+            };
+            if let Some(ref mut pf) = old {
+                let _ = pf.child.kill().await;
             }
             Ok(())
         }
@@ -626,13 +700,45 @@ mod inner {
         /// Create a local port forward via `ssh -L -N`. Returns the local port.
         /// The ssh process is tracked and killed on disconnect or next forward request.
         pub async fn request_port_forward(&self, id: &str, remote_port: u16) -> Result<u16, String> {
-            // Kill any existing port forward for this host
+            let _lifecycle_guard = self.lifecycle.lock().await;
+            // Reuse live forward for the same remote port; otherwise replace.
+            let mut to_kill = None;
+            let mut candidate_reuse_port = None;
             {
                 let mut fwd = self.port_forwards.lock().await;
-                if let Some(mut child) = fwd.remove(id) {
-                    let _ = child.kill().await;
+                if let Some(existing) = fwd.get_mut(id) {
+                    match existing.child.try_wait() {
+                        Ok(None) if existing.remote_port == remote_port => {
+                            candidate_reuse_port = Some(existing.local_port);
+                        }
+                        Ok(None) | Ok(Some(_)) | Err(_) => {
+                            to_kill = fwd.remove(id);
+                        }
+                    }
                 }
             }
+            if let Some(port) = candidate_reuse_port {
+                let alive = match tokio::time::timeout(
+                    std::time::Duration::from_millis(250),
+                    TcpStream::connect(("127.0.0.1", port)),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => true,
+                    _ => false,
+                };
+                if alive {
+                    return Ok(port);
+                }
+                to_kill = {
+                    let mut fwd = self.port_forwards.lock().await;
+                    fwd.remove(id)
+                };
+            }
+            if let Some(mut old) = to_kill {
+                let _ = old.child.kill().await;
+            }
+
             let args = {
                 let pool = self.connections.lock().await;
                 let conn = pool.get(id).ok_or_else(|| format!("No connection for id: {id}"))?;
@@ -648,16 +754,37 @@ mod inner {
                 "-N".into(),
             ];
             cmd_args.extend(args);
-            let child = ssh_command()
+            let mut child = ssh_command()
                 .args(&cmd_args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .map_err(|e| format!("SSH port forward failed: {e}"))?;
-            self.port_forwards.lock().await.insert(id.to_string(), child);
-            // Give the tunnel a moment to establish
+
+            // Give the child process a moment, then fail fast if it exited early.
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if let Ok(Some(status)) = child.try_wait() {
+                return Err(format!(
+                    "SSH port forward exited early with status: {status}"
+                ));
+            }
+
+            // Best-effort local liveness probe (short timeout, non-fatal).
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                TcpStream::connect(("127.0.0.1", local_port)),
+            )
+            .await;
+
+            self.port_forwards.lock().await.insert(
+                id.to_string(),
+                PortForwardHandle {
+                    remote_port,
+                    local_port,
+                    child,
+                },
+            );
             Ok(local_port)
         }
 
@@ -766,12 +893,8 @@ mod inner {
 
         pub async fn sftp_write(&self, id: &str, path: &str, content: &str) -> Result<(), String> {
             let resolved = self.resolve_path(id, path).await?;
-            let quoted = shell_quote(&resolved);
             let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
-            let cmd = format!(
-                "mkdir -p \"$(dirname {})\" && printf '%s' '{}' | base64 -d > {}",
-                quoted, b64, quoted
-            );
+            let cmd = build_sftp_write_command(&resolved, &b64);
             let result = self.exec(id, &cmd).await?;
             if result.exit_code != 0 {
                 return Err(format!(
@@ -841,3 +964,23 @@ mod inner {
 }
 
 pub use inner::SshConnectionPool;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_base64_decode_pipeline_is_cross_platform() {
+        let pipe = base64_decode_pipeline();
+        assert!(pipe.contains("base64 -d"), "expected GNU base64 flag");
+        assert!(pipe.contains("base64 -D"), "expected BSD base64 flag");
+    }
+
+    #[test]
+    fn test_build_sftp_write_command_uses_decode_fallback() {
+        let cmd = build_sftp_write_command("/tmp/a.txt", "YWJj");
+        assert!(cmd.contains("mkdir -p"));
+        assert!(cmd.contains("base64 -d"));
+        assert!(cmd.contains("base64 -D"));
+    }
+}
