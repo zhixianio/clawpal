@@ -131,6 +131,13 @@ pub async fn doctor_bridge_disconnect(
 }
 
 #[tauri::command]
+pub async fn doctor_bridge_node_id(
+    bridge: State<'_, BridgeClient>,
+) -> Result<String, String> {
+    bridge.node_id().await.ok_or_else(|| "Bridge not connected".into())
+}
+
+#[tauri::command]
 pub async fn doctor_start_diagnosis(
     client: State<'_, NodeClient>,
     context: String,
@@ -169,13 +176,18 @@ pub async fn doctor_send_message(
 #[tauri::command]
 pub async fn doctor_approve_invoke(
     bridge: State<'_, BridgeClient>,
+    client: State<'_, NodeClient>,
     pool: State<'_, SshConnectionPool>,
     app: AppHandle,
     invoke_id: String,
     target: String,
+    session_key: String,
+    agent_id: String,
 ) -> Result<Value, String> {
-    // Invokes come from the node connection (BridgeClient)
-    let invoke = bridge.take_invoke(&invoke_id).await
+    // Invokes come from the node connection (BridgeClient).
+    // `expired` = true means the invoke was already auto-rejected with USER_PENDING
+    // (gateway 30s timeout approaching), so the result must go via chat message.
+    let (invoke, expired) = bridge.take_invoke(&invoke_id).await
         .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
 
     let command = invoke.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -246,8 +258,36 @@ pub async fn doctor_approve_invoke(
         }
     };
 
-    // Send result back to the gateway via the node connection
-    bridge.send_invoke_result(&invoke_id, &node_id, result.clone()).await?;
+    if expired {
+        // Invoke was already auto-rejected with USER_PENDING — gateway discards late
+        // invoke results. Send the output as a follow-up chat message instead so the
+        // agent can continue with the information.
+        let result_text = if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str()) {
+            let stderr = result.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+            let exit_code = result.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let mut msg = format!("[User executed the previously pending command: `{command}`]\n");
+            if !stdout.is_empty() {
+                msg.push_str(&format!("stdout:\n```\n{stdout}\n```\n"));
+            }
+            if !stderr.is_empty() {
+                msg.push_str(&format!("stderr:\n```\n{stderr}\n```\n"));
+            }
+            msg.push_str(&format!("exitCode: {exit_code}"));
+            msg
+        } else {
+            format!("[User executed the previously pending command: `{command}`]\nResult: {result}")
+        };
+        let idempotency_key = uuid::Uuid::new_v4().to_string();
+        let _ = client.send_request_fire("agent", json!({
+            "message": result_text,
+            "idempotencyKey": idempotency_key,
+            "agentId": agent_id,
+            "sessionKey": session_key,
+        })).await;
+    } else {
+        // Normal path: send result back to the gateway via the node connection
+        bridge.send_invoke_result(&invoke_id, &node_id, result.clone()).await?;
+    }
 
     let _ = app.emit("doctor:invoke-result", json!({
         "id": invoke_id,
@@ -263,8 +303,12 @@ pub async fn doctor_reject_invoke(
     invoke_id: String,
     reason: String,
 ) -> Result<(), String> {
-    let invoke = bridge.take_invoke(&invoke_id).await
+    let (invoke, expired) = bridge.take_invoke(&invoke_id).await
         .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
+    if expired {
+        // Already auto-rejected with USER_PENDING — no need to send another error
+        return Ok(());
+    }
     let node_id = invoke.get("nodeId").and_then(|v| v.as_str()).unwrap_or("");
 
     bridge.send_invoke_error(&invoke_id, node_id, "REJECTED", &format!("Rejected by user: {reason}")).await

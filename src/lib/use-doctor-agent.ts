@@ -24,6 +24,7 @@ export function useDoctorAgent() {
   const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState("local");
   const [approvedPatterns, setApprovedPatterns] = useState<Set<string>>(new Set());
+  const [fullAuto, setFullAuto] = useState(false);
 
   // Track streaming assistant message
   const streamingRef = useRef("");
@@ -34,9 +35,13 @@ export function useDoctorAgent() {
   // Unique session key per diagnosis — avoids inheriting stale state
   const sessionKeyRef = useRef("");
   const agentIdRef = useRef("main");
+  // Locked at diagnosis start — immune to tab switching during diagnosis
+  const targetRef = useRef("local");
   // Last connection params for reconnect
   const lastUrlRef = useRef("");
   const lastCredsRef = useRef<GatewayCredentials | undefined>(undefined);
+  // Bridge node ID registered on the gateway — used in agent prompt
+  const bridgeNodeIdRef = useRef("");
 
   // Gate: only process invokes after startDiagnosis has been called.
   // Prevents stale invokes (replayed by the gateway on node reconnect)
@@ -46,6 +51,8 @@ export function useDoctorAgent() {
   // Refs to avoid stale closures in useEffect listeners
   const approvedPatternsRef = useRef(approvedPatterns);
   useEffect(() => { approvedPatternsRef.current = approvedPatterns; }, [approvedPatterns]);
+  const fullAutoRef = useRef(fullAuto);
+  useEffect(() => { fullAutoRef.current = fullAuto; }, [fullAuto]);
   const autoApproveRef = useRef<(invokeId: string) => Promise<void>>(null!);
 
 
@@ -116,13 +123,21 @@ export function useDoctorAgent() {
           if (prev.has(invoke.id)) return prev; // already seen
           return new Map(prev).set(invoke.id, invoke);
         });
+
+        const isFullAuto = fullAutoRef.current;
         setMessages((prev) => {
           if (prev.some((m) => m.invoke?.id === invoke.id)) return prev; // already shown
           return [
             ...prev,
-            { id: nextMsgId(), role: "tool-call", content: invoke.command, invoke, status: "pending" },
+            { id: nextMsgId(), role: "tool-call", content: invoke.command, invoke, status: isFullAuto ? "auto" : "pending" },
           ];
         });
+
+        // Full-auto mode: approve everything immediately
+        if (isFullAuto) {
+          autoApproveRef.current(invoke.id);
+          return;
+        }
 
         // Auto-approve read commands if pattern already approved
         if (invoke.type === "read") {
@@ -171,7 +186,7 @@ export function useDoctorAgent() {
 
   const autoApprove = useCallback(async (invokeId: string) => {
     try {
-      await api.doctorApproveInvoke(invokeId, target);
+      await api.doctorApproveInvoke(invokeId, targetRef.current, sessionKeyRef.current, agentIdRef.current);
       setMessages((prev) =>
         prev.map((m) => {
           if (m.invoke?.id === invokeId && m.role === "tool-call") {
@@ -185,7 +200,7 @@ export function useDoctorAgent() {
     } catch (err) {
       setError(`Auto-approve failed: ${err}`);
     }
-  }, [target]);
+  }, []);
   autoApproveRef.current = autoApprove;
 
   const connect = useCallback(async (url: string, credentials?: GatewayCredentials, autoPairHostId?: string) => {
@@ -199,12 +214,14 @@ export function useDoctorAgent() {
       // Then connect as node (same URL, different role — for receiving tool calls)
       try {
         await api.doctorBridgeConnect(url, credentials);
+        bridgeNodeIdRef.current = await api.doctorBridgeNodeId();
       } catch (bridgeErr) {
         // Auto-fix NOT_PAIRED for bridge connection
         if (autoPairHostId && String(bridgeErr).includes("NOT_PAIRED")) {
           const approved = await api.doctorAutoPair(autoPairHostId);
           if (approved > 0) {
             await api.doctorBridgeConnect(url, credentials);
+            bridgeNodeIdRef.current = await api.doctorBridgeNodeId();
           } else {
             throw bridgeErr;
           }
@@ -252,6 +269,7 @@ export function useDoctorAgent() {
 
   const startDiagnosis = useCallback(async (context: string, agentId = "main") => {
     agentIdRef.current = agentId;
+    targetRef.current = target;
     setLoading(true);
     setMessages([]);
     setPendingInvokes(new Map());
@@ -263,27 +281,29 @@ export function useDoctorAgent() {
     try {
       const isRemote = target !== "local";
       const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
+      const nodeId = bridgeNodeIdRef.current;
       const executionModel = [
         "EXECUTION MODEL (critical — read carefully):",
-        "Architecture: You (agent) → ClawPal (node) → target machine. The remote machine is NOT a node — ClawPal is the node and forwards commands transparently.",
-        "system.run is your ONLY tool. Commands execute directly on the target machine via ClawPal.",
+        "Architecture: You (agent) → ClawPal (node) → target machine.",
+        `ClawPal is registered as a node on this gateway with node name/id: "${nodeId}".`,
+        `To run commands on the target, use the nodes tool: nodes(action="run", node="${nodeId}", command=["your", "command", "here"])`,
+        `IMPORTANT: You MUST specify node="${nodeId}" — this routes the command through ClawPal to the target machine. Without it, commands may run on the wrong machine.`,
+        "BATCH COMMANDS: Each tool call requires a network round-trip and user approval. To minimize round-trips, chain related commands in a SINGLE call using && or ;. Example: command=[\"sh\",\"-c\",\"uname -a && cat /etc/os-release && openclaw --version\"] — this runs all three commands in one call instead of three separate calls.",
         "Every result includes an 'executedOn' field — check it to confirm where the command ran.",
         "If executedOn says 'connection lost', tell the user to reconnect in the Instance tab.",
         "You CAN run commands on the target. Do NOT claim you cannot. Do NOT ask the user to run commands manually.",
-        "Do NOT use nodes.run, nodes.status, or any node management API — these will NOT reach the target.",
         "Do NOT use ssh, scp, or any remote access tool. Do NOT suggest node pairing.",
         "gatewayProcessRunning: false on the target does NOT mean you cannot run commands — your connection goes through ClawPal, not the target's gateway.",
         isRemote ? "Do NOT mention the host platform (macOS). Focus only on the target machine." : "",
       ].filter(Boolean).join("\n");
       const prompt = [
-        "You are ClawPal's diagnostic agent. Diagnose OpenClaw issues on the target machine.",
-        `Respond in ${lang}.`,
-        isRemote
-          ? `The target is a REMOTE machine (host ID: ${target}).`
-          : "The target is the local machine running the OpenClaw gateway.",
+        `You are ClawPal's diagnostic agent. Respond in ${lang}.`,
         executionModel,
-        "Analyze the system context below, then use system.run to gather more info and diagnose. Be concise and actionable.\n",
-        context,
+        isRemote
+          ? `The target is a REMOTE machine (host ID: ${target}). All commands MUST go through the ClawPal node.`
+          : "The target is the local machine running the OpenClaw gateway.",
+        `\nSystem context from the target:\n${context}\n`,
+        "Start diagnosing immediately. Use tool calls right away — do NOT repeat or summarize the context back to the user.",
       ].join("\n");
       await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId);
     } catch (err) {
@@ -318,11 +338,11 @@ export function useDoctorAgent() {
       })
     );
     try {
-      await api.doctorApproveInvoke(invokeId, target);
+      await api.doctorApproveInvoke(invokeId, targetRef.current, sessionKeyRef.current, agentIdRef.current);
     } catch (err) {
       setError(`Approve failed: ${err}`);
     }
-  }, [target]);
+  }, []);
 
   const rejectInvoke = useCallback(async (invokeId: string, reason = "User rejected") => {
     setPendingInvokes((prev) => {
@@ -366,6 +386,8 @@ export function useDoctorAgent() {
     target,
     setTarget,
     approvedPatterns,
+    fullAuto,
+    setFullAuto,
     connect,
     reconnect,
     disconnect,

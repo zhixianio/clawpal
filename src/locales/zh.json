@@ -206,6 +206,11 @@
   "doctor.changeTarget": "更改",
   "doctor.allowRead": "允许",
   "doctor.firstTimeApproval": "首次访问 — 点击允许后将自动执行该路径下的后续读取",
+  "doctor.fullAuto": "全自动",
+  "doctor.fullAutoTitle": "启用全自动模式？",
+  "doctor.fullAutoWarning": "全自动模式下，Agent 发出的所有命令将立即执行，无需你的审批。这包括写入操作和任意 Shell 命令。请仅在信任 Agent 来源时启用。",
+  "doctor.fullAutoConfirm": "启用",
+  "doctor.cancel": "取消",
 
   "history.title": "历史",
   "history.rollback": "回滚",

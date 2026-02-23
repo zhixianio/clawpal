@@ -46,7 +46,7 @@ use crate::doctor_commands::{
     doctor_connect, doctor_disconnect,
     doctor_start_diagnosis, doctor_send_message,
     doctor_approve_invoke, doctor_reject_invoke, collect_doctor_context,
-    collect_doctor_context_remote, doctor_bridge_connect, doctor_bridge_disconnect,
+    collect_doctor_context_remote, doctor_bridge_connect, doctor_bridge_disconnect, doctor_bridge_node_id,
 };
 use crate::cli_runner::{
     queue_command, remove_queued_command, list_queued_commands,
@@ -229,6 +229,7 @@ pub fn run() {
             collect_doctor_context_remote,
             doctor_bridge_connect,
             doctor_bridge_disconnect,
+            doctor_bridge_node_id,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run app");

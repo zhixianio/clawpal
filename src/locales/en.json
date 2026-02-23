@@ -206,6 +206,11 @@
   "doctor.changeTarget": "Change",
   "doctor.allowRead": "Allow",
   "doctor.firstTimeApproval": "First access — click Allow to auto-approve future reads to this path",
+  "doctor.fullAuto": "Full Auto",
+  "doctor.fullAutoTitle": "Enable Full Auto Mode?",
+  "doctor.fullAutoWarning": "In full-auto mode, all commands from the agent will be executed immediately without your approval. This includes write operations and arbitrary shell commands. Only enable this if you trust the agent source.",
+  "doctor.fullAutoConfirm": "Enable",
+  "doctor.cancel": "Cancel",
 
   "history.title": "History",
   "history.rollback": "rollback",

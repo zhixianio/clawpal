@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -32,6 +32,11 @@ const NODE_COMMANDS: &[&str] = &[
 /// Maximum number of pending invoke requests kept in memory.
 const MAX_PENDING_INVOKES: usize = 50;
 
+/// Seconds before auto-rejecting an invoke with USER_PENDING.
+/// Must be less than the gateway's 30s invoke timeout so the agent
+/// sees "user is reviewing" instead of a generic "timeout".
+const INVOKE_AUTO_REJECT_SECS: u64 = 25;
+
 struct BridgeClientInner {
     tx: WsSink,
     req_counter: u64,
@@ -49,6 +54,10 @@ struct BridgeClientInner {
 pub struct BridgeClient {
     inner: Arc<Mutex<Option<BridgeClientInner>>>,
     pending_invokes: Arc<Mutex<IndexMap<String, Value>>>,
+    /// Invoke IDs that were auto-rejected with USER_PENDING after the timeout.
+    /// These invokes remain in pending_invokes so the user can still execute them,
+    /// but the result must be sent as a chat message (gateway discards late results).
+    expired_invokes: Arc<Mutex<HashSet<String>>>,
     credentials: Arc<Mutex<Option<GatewayCredentials>>>,
 }
 
@@ -57,6 +66,7 @@ impl BridgeClient {
         Self {
             inner: Arc::new(Mutex::new(None)),
             pending_invokes: Arc::new(Mutex::new(IndexMap::new())),
+            expired_invokes: Arc::new(Mutex::new(HashSet::new())),
             credentials: Arc::new(Mutex::new(None)),
         }
     }
@@ -95,6 +105,7 @@ impl BridgeClient {
         // Spawn reader task
         let inner_ref = Arc::clone(&self.inner);
         let invokes_ref = Arc::clone(&self.pending_invokes);
+        let expired_ref = Arc::clone(&self.expired_invokes);
         let app_clone = app.clone();
 
         tokio::spawn(async move {
@@ -102,7 +113,7 @@ impl BridgeClient {
                 match msg {
                     Ok(Message::Text(text)) => {
                         if let Ok(frame) = serde_json::from_str::<Value>(&text) {
-                            Self::handle_frame(frame, &inner_ref, &invokes_ref, &app_clone)
+                            Self::handle_frame(frame, &inner_ref, &invokes_ref, &expired_ref, &app_clone)
                                 .await;
                         }
                     }
@@ -159,11 +170,17 @@ impl BridgeClient {
             let _ = inner.tx.close().await;
         }
         self.pending_invokes.lock().await.clear();
+        self.expired_invokes.lock().await.clear();
         Ok(())
     }
 
     pub async fn is_connected(&self) -> bool {
         self.inner.lock().await.is_some()
+    }
+
+    /// Get the node ID this bridge registered with on the gateway.
+    pub async fn node_id(&self) -> Option<String> {
+        self.inner.lock().await.as_ref().map(|i| i.node_id.clone())
     }
 
     /// Send a successful invoke result back to the gateway via `node.invoke.result`.
@@ -198,8 +215,12 @@ impl BridgeClient {
     }
 
     /// Take a pending invoke request by ID (removes it from the map).
-    pub async fn take_invoke(&self, id: &str) -> Option<Value> {
-        self.pending_invokes.lock().await.shift_remove(id)
+    /// Returns `(invoke_data, expired)` where `expired` is true if the invoke
+    /// was already auto-rejected with USER_PENDING (late result must go via chat).
+    pub async fn take_invoke(&self, id: &str) -> Option<(Value, bool)> {
+        let val = self.pending_invokes.lock().await.shift_remove(id)?;
+        let expired = self.expired_invokes.lock().await.remove(id);
+        Some((val, expired))
     }
 
     // ── Private helpers ──────────────────────────────────────────────
@@ -387,6 +408,7 @@ impl BridgeClient {
         frame: Value,
         inner_ref: &Arc<Mutex<Option<BridgeClientInner>>>,
         invokes_ref: &Arc<Mutex<IndexMap<String, Value>>>,
+        expired_ref: &Arc<Mutex<HashSet<String>>>,
         app: &AppHandle,
     ) {
         let frame_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -526,6 +548,44 @@ impl BridgeClient {
                         }
 
                         let _ = app.emit("doctor:invoke", invoke_payload);
+
+                        // Spawn auto-reject timer: after INVOKE_AUTO_REJECT_SECS, send
+                        // USER_PENDING error so the agent knows the user is still reviewing
+                        // (instead of seeing a generic gateway TIMEOUT).
+                        let timer_inner = Arc::clone(inner_ref);
+                        let timer_invokes = Arc::clone(invokes_ref);
+                        let timer_expired = Arc::clone(expired_ref);
+                        let timer_id = id.clone();
+                        let timer_node_id = request_node_id.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(INVOKE_AUTO_REJECT_SECS)).await;
+                            // Check if invoke is still pending (user hasn't acted yet)
+                            let still_pending = timer_invokes.lock().await.contains_key(&timer_id);
+                            if !still_pending { return; }
+                            // Mark as expired — invoke stays in map so user can still execute later
+                            timer_expired.lock().await.insert(timer_id.clone());
+                            // Send USER_PENDING to gateway before its 30s timeout
+                            let mut guard = timer_inner.lock().await;
+                            if let Some(inner) = guard.as_mut() {
+                                inner.req_counter += 1;
+                                let rid = format!("n{}", inner.req_counter);
+                                let frame = json!({
+                                    "type": "req",
+                                    "id": rid,
+                                    "method": "node.invoke.result",
+                                    "params": {
+                                        "id": timer_id,
+                                        "nodeId": timer_node_id,
+                                        "ok": false,
+                                        "error": {
+                                            "code": "USER_PENDING",
+                                            "message": "The command is awaiting user approval in ClawPal. The user may execute it shortly — if so, the result will be provided as a follow-up message.",
+                                        },
+                                    },
+                                });
+                                let _ = inner.tx.send(Message::Text(frame.to_string())).await;
+                            }
+                        });
                     }
                     _ => {}
                 }

@@ -35,6 +35,9 @@ export function Doctor({ sshHosts }: DoctorProps) {
   const [agentSource, setAgentSource] = useState("remote");
   const [diagnosing, setDiagnosing] = useState(false);
 
+  // Full-auto confirmation dialog
+  const [fullAutoConfirmOpen, setFullAutoConfirmOpen] = useState(false);
+
   // Logs state
   const [logsOpen, setLogsOpen] = useState(false);
   const [logsSource, setLogsSource] = useState<"clawpal" | "gateway">("clawpal");
@@ -102,6 +105,11 @@ export function Doctor({ sshHosts }: DoctorProps) {
         }
       }
 
+      // Brief delay after bridge connection so the gateway propagates the
+      // node's registered commands (system.run) to the agent's tool list.
+      // Without this, the agent may start before it knows about our tools.
+      await new Promise((r) => setTimeout(r, 800));
+
       const context = doctor.target === "local"
         ? await ua.collectDoctorContext()
         : await ua.collectDoctorContextRemote(doctor.target);
@@ -153,8 +161,8 @@ export function Doctor({ sshHosts }: DoctorProps) {
     <section>
       <h2 className="text-2xl font-bold mb-4">{t("doctor.title")}</h2>
 
-      <Card>
-        <CardHeader className="pb-2">
+      <Card className="gap-2 py-4">
+        <CardHeader className="pb-0">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">{t("doctor.agentSource")}</CardTitle>
             <div className="flex items-center gap-1">
@@ -268,13 +276,31 @@ export function Doctor({ sshHosts }: DoctorProps) {
                         ? t("instance.local")
                         : sshHosts.find((h) => h.id === agentSource)?.label || agentSource}
                   </Badge>
-                  <Badge variant="outline" className="text-xs">
+                  <Badge variant="outline" className="text-xs flex items-center gap-1.5">
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-gray-400"}`} />
                     {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
                   </Badge>
                 </div>
-                <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
-                  {t("doctor.stopDiagnosis")}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={doctor.fullAuto}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setFullAutoConfirmOpen(true);
+                        } else {
+                          doctor.setFullAuto(false);
+                        }
+                      }}
+                      className="accent-primary"
+                    />
+                    {t("doctor.fullAuto")}
+                  </label>
+                  <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                    {t("doctor.stopDiagnosis")}
+                  </Button>
+                </div>
               </div>
               <DoctorChat
                 messages={doctor.messages}
@@ -289,6 +315,27 @@ export function Doctor({ sshHosts }: DoctorProps) {
           )}
         </CardContent>
       </Card>
+
+      {/* Full-Auto Confirmation */}
+      <Dialog open={fullAutoConfirmOpen} onOpenChange={setFullAutoConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("doctor.fullAutoTitle")}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">{t("doctor.fullAutoWarning")}</p>
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" size="sm" onClick={() => setFullAutoConfirmOpen(false)}>
+              {t("doctor.cancel")}
+            </Button>
+            <Button variant="destructive" size="sm" onClick={() => {
+              doctor.setFullAuto(true);
+              setFullAutoConfirmOpen(false);
+            }}>
+              {t("doctor.fullAutoConfirm")}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Logs Dialog */}
       <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
