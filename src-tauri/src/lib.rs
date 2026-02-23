@@ -224,6 +224,15 @@ pub fn run() {
             doctor_bridge_disconnect,
             doctor_bridge_node_id,
         ])
+        .setup(|_app| {
+            // Run PATH fix in background so it doesn't block window creation.
+            // openclaw commands won't fire until user interaction, giving this
+            // plenty of time to complete.
+            std::thread::spawn(|| {
+                crate::path_fix::ensure_tool_paths();
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("failed to run app");
 }
