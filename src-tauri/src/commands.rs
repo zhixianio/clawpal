@@ -14,6 +14,14 @@ use crate::models::resolve_paths;
 use crate::ssh::{SshConnectionPool, SshHostConfig, SshExecResult, SftpEntry};
 use crate::util::shell_quote;
 
+/// Check if CLI output indicates a "not found" error (e.g. config key missing).
+fn is_cli_not_found(output: &crate::cli_runner::CliOutput) -> bool {
+    output.exit_code != 0 && {
+        let msg = format!("{} {}", output.stderr, output.stdout).to_lowercase();
+        msg.contains("not found")
+    }
+}
+
 /// Enriched PATH for child processes. Stored here instead of mutating the global
 /// env via `std::env::set_var`, which is unsafe in multi-threaded Rust (since 1.83).
 /// Initialized by `resolve_openclaw_bin()` on first call.
@@ -753,11 +761,10 @@ pub async fn list_channels() -> Result<Vec<ChannelNode>, String> {
 pub fn list_channels_minimal() -> Result<Vec<ChannelNode>, String> {
     let output = crate::cli_runner::run_openclaw(&["config", "get", "channels", "--json"])
         .map_err(|e| format!("Failed to run openclaw: {e}"))?;
+    if is_cli_not_found(&output) {
+        return Ok(Vec::new());
+    }
     if output.exit_code != 0 {
-        let msg = format!("{} {}", output.stderr, output.stdout).to_lowercase();
-        if msg.contains("not found") {
-            return Ok(Vec::new());
-        }
         // Fallback: direct read
         let paths = resolve_paths();
         let cfg = read_openclaw_config(&paths)?;
@@ -994,11 +1001,8 @@ pub async fn list_bindings(
     tauri::async_runtime::spawn_blocking(move || {
         let output = crate::cli_runner::run_openclaw(&["config", "get", "bindings", "--json"])?;
         // "bindings" may not exist yet — treat "not found" as empty
-        if output.exit_code != 0 {
-            let msg = format!("{} {}", output.stderr, output.stdout).to_lowercase();
-            if msg.contains("not found") {
-                return Ok(Vec::new());
-            }
+        if is_cli_not_found(&output) {
+            return Ok(Vec::new());
         }
         let json = crate::cli_runner::parse_json_output(&output)?;
         let result = json.as_array().cloned().unwrap_or_default();
@@ -4486,11 +4490,10 @@ pub async fn remote_list_agents_overview(pool: State<'_, SshConnectionPool>, hos
 pub async fn remote_list_channels_minimal(pool: State<'_, SshConnectionPool>, host_id: String) -> Result<Vec<ChannelNode>, String> {
     let output = crate::cli_runner::run_openclaw_remote(&pool, &host_id, &["config", "get", "channels", "--json"]).await?;
     // channels key might not exist yet
+    if is_cli_not_found(&output) {
+        return Ok(Vec::new());
+    }
     if output.exit_code != 0 {
-        let msg = format!("{} {}", output.stderr, output.stdout).to_lowercase();
-        if msg.contains("not found") {
-            return Ok(Vec::new());
-        }
         return Err(format!("openclaw config get channels failed: {}", output.stderr));
     }
     let channels_val = crate::cli_runner::parse_json_output(&output).unwrap_or(Value::Null);
@@ -4503,11 +4506,8 @@ pub async fn remote_list_channels_minimal(pool: State<'_, SshConnectionPool>, ho
 pub async fn remote_list_bindings(pool: State<'_, SshConnectionPool>, host_id: String) -> Result<Vec<Value>, String> {
     let output = crate::cli_runner::run_openclaw_remote(&pool, &host_id, &["config", "get", "bindings", "--json"]).await?;
     // "bindings" may not exist yet — treat non-zero exit with "not found" as empty
-    if output.exit_code != 0 {
-        let msg = format!("{} {}", output.stderr, output.stdout).to_lowercase();
-        if msg.contains("not found") {
-            return Ok(Vec::new());
-        }
+    if is_cli_not_found(&output) {
+        return Ok(Vec::new());
     }
     let json = crate::cli_runner::parse_json_output(&output)?;
     Ok(json.as_array().cloned().unwrap_or_default())
