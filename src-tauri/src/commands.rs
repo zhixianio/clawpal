@@ -18,6 +18,11 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Enriched PATH for child processes. Stored here instead of mutating the global
+/// env via `std::env::set_var`, which is unsafe in multi-threaded Rust (since 1.83).
+/// Initialized by `resolve_openclaw_bin()` on first call.
+static OPENCLAW_ENV_PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
 /// Resolve the `openclaw` binary path, with fallback probing for common locations.
 /// `fix_path_env::fix()` in main.rs patches PATH from the user's login shell, but
 /// it silently fails on some setups. This function caches the resolved path for the
@@ -28,6 +33,7 @@ pub(crate) fn resolve_openclaw_bin() -> &'static str {
     BIN.get_or_init(|| {
         // First: check if "openclaw" is already in PATH (fix_path_env worked)
         if find_in_path("openclaw") {
+            OPENCLAW_ENV_PATH.get_or_init(|| None);
             return "openclaw".to_string();
         }
         // Fallback: probe well-known locations
@@ -53,24 +59,46 @@ pub(crate) fn resolve_openclaw_bin() -> &'static str {
         }
         for candidate in candidates.iter().chain(nvm_candidates.iter()) {
             if Path::new(candidate).is_file() {
-                // Prepend its directory to PATH so child processes benefit.
-                // Called exactly once via OnceLock, before other threads read PATH.
-                if let Some(dir) = Path::new(candidate).parent() {
-                    if let Ok(current_path) = std::env::var("PATH") {
-                        let dir_str = dir.to_string_lossy();
-                        let already_in_path = std::env::split_paths(&current_path)
-                            .any(|p| p == Path::new(dir_str.as_ref()));
-                        if !already_in_path {
-                            std::env::set_var("PATH", format!("{dir_str}:{current_path}"));
-                        }
+                // Build an enriched PATH string for child processes instead of
+                // mutating the global env (which is unsafe in multi-threaded Rust).
+                OPENCLAW_ENV_PATH.get_or_init(|| {
+                    let dir = Path::new(candidate).parent()?;
+                    let current_path = std::env::var("PATH").ok()?;
+                    let dir_str = dir.to_string_lossy();
+                    let already_in_path = std::env::split_paths(&current_path)
+                        .any(|p| p == Path::new(dir_str.as_ref()));
+                    if already_in_path {
+                        None
+                    } else {
+                        Some(format!("{dir_str}:{current_path}"))
                     }
-                }
+                });
                 return candidate.clone();
             }
         }
+        OPENCLAW_ENV_PATH.get_or_init(|| None);
         // Last resort: return bare name and let the OS error propagate
         "openclaw".to_string()
     })
+}
+
+/// Returns the enriched PATH string that should be passed to child processes
+/// via `Command::env("PATH", path)`, or `None` if no PATH modification was needed.
+/// Must be called after `resolve_openclaw_bin()` (which is guaranteed since callers
+/// use the binary path to construct Commands).
+pub(crate) fn openclaw_env_path() -> Option<&'static str> {
+    OPENCLAW_ENV_PATH.get().and_then(|o| o.as_deref())
+}
+
+/// Create a `Command` for the openclaw binary with the enriched PATH applied.
+/// This is the preferred way to spawn openclaw processes — it avoids the need to
+/// manually chain `.env("PATH", ...)` at every call site.
+pub(crate) fn openclaw_command() -> Command {
+    let mut cmd = Command::new(resolve_openclaw_bin());
+    if let Some(path) = openclaw_env_path() {
+        cmd.env("PATH", path);
+    }
+    cmd
 }
 
 /// Check if a binary exists in PATH without executing it.
@@ -435,7 +463,7 @@ pub fn get_status_extra() -> Result<StatusExtra, String> {
         let mut cache = OPENCLAW_VERSION_CACHE.lock().unwrap();
         if cache.is_none() {
             *cache = Some(
-                std::process::Command::new(resolve_openclaw_bin())
+                openclaw_command()
                     .arg("--version")
                     .output()
                     .ok()
@@ -1981,7 +2009,8 @@ fn run_openclaw_raw(args: &[&str]) -> Result<OpenclawCommandOutput, String> {
 }
 
 fn run_openclaw_raw_timeout(args: &[&str], timeout_secs: Option<u64>) -> Result<OpenclawCommandOutput, String> {
-    let mut child = Command::new(resolve_openclaw_bin())
+    let mut cmd = openclaw_command();
+    let mut child = cmd
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -5557,7 +5586,7 @@ pub fn get_cron_runs(job_id: String, limit: Option<usize>) -> Result<Vec<Value>,
 #[tauri::command]
 pub async fn trigger_cron_job(job_id: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let output = std::process::Command::new(resolve_openclaw_bin())
+        let output = openclaw_command()
             .args(["cron", "run", &job_id])
             .output()
             .map_err(|e| format!("Failed to run openclaw: {e}"))?;
@@ -5575,7 +5604,7 @@ pub async fn trigger_cron_job(job_id: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn delete_cron_job(job_id: String) -> Result<String, String> {
-    let output = std::process::Command::new(resolve_openclaw_bin())
+    let output = openclaw_command()
         .args(["cron", "remove", &job_id])
         .output()
         .map_err(|e| format!("Failed to run openclaw: {e}"))?;

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -25,7 +24,7 @@ pub fn run_openclaw_with_env(
     args: &[&str],
     env: Option<&HashMap<String, String>>,
 ) -> Result<CliOutput, String> {
-    let mut cmd = Command::new(crate::commands::resolve_openclaw_bin());
+    let mut cmd = crate::commands::openclaw_command();
     cmd.args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
