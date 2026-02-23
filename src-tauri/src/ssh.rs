@@ -38,10 +38,7 @@ pub struct SftpEntry {
     pub size: u64,
 }
 
-/// Shell-quote a string using single quotes with proper escaping.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+use crate::util::shell_quote;
 
 /// Check if an SSH exec error is likely transient (worth retrying) vs permanent.
 fn is_transient_ssh_error(err: &str) -> bool {

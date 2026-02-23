@@ -71,6 +71,7 @@ pub mod node_client;
 pub mod recipe;
 pub mod path_fix;
 pub mod ssh;
+pub(crate) mod util;
 
 pub fn run() {
     tauri::Builder::default()

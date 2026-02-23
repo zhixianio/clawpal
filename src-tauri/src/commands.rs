@@ -12,11 +12,7 @@ use crate::doctor::{apply_auto_fixes, run_doctor, DoctorReport};
 use crate::history::{add_snapshot, list_snapshots, read_snapshot};
 use crate::models::resolve_paths;
 use crate::ssh::{SshConnectionPool, SshHostConfig, SshExecResult, SftpEntry};
-
-/// Escape a string for safe inclusion in a single-quoted shell argument.
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
+use crate::util::shell_quote;
 
 /// Enriched PATH for child processes. Stored here instead of mutating the global
 /// env via `std::env::set_var`, which is unsafe in multi-threaded Rust (since 1.83).
@@ -1385,7 +1381,7 @@ pub async fn remote_setup_agent_identity(
 
     // Write via SSH
     let ws = if workspace.starts_with("~/") { workspace.to_string() } else { format!("~/{workspace}") };
-    pool.exec(&host_id, &format!("mkdir -p {}", shell_escape(&ws))).await?;
+    pool.exec(&host_id, &format!("mkdir -p {}", shell_quote(&ws))).await?;
     let identity_path = format!("{}/IDENTITY.md", ws);
     pool.sftp_write(&host_id, &identity_path, &content).await?;
 
@@ -4041,7 +4037,7 @@ pub async fn remote_backup_before_upgrade(
         .map(|dt| dt.format("%Y-%m-%d_%H%M%S").to_string())
         .unwrap_or_else(|| format!("{now_secs}"));
 
-    let escaped_name = shell_escape(&name);
+    let escaped_name = shell_quote(&name);
     let cmd = format!(
         concat!(
             "set -e; ",
@@ -4144,7 +4140,7 @@ pub async fn remote_restore_from_backup(
     host_id: String,
     backup_name: String,
 ) -> Result<String, String> {
-    let escaped_name = shell_escape(&backup_name);
+    let escaped_name = shell_quote(&backup_name);
     let cmd = format!(
         concat!(
             "set -e; ",
@@ -4172,7 +4168,7 @@ pub async fn remote_delete_backup(
     host_id: String,
     backup_name: String,
 ) -> Result<bool, String> {
-    let escaped_name = shell_escape(&backup_name);
+    let escaped_name = shell_quote(&backup_name);
     let cmd = format!(
         "BDIR=\"$HOME/.clawpal/backups/\"{name}; [ -d \"$BDIR\" ] && rm -rf \"$BDIR\" && echo 'deleted' || echo 'not_found'",
         name = escaped_name
@@ -5655,7 +5651,7 @@ pub async fn remote_get_cron_runs(pool: State<'_, SshConnectionPool>, host_id: S
 
 #[tauri::command]
 pub async fn remote_trigger_cron_job(pool: State<'_, SshConnectionPool>, host_id: String, job_id: String) -> Result<String, String> {
-    let result = pool.exec_login(&host_id, &format!("openclaw cron run {}", shell_escape(&job_id))).await?;
+    let result = pool.exec_login(&host_id, &format!("openclaw cron run {}", shell_quote(&job_id))).await?;
     if result.exit_code == 0 {
         Ok(result.stdout)
     } else {
@@ -5665,7 +5661,7 @@ pub async fn remote_trigger_cron_job(pool: State<'_, SshConnectionPool>, host_id
 
 #[tauri::command]
 pub async fn remote_delete_cron_job(pool: State<'_, SshConnectionPool>, host_id: String, job_id: String) -> Result<String, String> {
-    let result = pool.exec_login(&host_id, &format!("openclaw cron remove {}", shell_escape(&job_id))).await?;
+    let result = pool.exec_login(&host_id, &format!("openclaw cron remove {}", shell_quote(&job_id))).await?;
     if result.exit_code == 0 {
         Ok(result.stdout)
     } else {
