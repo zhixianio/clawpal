@@ -2128,8 +2128,11 @@ fn parse_resolve_name_map(stdout: &str) -> Option<HashMap<String, String>> {
 }
 
 fn extract_version_from_text(input: &str) -> Option<String> {
-    let re = regex::Regex::new(r"\d+\.\d+(?:\.\d+){1,3}(?:[-+._a-zA-Z0-9]*)?").ok()?;
-    re.find(input).map(|mat| mat.as_str().to_string())
+    use std::sync::LazyLock;
+    static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\d+\.\d+(?:\.\d+){1,3}(?:[-+._a-zA-Z0-9]*)?").unwrap()
+    });
+    RE.find(input).map(|mat| mat.as_str().to_string())
 }
 
 fn compare_semver(installed: &str, latest: Option<&str>) -> bool {

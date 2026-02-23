@@ -71,8 +71,11 @@ pub fn apply_auto_fixes(paths: &OpenClawPaths, issue_ids: &[String]) -> Vec<Stri
 }
 
 fn clean_and_write_json(paths: &OpenClawPaths, text: &str) -> Result<(), String> {
-    let trailing = Regex::new(r",(\s*[}\]])").map_err(|e| e.to_string())?;
-    let normalized = trailing.replace_all(text, "$1");
+    use std::sync::LazyLock;
+    static TRAILING: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r",(\s*[}\]])").unwrap()
+    });
+    let normalized = TRAILING.replace_all(text, "$1");
     crate::config_io::write_text(&paths.config_path, normalized.as_ref())
 }
 
