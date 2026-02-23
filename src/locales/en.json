@@ -40,6 +40,7 @@
   "home.fallbackModels": "Fallback Models",
   "home.addFallback": "Add fallback",
   "home.noFallbacks": "No fallback models configured",
+  "home.duplicateInstalls": "Multiple openclaw installations detected — this may cause version conflicts:",
   "home.notSet": "not set",
   "home.defaultModelOption": "default model",
   "home.agents": "Agents",

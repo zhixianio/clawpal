@@ -40,6 +40,7 @@
   "home.fallbackModels": "备用模型",
   "home.addFallback": "添加备用",
   "home.noFallbacks": "未配置备用模型",
+  "home.duplicateInstalls": "检测到多个 openclaw 安装，可能导致版本冲突：",
   "home.notSet": "未设置",
   "home.defaultModelOption": "默认模型",
   "home.agents": "Agent",

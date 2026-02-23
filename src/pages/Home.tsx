@@ -283,6 +283,17 @@ export function Home({
                 </>
               )}
             </div>
+            {status?.duplicateInstalls && status.duplicateInstalls.length > 0 && (
+              <>
+                <span />
+                <div className="col-span-1 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs">
+                  <p className="font-medium text-amber-800 dark:text-amber-300 mb-1">{t('home.duplicateInstalls')}</p>
+                  <ul className="space-y-0.5 font-mono text-amber-700 dark:text-amber-400">
+                    {status.duplicateInstalls.map((entry, i) => <li key={i}>{entry}</li>)}
+                  </ul>
+                </div>
+              </>
+            )}
 
             <span className="text-sm text-muted-foreground font-medium">{t('home.defaultModel')}</span>
             <div className="max-w-xs">

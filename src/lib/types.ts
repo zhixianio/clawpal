@@ -224,6 +224,7 @@ export interface InstanceStatus {
   globalDefaultModel?: string;
   fallbackModels?: string[];
   openclawVersion?: string;
+  duplicateInstalls?: string[];
 }
 
 export interface Binding {

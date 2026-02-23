@@ -371,6 +371,8 @@ pub struct StatusLight {
     pub global_default_model: Option<String>,
     pub fallback_models: Vec<String>,
     pub openclaw_version: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_installs: Vec<String>,
 }
 
 /// Clear cached openclaw version — call after upgrade so status shows new version.
@@ -436,6 +438,7 @@ pub fn get_status_light() -> Result<StatusLight, String> {
         global_default_model,
         fallback_models,
         openclaw_version,
+        duplicate_installs: Vec::new(),
     })
 }
 
@@ -4340,12 +4343,39 @@ pub async fn remote_get_system_status(pool: State<'_, SshConnectionPool>, host_i
         Err(_) => false,
     };
 
+    // 4. Detect duplicate openclaw installations (different paths/versions).
+    // Scans PATH via `which -a` plus common install locations, deduplicates by
+    // resolved symlink target, and reports path:version for each unique binary.
+    // Only populated when >1 unique binary is found (indicates version conflict).
+    let detect_duplicates_script = concat!(
+        "seen=''; for p in $(which -a openclaw 2>/dev/null) ",
+        "\"$HOME/.npm-global/bin/openclaw\" \"/usr/local/bin/openclaw\" \"/opt/homebrew/bin/openclaw\"; do ",
+        "[ -x \"$p\" ] || continue; ",
+        "rp=$(readlink -f \"$p\" 2>/dev/null || echo \"$p\"); ",
+        "echo \"$seen\" | grep -qF \"$rp\" && continue; ",
+        "seen=\"$seen $rp\"; ",
+        "v=$($p --version 2>/dev/null || echo 'unknown'); ",
+        "echo \"$p: $v\"; ",
+        "done"
+    );
+    let duplicate_installs = match pool.exec_login(&host_id, detect_duplicates_script).await {
+        Ok(r) => {
+            let entries: Vec<String> = r.stdout.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            if entries.len() > 1 { entries } else { Vec::new() }
+        }
+        Err(_) => Vec::new(),
+    };
+
     Ok(StatusLight {
         healthy,
         active_agents,
         global_default_model,
         fallback_models,
         openclaw_version,
+        duplicate_installs,
     })
 }
 
