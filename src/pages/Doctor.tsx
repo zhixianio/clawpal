@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { useInstance } from "@/lib/instance-context";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
-import type { DoctorReport, SshHost } from "@/lib/types";
+import type { SshHost } from "@/lib/types";
 import {
   Card,
   CardHeader,
@@ -28,13 +28,8 @@ interface DoctorProps {
 export function Doctor({ sshHosts }: DoctorProps) {
   const { t } = useTranslation();
   const ua = useApi();
-  const { instanceId, isRemote, isConnected } = useInstance();
+  const { instanceId, isRemote } = useInstance();
   const doctor = useDoctorAgent();
-
-  // Simple state replacing useReducer
-  const [report, setReport] = useState<DoctorReport | null>(null);
-  const [message, setMessage] = useState("");
-  const [refreshing, setRefreshing] = useState(false);
 
   // Agent source: an instance id ("local" / host uuid) or "remote" (hosted doctor)
   const [agentSource, setAgentSource] = useState("remote");
@@ -63,26 +58,6 @@ export function Doctor({ sshHosts }: DoctorProps) {
       doctor.setTarget("local");
     }
   }, [instanceId, isRemote, doctor.setTarget]);
-
-  function runDoctorCmd(): Promise<DoctorReport> {
-    return ua.runDoctor().then((r) => r);
-  }
-
-  function fixIssuesCmd(ids: string[]) {
-    return ua.fixIssues(ids);
-  }
-
-  // Load report on instance change
-  useEffect(() => {
-    setReport(null);
-    setMessage("");
-    if (!ua.isRemote || ua.isConnected) {
-      runDoctorCmd()
-        .then(setReport)
-        .catch(() => setMessage(t("doctor.failedRunDoctor")));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ua.instanceId, ua.isRemote, ua.isConnected]);
 
   const handleStartDiagnosis = async () => {
     setDiagnosing(true);
@@ -144,20 +119,6 @@ export function Doctor({ sshHosts }: DoctorProps) {
     doctor.reset();
   };
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    runDoctorCmd()
-      .then(setReport)
-      .catch(() => setMessage(t("doctor.refreshFailed")))
-      .finally(() => setRefreshing(false));
-  };
-
-  const autoFixable = report
-    ? report.issues.filter((i) => i.autoFixable).map((i) => i.id)
-    : [];
-
-  const issueCount = report ? report.issues.length : 0;
-
   // Logs helpers
   const fetchLog = (source: "clawpal" | "gateway", which: "app" | "error") => {
     setLogsLoading(true);
@@ -195,19 +156,7 @@ export function Doctor({ sshHosts }: DoctorProps) {
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <CardTitle>{t("doctor.agentSource")}</CardTitle>
-              {report && (
-                <span className="text-sm text-muted-foreground">
-                  {t("doctor.healthSummary", { score: report.score })}
-                  {issueCount > 0 && (
-                    <Badge variant="secondary" className="ml-1.5 text-xs">
-                      {issueCount}
-                    </Badge>
-                  )}
-                </span>
-              )}
-            </div>
+            <CardTitle>{t("doctor.agentSource")}</CardTitle>
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="sm" onClick={() => openLogs("clawpal")}>
                 {t("doctor.clawpalLogs")}
@@ -215,62 +164,10 @@ export function Doctor({ sshHosts }: DoctorProps) {
               <Button variant="ghost" size="sm" onClick={() => openLogs("gateway")}>
                 {t("doctor.gatewayLogs")}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleRefresh}
-                disabled={refreshing}
-              >
-                {refreshing ? t("doctor.refreshing") : t("doctor.refresh")}
-              </Button>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          {/* Health issues (compact) */}
-          {report && report.issues.length > 0 && (
-            <div className="mb-4 space-y-1.5">
-              {report.issues.map((issue) => (
-                <div key={issue.id} className="flex items-center gap-2 text-sm">
-                  {issue.severity === "error" && <Badge variant="destructive">ERROR</Badge>}
-                  {issue.severity === "warn" && <Badge variant="secondary">WARN</Badge>}
-                  {issue.severity === "info" && <Badge variant="outline">INFO</Badge>}
-                  <span>{issue.message}</span>
-                  {issue.autoFixable && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        fixIssuesCmd([issue.id])
-                          .then(() => runDoctorCmd())
-                          .then(setReport)
-                          .catch(() => setMessage(t("doctor.failedFix")));
-                      }}
-                    >
-                      {t("doctor.fix")}
-                    </Button>
-                  )}
-                </div>
-              ))}
-              {autoFixable.length > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    fixIssuesCmd(autoFixable)
-                      .then(() => runDoctorCmd())
-                      .then(setReport)
-                      .catch(() => setMessage(t("doctor.failedFixAll")));
-                  }}
-                >
-                  {t("doctor.fixAll")}
-                </Button>
-              )}
-            </div>
-          )}
-
-          {message && <p className="text-sm text-muted-foreground mb-3">{message}</p>}
-
           {!doctor.connected && doctor.messages.length === 0 ? (
             <>
               {/* Source radio — instance gateways (excluding current target) + remote doctor */}
