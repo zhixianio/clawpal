@@ -16,12 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CreateAgentDialog, type CreateAgentResult } from "@/components/CreateAgentDialog";
-
-interface AgentGroup {
-  identity: string;
-  emoji?: string;
-  agents: AgentOverview[];
-}
+import { groupAgents } from "@/lib/agent-utils";
 
 const PLATFORM_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -29,18 +24,6 @@ const PLATFORM_LABELS: Record<string, string> = {
   feishu: "Feishu",
   qbot: "QBot",
 };
-
-function groupAgents(agents: AgentOverview[]): AgentGroup[] {
-  const map = new Map<string, AgentGroup>();
-  for (const a of agents) {
-    const key = a.workspace || a.id;
-    if (!map.has(key)) {
-      map.set(key, { identity: a.name || a.id, emoji: a.emoji, agents: [] });
-    }
-    map.get(key)!.agents.push(a);
-  }
-  return Array.from(map.values());
-}
 
 function extractPlatform(path: string): string | null {
   const parts = path.split(".");
