@@ -155,8 +155,9 @@ mod inner {
                 .await
                 .unwrap_or_else(|_| "/root".to_string());
 
-            // Close any existing connection for this id before inserting the new one.
-            // This prevents leaking ControlMaster processes on the remote.
+            // Close any existing connection for this id AND insert the new one
+            // under a single lock to prevent a concurrent connect() from racing
+            // in between removal and insertion (which would leak sessions).
             {
                 let mut pool = self.connections.lock().await;
                 if let Some(old) = pool.remove(&config.id) {
@@ -181,10 +182,8 @@ mod inner {
                         }
                     }
                 }
+                pool.insert(config.id.clone(), SshConnection { session: Arc::new(session), home_dir, config: config.clone() });
             }
-
-            let mut pool = self.connections.lock().await;
-            pool.insert(config.id.clone(), SshConnection { session: Arc::new(session), home_dir, config: config.clone() });
             Ok(())
         }
 
