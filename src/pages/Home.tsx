@@ -103,6 +103,7 @@ export function Home({
   const [statusSettled, setStatusSettled] = useState(false);
   const retriesRef = useRef(0);
   const remoteErrorShownRef = useRef(false);
+  const remoteUnhealthyStreakRef = useRef(0);
 
   const statusInFlightRef = useRef(false);
 
@@ -112,12 +113,24 @@ export function Home({
     if (statusInFlightRef.current) return; // Prevent overlapping polls
     statusInFlightRef.current = true;
     ua.getInstanceStatus().then((s) => {
+      let resolvedHealthy = s.healthy;
+      if (ua.isRemote) {
+        if (s.healthy) {
+          remoteUnhealthyStreakRef.current = 0;
+        } else {
+          remoteUnhealthyStreakRef.current += 1;
+          if (remoteUnhealthyStreakRef.current < 2) {
+            resolvedHealthy = true;
+          }
+        }
+      }
+      const next = { ...s, healthy: resolvedHealthy };
       // If remote config fetch failed (agents=0, no model), keep previous good data
       // rather than flashing "unset" — only update health which is independent.
       if (ua.isRemote && s.activeAgents === 0 && !s.globalDefaultModel) {
-        setStatus((prev) => prev ? { ...prev, healthy: s.healthy } : s);
+        setStatus((prev) => prev ? { ...prev, healthy: resolvedHealthy } : next);
       } else {
-        setStatus(s);
+        setStatus(next);
       }
       if (ua.isRemote) {
         setStatusSettled(true);
@@ -149,6 +162,7 @@ export function Home({
 
   useEffect(() => {
     remoteErrorShownRef.current = false;
+    remoteUnhealthyStreakRef.current = 0;
     fetchStatus();
     // Poll fast (2s) while not settled, slow (10s) once settled; remote always slow
     const interval = setInterval(fetchStatus, ua.isRemote ? 30000 : (statusSettled ? 10000 : 2000));

@@ -4315,6 +4315,8 @@ pub async fn remote_get_system_status(pool: State<'_, SshConnectionPool>, host_i
         pool.exec(&host_id, "pgrep -f '[o]penclaw-gateway' >/dev/null 2>&1"),
     );
 
+    let config_ok = matches!(&config_res, Ok(output) if output.exit_code == 0);
+
     let (active_agents, global_default_model, fallback_models) = match config_res {
         Ok(ref output) if output.exit_code == 0 => {
             let cfg: Value = crate::cli_runner::parse_json_output(output).unwrap_or(Value::Null);
@@ -4335,8 +4337,12 @@ pub async fn remote_get_system_status(pool: State<'_, SshConnectionPool>, host_i
         _ => (0, None, Vec::new()),
     };
 
+    // Avoid false negatives from transient SSH exec failures:
+    // if health probe fails but config fetch in the same cycle succeeded,
+    // keep health as true instead of flipping to unhealthy.
     let healthy = match pgrep_res {
         Ok(r) => r.exit_code == 0,
+        Err(_) if config_ok => true,
         Err(_) => false,
     };
 
