@@ -28,7 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { InstanceStatus, StatusExtra, AgentOverview, Recipe, BackupInfo, ModelProfile } from "../lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
 import { useApi } from "@/lib/use-api";
-import { groupAgents, findProfileIdByModelValue } from "@/lib/agent-utils";
+import { groupAgents, findProfileIdByModelValue, profileToModelValue } from "@/lib/agent-utils";
 
 export function Home({
   onCook,
@@ -63,9 +63,7 @@ export function Home({
     if (!profileId) return null;
     const profile = modelProfiles.find((p) => p.id === profileId);
     if (!profile) return profileId;
-    return profile.model.includes("/")
-      ? profile.model
-      : `${profile.provider}/${profile.model}`;
+    return profileToModelValue(profile);
   };
 
   // Skip polling refreshes while there are queued commands (to preserve optimistic UI)

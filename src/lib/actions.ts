@@ -1,5 +1,6 @@
 import { api } from "./api";
 import type { ModelProfile } from "./types";
+import { profileToModelValue } from "./agent-utils";
 
 export interface ActionContext {
   instanceId: string;
@@ -17,9 +18,7 @@ async function resolveProfileToModelValue(
     : await api.listModelProfiles();
   const profile = profiles.find((p) => p.id === profileId);
   if (!profile) return profileId; // fallback: use raw string
-  return profile.model.includes("/")
-    ? profile.model
-    : `${profile.provider}/${profile.model}`;
+  return profileToModelValue(profile);
 }
 
 export interface ActionDef {

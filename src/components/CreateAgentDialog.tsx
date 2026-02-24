@@ -21,6 +21,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import type { ModelProfile } from "../lib/types";
+import { profileToModelValue } from "@/lib/agent-utils";
 
 export interface CreateAgentResult {
   agentId: string;
@@ -73,9 +74,7 @@ export function CreateAgentDialog({
         if (!profileId || profileId === "__default__") return undefined;
         const profile = modelProfiles.find((p) => p.id === profileId);
         if (!profile) return profileId;
-        return profile.model.includes("/")
-          ? profile.model
-          : `${profile.provider}/${profile.model}`;
+        return profileToModelValue(profile);
       };
       const modelValue = resolveModelValue(model || undefined);
 

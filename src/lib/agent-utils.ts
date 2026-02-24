@@ -1,5 +1,17 @@
 import type { AgentOverview, ModelProfile } from "./types";
 
+export function profileToModelValue(profile: Pick<ModelProfile, "provider" | "model">): string {
+  const provider = profile.provider.trim();
+  const model = profile.model.trim();
+  if (!provider) return model;
+  if (!model) return `${provider}/`;
+  const normalizedPrefix = `${provider.toLowerCase()}/`;
+  if (model.toLowerCase().startsWith(normalizedPrefix)) {
+    return model;
+  }
+  return `${provider}/${model}`;
+}
+
 /**
  * Find the profile ID whose model value matches the given raw model string.
  * Handles normalization (case-insensitive, with or without provider/ prefix).
@@ -12,7 +24,7 @@ export function findProfileIdByModelValue(
   if (!modelValue) return null;
   const normalized = modelValue.toLowerCase();
   for (const p of profiles) {
-    const profileVal = p.model.includes("/") ? p.model : `${p.provider}/${p.model}`;
+    const profileVal = profileToModelValue(p);
     if (profileVal.toLowerCase() === normalized || p.model.toLowerCase() === normalized) {
       return p.id;
     }
