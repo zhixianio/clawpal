@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { check } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
@@ -112,6 +112,7 @@ export function App() {
   }, []);
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const sshHealthFailStreakRef = useRef<Record<string, number>>({});
 
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
     const id = ++toastIdCounter;
@@ -129,8 +130,9 @@ export function App() {
   const handleInstanceSelect = useCallback((id: string) => {
     setActiveInstance(id);
     if (id !== "local") {
-      // Check if backend still has a live connection before reconnecting
-      setConnectionStatus((prev) => ({ ...prev, [id]: "disconnected" }));
+      // Check if backend still has a live connection before reconnecting.
+      // Do not pre-mark as disconnected — transient status failures would
+      // otherwise gray out the whole remote UI.
       api.sshStatus(id)
         .then((status) => {
           if (status === "connected") {
@@ -173,23 +175,33 @@ export function App() {
         const status = await api.sshStatus(hostId);
         if (cancelled) return;
         if (status === "connected") {
+          sshHealthFailStreakRef.current[hostId] = 0;
           setConnectionStatus((prev) => ({ ...prev, [hostId]: "connected" }));
           return;
         }
-        setConnectionStatus((prev) => ({ ...prev, [hostId]: "disconnected" }));
         try {
           await api.sshConnect(hostId);
           if (!cancelled) {
+            sshHealthFailStreakRef.current[hostId] = 0;
             setConnectionStatus((prev) => ({ ...prev, [hostId]: "connected" }));
           }
         } catch {
           if (!cancelled) {
-            setConnectionStatus((prev) => ({ ...prev, [hostId]: "error" }));
+            const streak = (sshHealthFailStreakRef.current[hostId] || 0) + 1;
+            sshHealthFailStreakRef.current[hostId] = streak;
+            // Avoid flipping UI to disconnected/error on a single transient failure.
+            if (streak >= 2) {
+              setConnectionStatus((prev) => ({ ...prev, [hostId]: "error" }));
+            }
           }
         }
       } catch {
         if (!cancelled) {
-          setConnectionStatus((prev) => ({ ...prev, [hostId]: "error" }));
+          const streak = (sshHealthFailStreakRef.current[hostId] || 0) + 1;
+          sshHealthFailStreakRef.current[hostId] = streak;
+          if (streak >= 2) {
+            setConnectionStatus((prev) => ({ ...prev, [hostId]: "error" }));
+          }
         }
       } finally {
         inFlight = false;
@@ -204,9 +216,15 @@ export function App() {
     };
   }, [activeInstance, isRemote]);
 
-  // Load Discord data + extract profiles on startup or instance change
+  // Clear cached Discord channels only when switching instance.
+  // Avoid clearing on transient connection-status changes, which causes
+  // Channels page to flicker between "no cache" and loaded data.
   useEffect(() => {
     setDiscordGuildChannels([]);
+  }, [activeInstance]);
+
+  // Load Discord data + extract profiles on startup or connection ready
+  useEffect(() => {
     if (activeInstance === "local") {
       if (!localStorage.getItem("clawpal_profiles_extracted")) {
         api.extractModelProfilesFromConfig()
