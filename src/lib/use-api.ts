@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useInstance } from "./instance-context";
 import { api } from "./api";
 
@@ -91,6 +92,19 @@ function callWithReadCache<TResult>(
   return request;
 }
 
+function emitRemoteInvokeMetric(payload: Record<string, unknown>) {
+  const line = `[metrics][remote_invoke] ${JSON.stringify(payload)}`;
+  // fire-and-forget: metrics collection must not affect user flow
+  void invoke("log_app_event", { message: line }).catch(() => {});
+}
+
+function shouldLogRemoteInvokeMetric(ok: boolean, elapsedMs: number): boolean {
+  // Always log failures and slow calls; sample a small percentage of fast-success calls.
+  if (!ok) return true;
+  if (elapsedMs >= 1500) return true;
+  return Math.random() < 0.05;
+}
+
 /**
  * Returns a unified API object that auto-dispatches to local or remote
  * based on the current instance context. Remote calls automatically
@@ -103,6 +117,7 @@ export function useApi() {
     <TArgs extends unknown[], TResult>(
       localFn: (...args: TArgs) => Promise<TResult>,
       remoteFn: (hostId: string, ...args: TArgs) => Promise<TResult>,
+      method?: string,
     ) => {
       return (...args: TArgs): Promise<TResult> => {
         if (isRemote) {
@@ -111,7 +126,35 @@ export function useApi() {
               new Error("Not connected to remote instance"),
             );
           }
-          return remoteFn(instanceId, ...args);
+          const startedAt = Date.now();
+          return remoteFn(instanceId, ...args)
+            .then((result) => {
+              const elapsedMs = Date.now() - startedAt;
+              if (shouldLogRemoteInvokeMetric(true, elapsedMs)) {
+              emitRemoteInvokeMetric({
+                method: method || "unknown",
+                instanceId,
+                argsCount: args.length,
+                ok: true,
+                elapsedMs,
+              });
+              }
+              return result;
+            })
+            .catch((error) => {
+              const elapsedMs = Date.now() - startedAt;
+              if (shouldLogRemoteInvokeMetric(false, elapsedMs)) {
+              emitRemoteInvokeMetric({
+                method: method || "unknown",
+                instanceId,
+                argsCount: args.length,
+                ok: false,
+                elapsedMs,
+                error: String(error),
+              });
+              }
+              throw error;
+            });
         }
         return localFn(...args);
       };
@@ -126,7 +169,7 @@ export function useApi() {
       localFn: (...args: TArgs) => Promise<TResult>,
       remoteFn: (hostId: string, ...args: TArgs) => Promise<TResult>,
     ) => {
-      const call = dispatch(localFn, remoteFn);
+      const call = dispatch(localFn, remoteFn, method);
       return (...args: TArgs): Promise<TResult> =>
         callWithReadCache(instanceId, method, args, ttlMs, () => call(...args));
     },

@@ -36,6 +36,7 @@ use crate::commands::{
     get_watchdog_status, deploy_watchdog, start_watchdog, stop_watchdog, uninstall_watchdog,
     remote_get_watchdog_status, remote_deploy_watchdog, remote_start_watchdog, remote_stop_watchdog, remote_uninstall_watchdog,
     read_app_log, read_error_log, read_gateway_log, read_gateway_error_log,
+    log_app_event,
     remote_read_app_log, remote_read_error_log, remote_read_gateway_log, remote_read_gateway_error_log,
 };
 use crate::bridge_client::BridgeClient;
@@ -193,6 +194,7 @@ pub fn run() {
             read_error_log,
             read_gateway_log,
             read_gateway_error_log,
+            log_app_event,
             remote_read_app_log,
             remote_read_error_log,
             remote_read_gateway_log,

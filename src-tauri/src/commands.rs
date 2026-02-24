@@ -769,6 +769,16 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
         let discord_cfg = cfg
             .get("channels")
             .and_then(|c| c.get("discord"));
+        let configured_single_guild_id = discord_cfg
+            .and_then(|d| d.get("guilds"))
+            .and_then(Value::as_object)
+            .and_then(|guilds| {
+                if guilds.len() == 1 {
+                    guilds.keys().next().cloned()
+                } else {
+                    None
+                }
+            });
 
         // Extract bot token: top-level first, then fall back to first account token
         let bot_token = discord_cfg
@@ -872,6 +882,61 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
                     channel_id: channel_id.clone(),
                     channel_name: channel_id.clone(),
                 });
+            }
+        }
+
+        // Fallback A: if we have token + guild ids, fetch channels from Discord REST directly.
+        // This avoids hard-failing when CLI rejects config due non-critical schema drift.
+        if channel_ids.is_empty() {
+            let configured_guild_ids = collect_discord_config_guild_ids(discord_cfg);
+            if let Some(token) = &bot_token {
+                for guild_id in &configured_guild_ids {
+                    if let Ok(channels) = fetch_discord_guild_channels(token, guild_id) {
+                        for (channel_id, channel_name) in channels {
+                            if entries.iter().any(|e| e.guild_id == *guild_id && e.channel_id == channel_id) {
+                                continue;
+                            }
+                            channel_ids.push(channel_id.clone());
+                            entries.push(DiscordGuildChannel {
+                                guild_id: guild_id.clone(),
+                                guild_name: guild_id.clone(),
+                                channel_id,
+                                channel_name,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback B: query channel ids from directory and keep compatibility
+        // with existing cache shape when config has no explicit channel map.
+        if channel_ids.is_empty() {
+            if let Ok(output) = run_openclaw_raw(&[
+                "directory",
+                "groups",
+                "list",
+                "--channel",
+                "discord",
+                "--json",
+            ]) {
+                for channel_id in parse_directory_group_channel_ids(&output.stdout) {
+                    if entries.iter().any(|e| e.channel_id == channel_id) {
+                        continue;
+                    }
+                    let (guild_id, guild_name) = if let Some(gid) = configured_single_guild_id.clone() {
+                        (gid.clone(), gid)
+                    } else {
+                        ("discord".to_string(), "Discord".to_string())
+                    };
+                    channel_ids.push(channel_id.clone());
+                    entries.push(DiscordGuildChannel {
+                        guild_id,
+                        guild_name,
+                        channel_id: channel_id.clone(),
+                        channel_name: channel_id,
+                    });
+                }
             }
         }
 
@@ -2101,6 +2166,92 @@ fn parse_resolve_name_map(stdout: &str) -> Option<HashMap<String, String>> {
     Some(map)
 }
 
+/// Parse `openclaw directory groups list --json` output into channel ids.
+fn parse_directory_group_channel_ids(stdout: &str) -> Vec<String> {
+    let json_str = match extract_last_json_array(stdout) {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    let parsed: Vec<Value> = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut ids = Vec::new();
+    for item in parsed {
+        let raw = item.get("id").and_then(Value::as_str).unwrap_or("");
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let normalized = trimmed
+            .strip_prefix("channel:")
+            .unwrap_or(trimmed)
+            .trim()
+            .to_string();
+        if normalized.is_empty() || ids.contains(&normalized) {
+            continue;
+        }
+        ids.push(normalized);
+    }
+    ids
+}
+
+fn collect_discord_config_guild_ids(discord_cfg: Option<&Value>) -> Vec<String> {
+    let mut guild_ids = Vec::new();
+    if let Some(guilds) = discord_cfg
+        .and_then(|d| d.get("guilds"))
+        .and_then(Value::as_object)
+    {
+        for guild_id in guilds.keys() {
+            if !guild_ids.contains(guild_id) {
+                guild_ids.push(guild_id.clone());
+            }
+        }
+    }
+    if let Some(accounts) = discord_cfg
+        .and_then(|d| d.get("accounts"))
+        .and_then(Value::as_object)
+    {
+        for account in accounts.values() {
+            if let Some(guilds) = account.get("guilds").and_then(Value::as_object) {
+                for guild_id in guilds.keys() {
+                    if !guild_ids.contains(guild_id) {
+                        guild_ids.push(guild_id.clone());
+                    }
+                }
+            }
+        }
+    }
+    guild_ids
+}
+
+#[cfg(test)]
+mod discord_directory_parse_tests {
+    use super::parse_directory_group_channel_ids;
+
+    #[test]
+    fn parse_directory_groups_extracts_channel_ids() {
+        let stdout = r#"
+[plugins] example
+[
+  {"kind":"group","id":"channel:123"},
+  {"kind":"group","id":"channel:456"},
+  {"kind":"group","id":"channel:123"},
+  {"kind":"group","id":"  channel:789  "}
+]
+"#;
+        let ids = parse_directory_group_channel_ids(stdout);
+        assert_eq!(ids, vec!["123", "456", "789"]);
+    }
+
+    #[test]
+    fn parse_directory_groups_handles_missing_json() {
+        let stdout = "not json";
+        let ids = parse_directory_group_channel_ids(stdout);
+        assert!(ids.is_empty());
+    }
+}
+
 fn extract_version_from_text(input: &str) -> Option<String> {
     let re = regex::Regex::new(r"\d+\.\d+(?:\.\d+){1,3}(?:[-+._a-zA-Z0-9]*)?").ok()?;
     re.find(input).map(|mat| mat.as_str().to_string())
@@ -2404,6 +2555,44 @@ fn fetch_discord_guild_name(bot_token: &str, guild_id: &str) -> Result<String, S
         .and_then(Value::as_str)
         .map(|s| s.to_string())
         .ok_or_else(|| "No name field in Discord guild response".to_string())
+}
+
+/// Fetch Discord channels for a guild via REST API using a bot token.
+fn fetch_discord_guild_channels(bot_token: &str, guild_id: &str) -> Result<Vec<(String, String)>, String> {
+    let url = format!("https://discord.com/api/v10/guilds/{guild_id}/channels");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .map_err(|e| format!("Discord HTTP client error: {e}"))?;
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .send()
+        .map_err(|e| format!("Discord API request failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Discord API returned status {}", resp.status()));
+    }
+    let body: Value = resp.json().map_err(|e| format!("Failed to parse Discord response: {e}"))?;
+    let arr = body.as_array().ok_or_else(|| "Discord response is not an array".to_string())?;
+    let mut out = Vec::new();
+    for item in arr {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let (Some(id), Some(name)) = (id, name) {
+            if !out.iter().any(|(existing_id, _)| *existing_id == id) {
+                out.push((id, name));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn collect_channel_summary(cfg: &Value) -> ChannelSummary {
@@ -4695,12 +4884,31 @@ pub async fn remote_list_discord_guild_channels(
     } else {
         Value::Null
     };
+    let bindings_output = crate::cli_runner::run_openclaw_remote(&pool, &host_id, &["config", "get", "bindings", "--json"]).await?;
+    let bindings_section = if bindings_output.exit_code == 0 {
+        crate::cli_runner::parse_json_output(&bindings_output).unwrap_or_else(|_| Value::Array(Vec::new()))
+    } else {
+        Value::Array(Vec::new())
+    };
     // Wrap to match existing code expectations (rest of function uses cfg.get("channels").and_then(|c| c.get("discord")))
-    let cfg = serde_json::json!({ "channels": { "discord": discord_section } });
+    let cfg = serde_json::json!({
+        "channels": { "discord": discord_section },
+        "bindings": bindings_section
+    });
 
     let discord_cfg = cfg
         .get("channels")
         .and_then(|c| c.get("discord"));
+    let configured_single_guild_id = discord_cfg
+        .and_then(|d| d.get("guilds"))
+        .and_then(Value::as_object)
+        .and_then(|guilds| {
+            if guilds.len() == 1 {
+                guilds.keys().next().cloned()
+            } else {
+                None
+            }
+        });
 
     // Extract bot token: top-level first, then fall back to first account token
     let bot_token = discord_cfg
@@ -4804,6 +5012,67 @@ pub async fn remote_list_discord_guild_channels(
                 channel_id: channel_id.clone(),
                 channel_name: channel_id.clone(),
             });
+        }
+    }
+
+    // Fallback A: if we have token + guild ids, fetch channels from Discord REST directly.
+    // This avoids hard-failing when CLI rejects config due non-critical schema drift.
+    if channel_ids.is_empty() {
+        let configured_guild_ids = collect_discord_config_guild_ids(discord_cfg);
+        if let Some(token) = bot_token.clone() {
+            let rest_entries = tokio::task::spawn_blocking(move || {
+                let mut out: Vec<DiscordGuildChannel> = Vec::new();
+                for guild_id in configured_guild_ids {
+                    if let Ok(channels) = fetch_discord_guild_channels(&token, &guild_id) {
+                        for (channel_id, channel_name) in channels {
+                            if out.iter().any(|e| e.guild_id == guild_id && e.channel_id == channel_id) {
+                                continue;
+                            }
+                            out.push(DiscordGuildChannel {
+                                guild_id: guild_id.clone(),
+                                guild_name: guild_id.clone(),
+                                channel_id,
+                                channel_name,
+                            });
+                        }
+                    }
+                }
+                out
+            }).await.unwrap_or_default();
+            for entry in rest_entries {
+                if entries.iter().any(|e| e.guild_id == entry.guild_id && e.channel_id == entry.channel_id) {
+                    continue;
+                }
+                channel_ids.push(entry.channel_id.clone());
+                entries.push(entry);
+            }
+        }
+    }
+
+    // Fallback B: query channel ids from directory and keep compatibility
+    // with existing cache shape when config has no explicit channel map.
+    if channel_ids.is_empty() {
+        let cmd = "openclaw directory groups list --channel discord --json";
+        if let Ok(r) = pool.exec_login(&host_id, cmd).await {
+            if r.exit_code == 0 && !r.stdout.trim().is_empty() {
+                for channel_id in parse_directory_group_channel_ids(&r.stdout) {
+                    if entries.iter().any(|e| e.channel_id == channel_id) {
+                        continue;
+                    }
+                    let (guild_id, guild_name) = if let Some(gid) = configured_single_guild_id.clone() {
+                        (gid.clone(), gid)
+                    } else {
+                        ("discord".to_string(), "Discord".to_string())
+                    };
+                    channel_ids.push(channel_id.clone());
+                    entries.push(DiscordGuildChannel {
+                        guild_id,
+                        guild_name,
+                        channel_id: channel_id.clone(),
+                        channel_name: channel_id,
+                    });
+                }
+            }
         }
     }
 
@@ -5839,6 +6108,15 @@ pub fn read_app_log(lines: Option<usize>) -> Result<String, String> {
 #[tauri::command]
 pub fn read_error_log(lines: Option<usize>) -> Result<String, String> {
     crate::logging::read_log_tail("error.log", lines.unwrap_or(200))
+}
+
+#[tauri::command]
+pub fn log_app_event(message: String) -> Result<bool, String> {
+    let trimmed = message.trim();
+    if !trimmed.is_empty() {
+        crate::logging::log_info(trimmed);
+    }
+    Ok(true)
 }
 
 #[tauri::command]
