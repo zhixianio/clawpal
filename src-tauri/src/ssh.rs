@@ -76,6 +76,17 @@ fn is_legacy_clawpal_master_for_host(command: &str, host: &str, username: Option
     false
 }
 
+/// Extract the executable token from a shell command, skipping leading `KEY=VAL` assignments.
+fn extract_target_bin(command: &str) -> &str {
+    for token in command.split_whitespace() {
+        if token.contains('=') && !token.starts_with('=') {
+            continue;
+        }
+        return token;
+    }
+    ""
+}
+
 /// Check if an SSH exec error is likely transient (worth retrying) vs permanent.
 fn is_transient_ssh_error(err: &str) -> bool {
     let lower = err.to_lowercase();
@@ -503,7 +514,7 @@ mod inner {
         /// Execute a command with login shell setup (sources profile for PATH).
         /// Forces bash to avoid zsh glob/nomatch quirks.
         pub async fn exec_login(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
-            let target_bin = command.split_whitespace().next().unwrap_or("");
+            let target_bin = extract_target_bin(command);
             let wrapped = format!(
                 concat!(
                     "setopt nonomatch 2>/dev/null; shopt -s nullglob 2>/dev/null; ",
@@ -511,6 +522,7 @@ mod inner {
                     ". \"$HOME/.bashrc\" 2>/dev/null; ",
                     ". \"$HOME/.zshrc\" 2>/dev/null; ",
                     "[ -d \"$HOME/.local/bin\" ] && export PATH=\"$HOME/.local/bin:$PATH\"; ",
+                    "[ -d \"$HOME/.npm-global/bin\" ] && export PATH=\"$HOME/.npm-global/bin:$PATH\"; ",
                     "export NVM_DIR=\"${{NVM_DIR:-$HOME/.nvm}}\"; ",
                     "[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" 2>/dev/null; ",
                     "for _fnm in \"$HOME/.fnm/fnm\" \"$HOME/.local/bin/fnm\"; do ",
@@ -975,7 +987,7 @@ mod inner {
         }
 
         pub async fn exec_login(&self, id: &str, command: &str) -> Result<SshExecResult, String> {
-            let target_bin = command.split_whitespace().next().unwrap_or("");
+            let target_bin = extract_target_bin(command);
             let wrapped = format!(
                 concat!(
                     "setopt nonomatch 2>/dev/null; shopt -s nullglob 2>/dev/null; ",
@@ -983,6 +995,7 @@ mod inner {
                     ". \"$HOME/.bashrc\" 2>/dev/null; ",
                     ". \"$HOME/.zshrc\" 2>/dev/null; ",
                     "[ -d \"$HOME/.local/bin\" ] && export PATH=\"$HOME/.local/bin:$PATH\"; ",
+                    "[ -d \"$HOME/.npm-global/bin\" ] && export PATH=\"$HOME/.npm-global/bin:$PATH\"; ",
                     "export NVM_DIR=\"${{NVM_DIR:-$HOME/.nvm}}\"; ",
                     "[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" 2>/dev/null; ",
                     "for _fnm in \"$HOME/.fnm/fnm\" \"$HOME/.local/bin/fnm\"; do ",
@@ -1123,5 +1136,16 @@ mod tests {
     fn test_legacy_cleanup_not_match_different_host() {
         let cmd = "ssh -E /Users/a/.local/state/.ssh-connectionXYZ/log -S /Users/a/.local/state/.ssh-connectionXYZ/master -M -f -N ubuntu@vm2";
         assert!(!is_legacy_clawpal_master_for_host(cmd, "vm1", Some("ubuntu")));
+    }
+
+    #[test]
+    fn test_extract_target_bin_plain_command() {
+        assert_eq!(extract_target_bin("openclaw config get agents --json"), "openclaw");
+    }
+
+    #[test]
+    fn test_extract_target_bin_skips_env_assignments() {
+        let cmd = "OPENCLAW_HOME='/tmp/x' OPENCLAW_STATE_DIR='/tmp/y' openclaw models list --json";
+        assert_eq!(extract_target_bin(cmd), "openclaw");
     }
 }
