@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import type { SshHost } from "@/lib/types";
+import type { SshConfigHostSuggestion, SshHost } from "@/lib/types";
 
 interface InstanceTabBarProps {
   hosts: SshHost[];
@@ -63,10 +63,20 @@ export function InstanceTabBar({
   const [form, setForm] = useState<Omit<SshHost, "id">>(emptyHost);
   const [saving, setSaving] = useState(false);
   const [keyGuideOpen, setKeyGuideOpen] = useState(false);
+  const [sshConfigHosts, setSshConfigHosts] = useState<SshConfigHostSuggestion[]>([]);
+  const [selectedConfigAlias, setSelectedConfigAlias] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    api
+      .listSshConfigHosts()
+      .then(setSshConfigHosts)
+      .catch((e) => console.error("Failed to load SSH config hosts:", e));
+  }, []);
 
   const openAddDialog = () => {
     setEditingHost(null);
     setForm({ ...emptyHost });
+    setSelectedConfigAlias(undefined);
     setDialogOpen(true);
   };
 
@@ -81,7 +91,21 @@ export function InstanceTabBar({
       keyPath: host.keyPath,
       password: host.password,
     });
+    setSelectedConfigAlias(undefined);
     setDialogOpen(true);
+  };
+
+  const applySshConfigPreset = (hostAlias: string) => {
+    const preset = sshConfigHosts.find((h) => h.hostAlias === hostAlias);
+    if (!preset) return;
+    setForm((f) => ({
+      ...f,
+      label: f.label || hostAlias,
+      host: preset.hostAlias,
+      port: preset.port ?? f.port,
+      username: preset.user ?? f.username,
+      authMethod: "ssh_config",
+    }));
   };
 
   const handleSave = () => {
@@ -220,6 +244,33 @@ export function InstanceTabBar({
                 placeholder={t('instance.labelPlaceholder')}
               />
             </div>
+            {sshConfigHosts.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>{t('instance.sshConfigPreset')}</Label>
+                <Select
+                  value={selectedConfigAlias}
+                  onValueChange={(val) => {
+                    setSelectedConfigAlias(val);
+                    applySshConfigPreset(val);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('instance.sshConfigPresetPlaceholder')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sshConfigHosts.map((h) => (
+                      <SelectItem key={h.hostAlias} value={h.hostAlias}>
+                        {h.hostAlias}
+                        {h.hostName ? ` (${h.user ? `${h.user}@` : ""}${h.hostName}${h.port ? `:${h.port}` : ""})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {t('instance.sshConfigPresetHint')}
+                </p>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="ssh-host">{t('instance.host')}</Label>
               <Input

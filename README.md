@@ -26,24 +26,24 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 ## Development
 
-Prerequisites: [Node.js](https://nodejs.org/) 20+, [Rust](https://www.rust-lang.org/tools/install), and [Tauri CLI](https://v2.tauri.app/start/prerequisites/)
+Prerequisites: [Bun](https://bun.sh/), [Rust](https://www.rust-lang.org/tools/install), and Xcode Command Line Tools (macOS)
 
 ```bash
-npm install
-npx tauri dev        # Vite dev server + Tauri window
+bun install
+bun run dev:tauri    # Vite dev server + Tauri window
 ```
 
 ### Build
 
 ```bash
-npx tauri build
+bun run build:tauri
 ```
 
 ### Release
 
 ```bash
-npm run release:dry-run   # Preview version bump + tag
-npm run release           # Tag and push (triggers CI)
+bun run release:dry-run   # Preview version bump + tag
+bun run release           # Tag and push (triggers CI)
 ```
 
 ### Environment overrides

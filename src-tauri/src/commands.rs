@@ -4377,6 +4377,138 @@ fn remote_instances_path() -> PathBuf {
     resolve_paths().clawpal_dir.join("remote-instances.json")
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConfigHostSuggestion {
+    pub host_alias: String,
+    pub host_name: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    pub identity_file: Option<String>,
+}
+
+fn ssh_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".ssh").join("config"))
+}
+
+fn push_ssh_config_hosts(
+    out: &mut Vec<SshConfigHostSuggestion>,
+    aliases: &[String],
+    host_name: &Option<String>,
+    user: &Option<String>,
+    port: &Option<u16>,
+    identity_file: &Option<String>,
+) {
+    for alias in aliases {
+        if alias.is_empty() || alias == "*" || alias.starts_with('!') || alias.contains('*') || alias.contains('?') {
+            continue;
+        }
+        out.push(SshConfigHostSuggestion {
+            host_alias: alias.clone(),
+            host_name: host_name.clone(),
+            user: user.clone(),
+            port: *port,
+            identity_file: identity_file.clone(),
+        });
+    }
+}
+
+fn parse_ssh_config_hosts(data: &str) -> Vec<SshConfigHostSuggestion> {
+    let mut out = Vec::new();
+    let mut aliases: Vec<String> = Vec::new();
+    let mut host_name: Option<String> = None;
+    let mut user: Option<String> = None;
+    let mut port: Option<u16> = None;
+    let mut identity_file: Option<String> = None;
+
+    for raw in data.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.splitn(2, char::is_whitespace);
+        let key = parts.next().unwrap_or("").trim().to_ascii_lowercase();
+        let value = parts.next().unwrap_or("").trim();
+        if key.is_empty() || value.is_empty() {
+            continue;
+        }
+        let value = if let Some(idx) = value.find(" #") {
+            value[..idx].trim()
+        } else {
+            value
+        };
+
+        if key == "host" {
+            if !aliases.is_empty() {
+                push_ssh_config_hosts(
+                    &mut out,
+                    &aliases,
+                    &host_name,
+                    &user,
+                    &port,
+                    &identity_file,
+                );
+            }
+            aliases = value
+                .split_whitespace()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToOwned::to_owned)
+                .collect();
+            host_name = None;
+            user = None;
+            port = None;
+            identity_file = None;
+            continue;
+        }
+
+        if aliases.is_empty() {
+            continue;
+        }
+
+        match key.as_str() {
+            "hostname" => {
+                if host_name.is_none() {
+                    host_name = Some(value.to_string());
+                }
+            }
+            "user" => {
+                if user.is_none() {
+                    user = Some(value.to_string());
+                }
+            }
+            "port" => {
+                if port.is_none() {
+                    port = value.parse::<u16>().ok();
+                }
+            }
+            "identityfile" => {
+                if identity_file.is_none() {
+                    identity_file = Some(value.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !aliases.is_empty() {
+        push_ssh_config_hosts(
+            &mut out,
+            &aliases,
+            &host_name,
+            &user,
+            &port,
+            &identity_file,
+        );
+    }
+
+    let mut dedup = std::collections::BTreeMap::new();
+    for entry in out {
+        dedup.entry(entry.host_alias.clone()).or_insert(entry);
+    }
+    dedup.into_values().collect()
+}
+
 fn read_hosts_from_disk() -> Result<Vec<SshHostConfig>, String> {
     let path = remote_instances_path();
     if !path.exists() {
@@ -4404,6 +4536,19 @@ fn write_hosts_to_disk(hosts: &[SshHostConfig]) -> Result<(), String> {
 #[tauri::command]
 pub fn list_ssh_hosts() -> Result<Vec<SshHostConfig>, String> {
     read_hosts_from_disk()
+}
+
+#[tauri::command]
+pub fn list_ssh_config_hosts() -> Result<Vec<SshConfigHostSuggestion>, String> {
+    let Some(path) = ssh_config_path() else {
+        return Ok(Vec::new());
+    };
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    Ok(parse_ssh_config_hosts(&data))
 }
 
 #[tauri::command]
@@ -4442,6 +4587,25 @@ pub async fn ssh_connect(pool: State<'_, SshConnectionPool>, host_id: String) ->
     let host = hosts.into_iter().find(|h| h.id == host_id)
         .ok_or_else(|| format!("No SSH host config with id: {host_id}"))?;
     pool.connect(&host).await?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn ssh_connect_with_passphrase(
+    pool: State<'_, SshConnectionPool>,
+    host_id: String,
+    passphrase: String,
+) -> Result<bool, String> {
+    if pool.is_connected(&host_id).await {
+        return Ok(true);
+    }
+    let hosts = read_hosts_from_disk()?;
+    let host = hosts
+        .into_iter()
+        .find(|h| h.id == host_id)
+        .ok_or_else(|| format!("No SSH host config with id: {host_id}"))?;
+    pool.connect_with_passphrase(&host, Some(passphrase.as_str()))
+        .await?;
     Ok(true)
 }
 

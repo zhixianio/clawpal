@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, GatewayCredentials, HistoryItem, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, GatewayCredentials, HistoryItem, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, ResolvedApiKey, SshConfigHostSuggestion, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
 
 export const api = {
   getSystemStatus: (): Promise<SystemStatus> =>
@@ -87,6 +87,8 @@ export const api = {
   // SSH host management
   listSshHosts: (): Promise<SshHost[]> =>
     invoke("list_ssh_hosts", {}),
+  listSshConfigHosts: (): Promise<SshConfigHostSuggestion[]> =>
+    invoke("list_ssh_config_hosts", {}),
   upsertSshHost: (host: SshHost): Promise<SshHost> =>
     invoke("upsert_ssh_host", { host }),
   deleteSshHost: (hostId: string): Promise<boolean> =>
@@ -95,6 +97,8 @@ export const api = {
   // SSH connection
   sshConnect: (hostId: string): Promise<boolean> =>
     invoke("ssh_connect", { hostId }),
+  sshConnectWithPassphrase: (hostId: string, passphrase: string): Promise<boolean> =>
+    invoke("ssh_connect_with_passphrase", { hostId, passphrase }),
   sshDisconnect: (hostId: string): Promise<boolean> =>
     invoke("ssh_disconnect", { hostId }),
   sshStatus: (hostId: string): Promise<string> =>

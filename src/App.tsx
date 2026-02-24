@@ -30,6 +30,9 @@ import { InstanceTabBar } from "./components/InstanceTabBar";
 import { InstanceContext } from "./lib/instance-context";
 import { api } from "./lib/api";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { DiscordGuildChannel, SshHost } from "./lib/types";
 
@@ -48,10 +51,14 @@ let toastIdCounter = 0;
 const SSH_ERROR_MAP: Array<[RegExp, string]> = [
   [/connection refused/i, "ssh.errorConnectionRefused"],
   [/no such file/i, "ssh.errorNoSuchFile"],
+  [/passphrase|sign_and_send_pubkey|agent refused operation|can't open \/dev\/tty|authentication agent/i, "ssh.errorPassphrase"],
   [/permission denied/i, "ssh.errorPermissionDenied"],
   [/host key verification failed/i, "ssh.errorHostKey"],
   [/timed?\s*out/i, "ssh.errorTimeout"],
 ];
+
+const SSH_PASSPHRASE_RETRY_HINT =
+  /permission denied|publickey|passphrase|sign_and_send_pubkey|agent refused operation|can't open \/dev\/tty|authentication agent/i;
 
 function friendlySshError(raw: string, t: (key: string, opts?: Record<string, string>) => string): string {
   for (const [pattern, key] of SSH_ERROR_MAP) {
@@ -113,6 +120,10 @@ export function App() {
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const sshHealthFailStreakRef = useRef<Record<string, number>>({});
+  const passphraseResolveRef = useRef<((value: string | null) => void) | null>(null);
+  const [passphraseHostLabel, setPassphraseHostLabel] = useState<string>("");
+  const [passphraseOpen, setPassphraseOpen] = useState(false);
+  const [passphraseInput, setPassphraseInput] = useState("");
 
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
     const id = ++toastIdCounter;
@@ -126,6 +137,49 @@ export function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  const requestPassphrase = useCallback((hostLabel: string): Promise<string | null> => {
+    setPassphraseHostLabel(hostLabel);
+    setPassphraseInput("");
+    setPassphraseOpen(true);
+    return new Promise((resolve) => {
+      passphraseResolveRef.current = resolve;
+    });
+  }, []);
+
+  const closePassphraseDialog = useCallback((value: string | null) => {
+    setPassphraseOpen(false);
+    const resolve = passphraseResolveRef.current;
+    passphraseResolveRef.current = null;
+    if (resolve) resolve(value);
+  }, []);
+
+  const connectWithPassphraseFallback = useCallback(async (hostId: string) => {
+    const host = sshHosts.find((h) => h.id === hostId);
+    if (host && host.authMethod === "key") {
+      const passphrase = await requestPassphrase(host.label || host.host);
+      if (passphrase === null) {
+        throw new Error(t("ssh.passphraseCancelled"));
+      }
+      await api.sshConnectWithPassphrase(hostId, passphrase);
+      return;
+    }
+
+    try {
+      await api.sshConnect(hostId);
+      return;
+    } catch (err) {
+      const raw = String(err);
+      if (host && host.authMethod !== "password" && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
+        const passphrase = await requestPassphrase(host.label || host.host);
+        if (passphrase !== null) {
+          await api.sshConnectWithPassphrase(hostId, passphrase);
+          return;
+        }
+      }
+      throw err;
+    }
+  }, [requestPassphrase, sshHosts, t]);
+
 
   const handleInstanceSelect = useCallback((id: string) => {
     setActiveInstance(id);
@@ -138,13 +192,13 @@ export function App() {
           if (status === "connected") {
             setConnectionStatus((prev) => ({ ...prev, [id]: "connected" }));
           } else {
-            return api.sshConnect(id)
+            return connectWithPassphraseFallback(id)
               .then(() => setConnectionStatus((prev) => ({ ...prev, [id]: "connected" })));
           }
         })
-        .catch((e) => {
+        .catch(() => {
           // sshStatus failed or reconnect failed — try fresh connect
-          api.sshConnect(id)
+          connectWithPassphraseFallback(id)
             .then(() => setConnectionStatus((prev) => ({ ...prev, [id]: "connected" })))
             .catch((e2) => {
               setConnectionStatus((prev) => ({ ...prev, [id]: "error" }));
@@ -154,7 +208,7 @@ export function App() {
             });
         });
     }
-  }, [showToast, t]);
+  }, [connectWithPassphraseFallback, showToast, t]);
 
   const [configVersion, setConfigVersion] = useState(0);
 
@@ -483,6 +537,46 @@ export function App() {
         ))}
       </div>
     )}
+
+    <Dialog
+      open={passphraseOpen}
+      onOpenChange={(open) => {
+        if (!open) closePassphraseDialog(null);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("ssh.passphraseTitle")}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            {t("ssh.passphrasePrompt", { host: passphraseHostLabel })}
+          </p>
+          <Label htmlFor="ssh-passphrase">{t("ssh.passphraseLabel")}</Label>
+          <Input
+            id="ssh-passphrase"
+            type="password"
+            value={passphraseInput}
+            onChange={(e) => setPassphraseInput(e.target.value)}
+            placeholder={t("ssh.passphrasePlaceholder")}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                closePassphraseDialog(passphraseInput);
+              }
+            }}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => closePassphraseDialog(null)}>
+            {t("instance.cancel")}
+          </Button>
+          <Button onClick={() => closePassphraseDialog(passphraseInput)}>
+            {t("ssh.passphraseConfirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     </>
   );
 }

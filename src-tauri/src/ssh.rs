@@ -156,6 +156,14 @@ mod inner {
         }
 
         pub async fn connect(&self, config: &SshHostConfig) -> Result<(), String> {
+            self.connect_with_passphrase(config, None).await
+        }
+
+        pub async fn connect_with_passphrase(
+            &self,
+            config: &SshHostConfig,
+            passphrase: Option<&str>,
+        ) -> Result<(), String> {
             let _lifecycle_guard = self.lifecycle.lock().await;
             if config.auth_method == "password" {
                 return Err(
@@ -199,6 +207,24 @@ mod inner {
             // Do not auto-delete historical control dirs: that can orphan
             // active detached masters and make them impossible to close cleanly.
             builder.clean_history_control_directory(false);
+
+            if let Some(pp) = passphrase.filter(|p| !p.trim().is_empty()) {
+                match config.auth_method.as_str() {
+                    "key" => {
+                        let key = config
+                            .key_path
+                            .as_ref()
+                            .map(|p| shellexpand::tilde(p).to_string());
+                        Self::add_key_to_agent_with_passphrase(key.as_deref(), pp).await?;
+                    }
+                    "ssh_config" => {
+                        // ssh_config may resolve IdentityFile from ~/.ssh/config,
+                        // so preload default keys into agent before BatchMode connect.
+                        Self::add_key_to_agent_with_passphrase(None, pp).await?;
+                    }
+                    _ => {}
+                }
+            }
 
             if config.auth_method == "key" {
                 if let Some(ref key_path) = config.key_path {
@@ -431,6 +457,56 @@ mod inner {
                     .status()
                     .await;
             }
+        }
+
+        async fn add_key_to_agent_with_passphrase(
+            key_path: Option<&str>,
+            passphrase: &str,
+        ) -> Result<(), String> {
+            let askpass_path = std::env::temp_dir()
+                .join(format!("clawpal-askpass-{}.sh", uuid::Uuid::new_v4()));
+            let script = "#!/bin/sh\nprintf '%s\\n' \"$CLAWPAL_SSH_PASSPHRASE\"\n";
+            std::fs::write(&askpass_path, script)
+                .map_err(|e| format!("Failed to create SSH askpass helper: {e}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &askpass_path,
+                    std::fs::Permissions::from_mode(0o700),
+                );
+            }
+
+            let mut cmd = Command::new("ssh-add");
+            cmd.arg("-q");
+            if let Some(path) = key_path {
+                cmd.arg(path);
+            }
+            let output_res = cmd
+                .env("SSH_ASKPASS", &askpass_path)
+                .env("SSH_ASKPASS_REQUIRE", "force")
+                .env("CLAWPAL_SSH_PASSPHRASE", passphrase)
+                .env(
+                    "DISPLAY",
+                    std::env::var("DISPLAY").unwrap_or_else(|_| "clawpal:0".to_string()),
+                )
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await;
+
+            let _ = std::fs::remove_file(&askpass_path);
+
+            let output = output_res.map_err(|e| format!("Failed to run ssh-add: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(if stderr.is_empty() {
+                    "SSH key unlock failed. Please verify passphrase and local ssh-agent."
+                        .to_string()
+                } else {
+                    format!("SSH key unlock failed: {stderr}")
+                });
+            }
+            Ok(())
         }
 
         async fn resolve_home_via_session(session: &Session) -> Result<String, String> {
@@ -716,6 +792,14 @@ mod inner {
                 lifecycle: Mutex::new(()),
                 exec_limit: Arc::new(tokio::sync::Semaphore::new(4)),
             }
+        }
+
+        pub async fn connect_with_passphrase(
+            &self,
+            config: &SshHostConfig,
+            _passphrase: Option<&str>,
+        ) -> Result<(), String> {
+            self.connect(config).await
         }
 
         async fn run_ssh_output(

@@ -253,6 +253,14 @@ export interface SshHost {
   password?: string;
 }
 
+export interface SshConfigHostSuggestion {
+  hostAlias: string;
+  hostName?: string;
+  user?: string;
+  port?: number;
+  identityFile?: string;
+}
+
 export interface SshExecResult {
   stdout: string;
   stderr: string;
