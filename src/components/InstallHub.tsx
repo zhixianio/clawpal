@@ -78,7 +78,7 @@ export function InstallHub({
 }: {
   showToast?: (message: string, type?: "success" | "error") => void;
   onNavigate?: (route: string) => void;
-  onReady?: () => void;
+  onReady?: (method: InstallMethod) => void;
 }) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -163,7 +163,7 @@ export function InstallHub({
         showToast?.(result.summary, "success");
         return refreshSession(session.id).then((next) => {
           if (next.state === "ready") {
-            onReady?.();
+            onReady?.(next.method);
           }
         });
       })

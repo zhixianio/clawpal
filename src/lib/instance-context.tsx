@@ -4,6 +4,7 @@ import type { DiscordGuildChannel } from "./types";
 interface InstanceContextValue {
   instanceId: string;
   isRemote: boolean;
+  isDocker: boolean;
   isConnected: boolean;
   discordGuildChannels: DiscordGuildChannel[];
 }
@@ -11,6 +12,7 @@ interface InstanceContextValue {
 export const InstanceContext = createContext<InstanceContextValue>({
   instanceId: "local",
   isRemote: false,
+  isDocker: false,
   isConnected: true,
   discordGuildChannels: [],
 });

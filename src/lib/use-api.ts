@@ -111,7 +111,7 @@ function shouldLogRemoteInvokeMetric(ok: boolean, elapsedMs: number): boolean {
  * inject hostId and check connection state.
  */
 export function useApi() {
-  const { instanceId, isRemote, isConnected, discordGuildChannels } = useInstance();
+  const { instanceId, isRemote, isDocker, isConnected, discordGuildChannels } = useInstance();
 
   const dispatch = useCallback(
     <TArgs extends unknown[], TResult>(
@@ -156,10 +156,13 @@ export function useApi() {
               throw error;
             });
         }
+        if (isDocker) {
+          return localFn(...args);
+        }
         return localFn(...args);
       };
     },
-    [instanceId, isRemote, isConnected],
+    [instanceId, isRemote, isDocker, isConnected],
   );
 
   const dispatchCached = useCallback(
@@ -207,6 +210,7 @@ export function useApi() {
       // Instance state
       instanceId,
       isRemote,
+      isDocker,
       isConnected,
       discordGuildChannels,
 
@@ -510,6 +514,6 @@ export function useApi() {
       // Remote-only
       remoteWriteRawConfig: withInvalidation(api.remoteWriteRawConfig),
     }),
-    [dispatch, dispatchCached, localCached, withInvalidation, instanceId, isRemote, isConnected, discordGuildChannels],
+    [dispatch, dispatchCached, localCached, withInvalidation, instanceId, isRemote, isDocker, isConnected, discordGuildChannels],
   );
 }

@@ -30,9 +30,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import type { SshHost } from "@/lib/types";
+import type { DockerInstance, SshHost } from "@/lib/types";
 
 interface InstanceTabBarProps {
+  dockerInstances: DockerInstance[];
   hosts: SshHost[];
   activeId: string; // "local" or host.id
   connectionStatus: Record<string, "connected" | "disconnected" | "error">;
@@ -51,6 +52,7 @@ const emptyHost: Omit<SshHost, "id"> = {
 };
 
 export function InstanceTabBar({
+  dockerInstances,
   hosts,
   activeId,
   connectionStatus,
@@ -136,6 +138,23 @@ export function InstanceTabBar({
           {statusDot("connected")}
           {t('instance.local')}
         </button>
+
+        {/* Docker tabs */}
+        {dockerInstances.map((instance) => (
+          <button
+            key={instance.id}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-all duration-200 cursor-pointer",
+              activeId === instance.id
+                ? "bg-card shadow-sm font-semibold text-primary border-b-2 border-b-primary"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+            onClick={() => onSelect(instance.id)}
+          >
+            {statusDot("connected")}
+            {instance.label}
+          </button>
+        ))}
 
         {/* Remote tabs */}
         {hosts.map((host) => (

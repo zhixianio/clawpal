@@ -31,9 +31,10 @@ import { InstanceContext } from "./lib/instance-context";
 import { api } from "./lib/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { DiscordGuildChannel, SshHost } from "./lib/types";
+import type { DiscordGuildChannel, DockerInstance, SshHost } from "./lib/types";
 
 const PING_URL = "https://api.clawpal.zhixian.io/ping";
+const DOCKER_INSTANCES_KEY = "clawpal_docker_instances";
 
 type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "doctor" | "sessions" | "settings";
 
@@ -72,6 +73,7 @@ export function App() {
 
   // SSH remote instance state
   const [activeInstance, setActiveInstance] = useState("local");
+  const [dockerInstances, setDockerInstances] = useState<DockerInstance[]>([]);
   const [sshHosts, setSshHosts] = useState<SshHost[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<Record<string, "connected" | "disconnected" | "error">>({});
 
@@ -79,9 +81,35 @@ export function App() {
     api.listSshHosts().then(setSshHosts).catch((e) => console.error("Failed to load SSH hosts:", e));
   }, []);
 
+  const refreshDockerInstances = useCallback(() => {
+    try {
+      const raw = localStorage.getItem(DOCKER_INSTANCES_KEY);
+      if (!raw) {
+        setDockerInstances([]);
+        return;
+      }
+      const parsed = JSON.parse(raw) as DockerInstance[];
+      setDockerInstances(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setDockerInstances([]);
+    }
+  }, []);
+
+  const upsertDockerInstance = useCallback((instance: DockerInstance) => {
+    setDockerInstances((prev) => {
+      const next = [...prev];
+      const idx = next.findIndex((item) => item.id === instance.id);
+      if (idx >= 0) next[idx] = instance;
+      else next.push(instance);
+      localStorage.setItem(DOCKER_INSTANCES_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     refreshHosts();
-  }, [refreshHosts]);
+    refreshDockerInstances();
+  }, [refreshHosts, refreshDockerInstances]);
 
   const [appUpdateAvailable, setAppUpdateAvailable] = useState(false);
   const [hasEscalatedCron, setHasEscalatedCron] = useState(false);
@@ -129,6 +157,9 @@ export function App() {
 
   const handleInstanceSelect = useCallback((id: string) => {
     setActiveInstance(id);
+    if (id === "local" || id.startsWith("docker:")) {
+      return;
+    }
     if (id !== "local") {
       // Check if backend still has a live connection before reconnecting.
       // Do not pre-mark as disconnected — transient status failures would
@@ -158,7 +189,8 @@ export function App() {
 
   const [configVersion, setConfigVersion] = useState(0);
 
-  const isRemote = activeInstance !== "local";
+  const isDocker = activeInstance.startsWith("docker:");
+  const isRemote = activeInstance !== "local" && !isDocker;
   const isConnected = !isRemote || connectionStatus[activeInstance] === "connected";
 
   // Keep active remote instance self-healed: detect dropped SSH and reconnect.
@@ -225,7 +257,7 @@ export function App() {
 
   // Load Discord data + extract profiles on startup or connection ready
   useEffect(() => {
-    if (activeInstance === "local") {
+    if (activeInstance === "local" || isDocker) {
       if (!localStorage.getItem("clawpal_profiles_extracted")) {
         api.extractModelProfilesFromConfig()
           .then(() => localStorage.setItem("clawpal_profiles_extracted", "1"))
@@ -237,7 +269,7 @@ export function App() {
         .catch((e) => console.error("Failed to extract remote model profiles:", e));
       api.remoteListDiscordGuildChannels(activeInstance).then(setDiscordGuildChannels).catch((e) => console.error("Failed to load remote Discord channels:", e));
     }
-  }, [activeInstance, isConnected]);
+  }, [activeInstance, isConnected, isDocker]);
 
   // Poll watchdog status for escalated cron jobs (red dot badge)
   useEffect(() => {
@@ -288,13 +320,14 @@ export function App() {
     <>
     <div className="flex flex-col h-screen bg-background text-foreground">
       <InstanceTabBar
+        dockerInstances={dockerInstances}
         hosts={sshHosts}
         activeId={activeInstance}
         connectionStatus={connectionStatus}
         onSelect={handleInstanceSelect}
         onHostsChange={refreshHosts}
       />
-      <InstanceContext.Provider value={{ instanceId: activeInstance, isRemote, isConnected, discordGuildChannels }}>
+      <InstanceContext.Provider value={{ instanceId: activeInstance, isRemote, isDocker, isConnected, discordGuildChannels }}>
       <div className="flex flex-1 overflow-hidden">
 
       {/* ── Sidebar ── */}
@@ -395,6 +428,14 @@ export function App() {
               }}
               showToast={showToast}
               onNavigate={(r) => setRoute(r as Route)}
+              onInstallReady={(method) => {
+                if (method === "docker") {
+                  const id = "docker:local";
+                  upsertDockerInstance({ id, label: "Docker Local" });
+                  setActiveInstance(id);
+                  setRoute("settings");
+                }
+              }}
             />
           )}
           {route === "recipes" && (

@@ -253,6 +253,12 @@ export interface SshHost {
   password?: string;
 }
 
+export interface DockerInstance {
+  id: string;
+  label: string;
+  projectDir?: string;
+}
+
 export interface SshExecResult {
   stdout: string;
   stderr: string;

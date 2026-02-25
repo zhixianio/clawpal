@@ -26,7 +26,7 @@ import { UpgradeDialog } from "@/components/UpgradeDialog";
 import { RecipeCard } from "@/components/RecipeCard";
 import { InstallHub } from "@/components/InstallHub";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { InstanceStatus, StatusExtra, AgentOverview, Recipe, BackupInfo, ModelProfile } from "../lib/types";
+import type { InstanceStatus, StatusExtra, AgentOverview, Recipe, BackupInfo, InstallMethod, ModelProfile } from "../lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
 import { useApi } from "@/lib/use-api";
 import { profileToModelValue } from "@/lib/model-value";
@@ -68,10 +68,12 @@ export function Home({
   onCook,
   showToast,
   onNavigate,
+  onInstallReady,
 }: {
   onCook?: (recipeId: string, source?: string) => void;
   showToast?: (message: string, type?: "success" | "error") => void;
   onNavigate?: (route: string) => void;
+  onInstallReady?: (method: InstallMethod) => void;
 }) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -318,12 +320,13 @@ export function Home({
     }).catch((e) => showToast?.(String(e), "error"));
   };
 
-  const handleInstallReady = useCallback(() => {
+  const handleInstallReady = useCallback((method: InstallMethod) => {
     fetchStatus();
     fetchStatusExtra();
     refreshAgents();
     onNavigate?.("home");
-  }, [fetchStatus, fetchStatusExtra, refreshAgents, onNavigate]);
+    onInstallReady?.(method);
+  }, [fetchStatus, fetchStatusExtra, refreshAgents, onNavigate, onInstallReady]);
 
   return (
     <div>
