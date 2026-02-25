@@ -1897,12 +1897,16 @@ pub async fn manage_rescue_bot(
         let mut commands = Vec::new();
 
         for command in plan {
-            let output = run_openclaw_dynamic(&command)?;
-            let result = RescueBotCommandResult {
-                command: command.clone(),
-                output,
-            };
+            let result = run_local_rescue_bot_command(command)?;
             if result.output.exit_code != 0 {
+                if action == RescueBotAction::Activate
+                    && is_gateway_restart_command(&result.command)
+                    && is_gateway_restart_timeout(&result.output)
+                {
+                    commands.push(result);
+                    run_local_gateway_restart_fallback(&profile, &mut commands)?;
+                    continue;
+                }
                 return Err(command_failure_message(&result.command, &result.output));
             }
             commands.push(result);
@@ -2254,14 +2258,24 @@ fn build_rescue_bot_command_plan(
             });
             commands.push({
                 let mut cmd = profile_arg.clone();
-                cmd.extend(["gateway".into(), "status".into(), "--json".into()]);
+                cmd.extend([
+                    "gateway".into(),
+                    "status".into(),
+                    "--no-probe".into(),
+                    "--json".into(),
+                ]);
                 cmd
             });
         }
         RescueBotAction::Status => {
             commands.push({
                 let mut cmd = profile_arg.clone();
-                cmd.extend(["gateway".into(), "status".into(), "--json".into()]);
+                cmd.extend([
+                    "gateway".into(),
+                    "status".into(),
+                    "--no-probe".into(),
+                    "--json".into(),
+                ]);
                 cmd
             });
         }
@@ -2273,7 +2287,12 @@ fn build_rescue_bot_command_plan(
             });
             commands.push({
                 let mut cmd = profile_arg;
-                cmd.extend(["gateway".into(), "status".into(), "--json".into()]);
+                cmd.extend([
+                    "gateway".into(),
+                    "status".into(),
+                    "--no-probe".into(),
+                    "--json".into(),
+                ]);
                 cmd
             });
         }
@@ -2296,6 +2315,53 @@ fn command_failure_message(command: &[String], output: &OpenclawCommandOutput) -
         output.exit_code,
         details
     )
+}
+
+fn is_gateway_restart_command(command: &[String]) -> bool {
+    command.len() >= 2
+        && command[command.len() - 2] == "gateway"
+        && command[command.len() - 1] == "restart"
+}
+
+fn is_gateway_restart_timeout(output: &OpenclawCommandOutput) -> bool {
+    let details = format!("{}\n{}", output.stderr, output.stdout).to_ascii_lowercase();
+    details.contains("gateway restart timed out")
+        || (details.contains("timed out") && details.contains("health check"))
+}
+
+fn run_local_rescue_bot_command(command: Vec<String>) -> Result<RescueBotCommandResult, String> {
+    let output = run_openclaw_dynamic(&command)?;
+    Ok(RescueBotCommandResult { command, output })
+}
+
+fn run_local_gateway_restart_fallback(
+    profile: &str,
+    commands: &mut Vec<RescueBotCommandResult>,
+) -> Result<(), String> {
+    let stop_command = vec![
+        "--profile".to_string(),
+        profile.to_string(),
+        "gateway".to_string(),
+        "stop".to_string(),
+    ];
+    let stop_result = run_local_rescue_bot_command(stop_command)?;
+    commands.push(stop_result);
+
+    let start_command = vec![
+        "--profile".to_string(),
+        profile.to_string(),
+        "gateway".to_string(),
+        "start".to_string(),
+    ];
+    let start_result = run_local_rescue_bot_command(start_command)?;
+    if start_result.output.exit_code != 0 {
+        return Err(command_failure_message(
+            &start_result.command,
+            &start_result.output,
+        ));
+    }
+    commands.push(start_result);
+    Ok(())
 }
 
 fn run_openclaw_dynamic(args: &[String]) -> Result<OpenclawCommandOutput, String> {
@@ -3933,7 +3999,14 @@ mod rescue_bot_tests {
             ],
             vec!["--profile", "rescue", "gateway", "install"],
             vec!["--profile", "rescue", "gateway", "restart"],
-            vec!["--profile", "rescue", "gateway", "status", "--json"],
+            vec![
+                "--profile",
+                "rescue",
+                "gateway",
+                "status",
+                "--no-probe",
+                "--json",
+            ],
         ]
         .into_iter()
         .map(|items| items.into_iter().map(String::from).collect::<Vec<_>>())
@@ -3952,12 +4025,39 @@ mod rescue_bot_tests {
         let expected = vec![
             vec!["--profile", "rescue", "gateway", "install"],
             vec!["--profile", "rescue", "gateway", "restart"],
-            vec!["--profile", "rescue", "gateway", "status", "--json"],
+            vec![
+                "--profile",
+                "rescue",
+                "gateway",
+                "status",
+                "--no-probe",
+                "--json",
+            ],
         ]
         .into_iter()
         .map(|items| items.into_iter().map(String::from).collect::<Vec<_>>())
         .collect::<Vec<_>>();
         assert_eq!(commands, expected);
+    }
+
+    #[test]
+    fn test_is_gateway_restart_timeout_matches_health_check_timeout() {
+        let output = OpenclawCommandOutput {
+            stdout: String::new(),
+            stderr: "Gateway restart timed out after 60s waiting for health checks.".into(),
+            exit_code: 1,
+        };
+        assert!(is_gateway_restart_timeout(&output));
+    }
+
+    #[test]
+    fn test_is_gateway_restart_timeout_ignores_other_errors() {
+        let output = OpenclawCommandOutput {
+            stdout: String::new(),
+            stderr: "gateway start failed: address already in use".into(),
+            exit_code: 1,
+        };
+        assert!(!is_gateway_restart_timeout(&output));
     }
 }
 
@@ -5588,22 +5688,17 @@ pub async fn remote_manage_rescue_bot(
     let plan = build_rescue_bot_command_plan(action, &profile, rescue_port, should_configure);
     let mut commands = Vec::new();
     for command in plan {
-        let mut remote_cmd = String::from("openclaw");
-        for arg in &command {
-            remote_cmd.push(' ');
-            remote_cmd.push_str(&shell_escape(arg));
-        }
-        let raw = pool.exec_login(&host_id, &remote_cmd).await?;
-        let output = OpenclawCommandOutput {
-            stdout: raw.stdout,
-            stderr: raw.stderr,
-            exit_code: raw.exit_code as i32,
-        };
-        let result = RescueBotCommandResult {
-            command: command.clone(),
-            output,
-        };
+        let result = run_remote_rescue_bot_command(&pool, &host_id, command).await?;
         if result.output.exit_code != 0 {
+            if action == RescueBotAction::Activate
+                && is_gateway_restart_command(&result.command)
+                && is_gateway_restart_timeout(&result.output)
+            {
+                commands.push(result);
+                run_remote_gateway_restart_fallback(&pool, &host_id, &profile, &mut commands)
+                    .await?;
+                continue;
+            }
             return Err(command_failure_message(&result.command, &result.output));
         }
         commands.push(result);
@@ -5618,6 +5713,59 @@ pub async fn remote_manage_rescue_bot(
         was_already_configured: already_configured,
         commands,
     })
+}
+
+async fn run_remote_rescue_bot_command(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    command: Vec<String>,
+) -> Result<RescueBotCommandResult, String> {
+    let mut remote_cmd = String::from("openclaw");
+    for arg in &command {
+        remote_cmd.push(' ');
+        remote_cmd.push_str(&shell_escape(arg));
+    }
+    let raw = pool.exec_login(host_id, &remote_cmd).await?;
+    Ok(RescueBotCommandResult {
+        command,
+        output: OpenclawCommandOutput {
+            stdout: raw.stdout,
+            stderr: raw.stderr,
+            exit_code: raw.exit_code as i32,
+        },
+    })
+}
+
+async fn run_remote_gateway_restart_fallback(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    profile: &str,
+    commands: &mut Vec<RescueBotCommandResult>,
+) -> Result<(), String> {
+    let stop_command = vec![
+        "--profile".to_string(),
+        profile.to_string(),
+        "gateway".to_string(),
+        "stop".to_string(),
+    ];
+    let stop_result = run_remote_rescue_bot_command(pool, host_id, stop_command).await?;
+    commands.push(stop_result);
+
+    let start_command = vec![
+        "--profile".to_string(),
+        profile.to_string(),
+        "gateway".to_string(),
+        "start".to_string(),
+    ];
+    let start_result = run_remote_rescue_bot_command(pool, host_id, start_command).await?;
+    if start_result.output.exit_code != 0 {
+        return Err(command_failure_message(
+            &start_result.command,
+            &start_result.output,
+        ));
+    }
+    commands.push(start_result);
+    Ok(())
 }
 
 
