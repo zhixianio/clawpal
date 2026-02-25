@@ -273,7 +273,7 @@ export interface SftpEntry {
   size: number;
 }
 
-export type RescueBotAction = "set" | "activate" | "status" | "deactivate";
+export type RescueBotAction = "set" | "activate" | "status" | "deactivate" | "unset";
 
 export interface RescueBotCommandResult {
   command: string[];

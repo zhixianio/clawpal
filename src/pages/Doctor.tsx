@@ -51,6 +51,8 @@ export function Doctor({ sshHosts }: DoctorProps) {
   const [logsLoading, setLogsLoading] = useState(false);
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueActivating, setRescueActivating] = useState(false);
+  const [rescueDeactivating, setRescueDeactivating] = useState(false);
+  const [rescueUnsetting, setRescueUnsetting] = useState(false);
   const [rescueStatusChecking, setRescueStatusChecking] = useState(false);
   const [rescueConfigured, setRescueConfigured] = useState<boolean | null>(null);
   const [rescueProfile, setRescueProfile] = useState("rescue");
@@ -70,6 +72,10 @@ export function Doctor({ sshHosts }: DoctorProps) {
     doctor.disconnect();
     setRescueMessage(null);
     setRescueMessageTone("info");
+    setRescueActivating(false);
+    setRescueDeactivating(false);
+    setRescueUnsetting(false);
+    setRescueStatusChecking(false);
     setRescueConfigured(null);
     setRescueProfile("rescue");
     setRescuePort(null);
@@ -268,6 +274,68 @@ export function Doctor({ sshHosts }: DoctorProps) {
     }
   };
 
+  const handleDeactivateRescueBot = async () => {
+    if (isRemote && !isConnected) {
+      setRescueMessage(t("doctor.rescueBotConnectRequired"));
+      setRescueMessageTone("error");
+      return;
+    }
+    setRescueDeactivating(true);
+    setRescueMessage(null);
+    setRescueMessageTone("info");
+    try {
+      const result = await ua.manageRescueBot("deactivate");
+      setRescueProfile(result.profile);
+      if (result.wasAlreadyConfigured) {
+        setRescueConfigured(true);
+        setRescuePort(result.rescuePort);
+        setRescueMessage(t("doctor.rescueBotDeactivated", { profile: result.profile }));
+        setRescueMessageTone("success");
+      } else {
+        setRescueConfigured(false);
+        setRescuePort(null);
+        setRescueMessage(t("doctor.rescueBotAlreadyNotConfigured"));
+        setRescueMessageTone("info");
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setRescueMessage(t("doctor.rescueBotDeactivateFailed", { error: text }));
+      setRescueMessageTone("error");
+    } finally {
+      setRescueDeactivating(false);
+    }
+  };
+
+  const handleUnsetRescueBot = async () => {
+    if (isRemote && !isConnected) {
+      setRescueMessage(t("doctor.rescueBotConnectRequired"));
+      setRescueMessageTone("error");
+      return;
+    }
+    setRescueUnsetting(true);
+    setRescueMessage(null);
+    setRescueMessageTone("info");
+    try {
+      const result = await ua.manageRescueBot("unset");
+      setRescueProfile(result.profile);
+      setRescueConfigured(false);
+      setRescuePort(null);
+      if (result.wasAlreadyConfigured) {
+        setRescueMessage(t("doctor.rescueBotUnset", { profile: result.profile }));
+        setRescueMessageTone("success");
+      } else {
+        setRescueMessage(t("doctor.rescueBotAlreadyNotConfigured"));
+        setRescueMessageTone("info");
+      }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      setRescueMessage(t("doctor.rescueBotUnsetFailed", { error: text }));
+      setRescueMessageTone("error");
+    } finally {
+      setRescueUnsetting(false);
+    }
+  };
+
   const handleCheckPrimaryViaRescue = async () => {
     if (isRemote && !isConnected) {
       setPrimaryCheckError(t("doctor.rescueBotConnectRequired"));
@@ -357,31 +425,63 @@ export function Doctor({ sshHosts }: DoctorProps) {
             <p className="text-sm text-muted-foreground">{t("doctor.rescueBotHint")}</p>
             <div className="flex items-center gap-2">
               <Button
-                variant={rescueConfigured ? "secondary" : "default"}
+                variant="default"
                 size="sm"
                 onClick={handleActivateRescueBot}
                 disabled={
                   rescueActivating
+                  || rescueDeactivating
+                  || rescueUnsetting
                   || rescueStatusChecking
                   || rescueConfigured === true
                   || (isRemote && !isConnected)
                 }
               >
-                {rescueStatusChecking
-                  ? t("doctor.rescueBotChecking")
-                  : rescueActivating
-                    ? t("doctor.activatingRescueBot")
-                    : rescueConfigured
-                      ? t("doctor.rescueBotAlreadyConfigured")
-                      : t("doctor.activateRescueBot")}
+                {rescueActivating ? t("doctor.activatingRescueBot") : t("doctor.activateRescueBot")}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleDeactivateRescueBot}
+                disabled={
+                  rescueActivating
+                  || rescueDeactivating
+                  || rescueUnsetting
+                  || rescueStatusChecking
+                  || rescueConfigured !== true
+                  || (isRemote && !isConnected)
+                }
+              >
+                {rescueDeactivating ? t("doctor.deactivatingRescueBot") : t("doctor.deactivateRescueBot")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleUnsetRescueBot}
+                disabled={
+                  rescueActivating
+                  || rescueDeactivating
+                  || rescueUnsetting
+                  || rescueStatusChecking
+                  || rescueConfigured !== true
+                  || (isRemote && !isConnected)
+                }
+              >
+                {rescueUnsetting ? t("doctor.unsettingRescueBot") : t("doctor.unsetRescueBot")}
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={refreshRescueStatus}
-                disabled={rescueActivating || rescueStatusChecking || (isRemote && !isConnected)}
+                disabled={
+                  rescueActivating
+                  || rescueDeactivating
+                  || rescueUnsetting
+                  || rescueStatusChecking
+                  || (isRemote && !isConnected)
+                }
               >
-                {t("doctor.refresh")}
+                {rescueStatusChecking ? t("doctor.rescueBotChecking") : t("doctor.refresh")}
               </Button>
             </div>
           </div>

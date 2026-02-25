@@ -1974,6 +1974,10 @@ pub async fn manage_rescue_bot(
                     commands.push(result);
                     break;
                 }
+                if is_rescue_cleanup_noop(action, &result.command, &result.output) {
+                    commands.push(result);
+                    continue;
+                }
                 if action == RescueBotAction::Activate
                     && is_gateway_restart_command(&result.command)
                     && is_gateway_restart_timeout(&result.output)
@@ -2242,6 +2246,7 @@ enum RescueBotAction {
     Activate,
     Status,
     Deactivate,
+    Unset,
 }
 
 impl RescueBotAction {
@@ -2251,7 +2256,8 @@ impl RescueBotAction {
             "activate" | "start" => Ok(Self::Activate),
             "status" => Ok(Self::Status),
             "deactivate" | "stop" => Ok(Self::Deactivate),
-            _ => Err("action must be one of: set, activate, status, deactivate".into()),
+            "unset" | "remove" | "delete" => Ok(Self::Unset),
+            _ => Err("action must be one of: set, activate, status, deactivate, unset".into()),
         }
     }
 
@@ -2261,6 +2267,7 @@ impl RescueBotAction {
             Self::Activate => "activate",
             Self::Status => "status",
             Self::Deactivate => "deactivate",
+            Self::Unset => "unset",
         }
     }
 }
@@ -3160,6 +3167,27 @@ fn build_rescue_bot_command_plan(
                 cmd
             });
         }
+        RescueBotAction::Unset => {
+            commands.push({
+                let mut cmd = profile_arg.clone();
+                cmd.extend(["gateway".into(), "stop".into()]);
+                cmd
+            });
+            commands.push({
+                let mut cmd = profile_arg.clone();
+                cmd.extend(["gateway".into(), "uninstall".into()]);
+                cmd
+            });
+            commands.push({
+                let mut cmd = profile_arg;
+                cmd.extend([
+                    "config".into(),
+                    "unset".into(),
+                    "gateway.port".into(),
+                ]);
+                cmd
+            });
+        }
     }
 
     commands
@@ -3187,10 +3215,72 @@ fn is_gateway_restart_command(command: &[String]) -> bool {
         && command[command.len() - 1] == "restart"
 }
 
+fn is_gateway_stop_command(command: &[String]) -> bool {
+    command.len() >= 2
+        && command[command.len() - 2] == "gateway"
+        && command[command.len() - 1] == "stop"
+}
+
+fn is_gateway_uninstall_command(command: &[String]) -> bool {
+    command.len() >= 2
+        && command[command.len() - 2] == "gateway"
+        && command[command.len() - 1] == "uninstall"
+}
+
+fn is_gateway_status_command(command: &[String]) -> bool {
+    command.windows(2).any(|window| window[0] == "gateway" && window[1] == "status")
+}
+
+fn is_config_unset_gateway_port_command(command: &[String]) -> bool {
+    command
+        .windows(3)
+        .any(|window| window[0] == "config" && window[1] == "unset" && window[2] == "gateway.port")
+}
+
 fn is_gateway_restart_timeout(output: &OpenclawCommandOutput) -> bool {
     let details = format!("{}\n{}", output.stderr, output.stdout).to_ascii_lowercase();
     details.contains("gateway restart timed out")
         || (details.contains("timed out") && details.contains("health check"))
+}
+
+fn is_rescue_cleanup_noop(
+    action: RescueBotAction,
+    command: &[String],
+    output: &OpenclawCommandOutput,
+) -> bool {
+    if output.exit_code == 0 || !matches!(action, RescueBotAction::Deactivate | RescueBotAction::Unset) {
+        return false;
+    }
+    let details = format!("{}\n{}", output.stderr, output.stdout).to_ascii_lowercase();
+    if details.contains("profile") && details.contains("not found") {
+        return true;
+    }
+    if is_gateway_stop_command(command) {
+        return details.contains("not running")
+            || details.contains("already stopped")
+            || details.contains("isn't running")
+            || details.contains("is not running");
+    }
+    if is_gateway_uninstall_command(command) {
+        return details.contains("not installed")
+            || details.contains("already uninstalled")
+            || details.contains("isn't installed")
+            || details.contains("is not installed");
+    }
+    if is_config_unset_gateway_port_command(command) {
+        return details.contains("not found")
+            || details.contains("not set")
+            || details.contains("does not exist")
+            || details.contains("missing");
+    }
+    if is_gateway_status_command(command) {
+        return details.contains("not running")
+            || details.contains("not installed")
+            || details.contains("not found")
+            || details.contains("is not running")
+            || details.contains("isn't running");
+    }
+    false
 }
 
 fn run_local_rescue_bot_command(command: Vec<String>) -> Result<RescueBotCommandResult, String> {
@@ -4907,6 +4997,74 @@ mod rescue_bot_tests {
         .map(|items| items.into_iter().map(String::from).collect::<Vec<_>>())
         .collect::<Vec<_>>();
         assert_eq!(commands, expected);
+    }
+
+    #[test]
+    fn test_build_rescue_bot_command_plan_for_unset() {
+        let commands = build_rescue_bot_command_plan(RescueBotAction::Unset, "rescue", 19789, false);
+        let expected = vec![
+            vec!["--profile", "rescue", "gateway", "stop"],
+            vec!["--profile", "rescue", "gateway", "uninstall"],
+            vec![
+                "--profile",
+                "rescue",
+                "config",
+                "unset",
+                "gateway.port",
+            ],
+        ]
+        .into_iter()
+        .map(|items| items.into_iter().map(String::from).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+        assert_eq!(commands, expected);
+    }
+
+    #[test]
+    fn test_parse_rescue_bot_action_unset_aliases() {
+        assert_eq!(RescueBotAction::parse("unset").unwrap(), RescueBotAction::Unset);
+        assert_eq!(RescueBotAction::parse("remove").unwrap(), RescueBotAction::Unset);
+        assert_eq!(RescueBotAction::parse("delete").unwrap(), RescueBotAction::Unset);
+    }
+
+    #[test]
+    fn test_is_rescue_cleanup_noop_matches_stop_not_running() {
+        let output = OpenclawCommandOutput {
+            stdout: String::new(),
+            stderr: "Gateway is not running".into(),
+            exit_code: 1,
+        };
+        let command = vec![
+            "--profile".to_string(),
+            "rescue".to_string(),
+            "gateway".to_string(),
+            "stop".to_string(),
+        ];
+        assert!(is_rescue_cleanup_noop(
+            RescueBotAction::Deactivate,
+            &command,
+            &output
+        ));
+    }
+
+    #[test]
+    fn test_is_rescue_cleanup_noop_matches_unset_missing_key() {
+        let output = OpenclawCommandOutput {
+            stdout: String::new(),
+            stderr: "config key gateway.port not found".into(),
+            exit_code: 1,
+        };
+        let command = vec![
+            "--profile".to_string(),
+            "rescue".to_string(),
+            "config".to_string(),
+            "unset".to_string(),
+            "gateway.port".to_string(),
+        ];
+        assert!(is_rescue_cleanup_noop(
+            RescueBotAction::Unset,
+            &command,
+            &output
+        ));
     }
 
     #[test]
@@ -6695,6 +6853,10 @@ pub async fn remote_manage_rescue_bot(
             if action == RescueBotAction::Status {
                 commands.push(result);
                 break;
+            }
+            if is_rescue_cleanup_noop(action, &result.command, &result.output) {
+                commands.push(result);
+                continue;
             }
             if action == RescueBotAction::Activate
                 && is_gateway_restart_command(&result.command)
