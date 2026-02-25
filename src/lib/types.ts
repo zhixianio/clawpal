@@ -429,6 +429,8 @@ export interface InstallOrchestratorDecision {
   step: string | null;
   reason: string;
   source: string;
+  errorCode?: string | null;
+  actionHint?: string | null;
 }
 
 export interface EnsureAccessResult {

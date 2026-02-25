@@ -79,6 +79,8 @@ async fn orchestrator_next_falls_back_without_decider() {
         .expect("orchestrator next should succeed");
     assert_eq!(decision.source, "fallback");
     assert_eq!(decision.step.as_deref(), Some("precheck"));
+    assert!(decision.error_code.is_none());
+    assert!(decision.action_hint.is_none());
 }
 
 #[tokio::test]

@@ -35,7 +35,36 @@ interface InstallAutoBlocker {
   actions: BlockerAction[];
 }
 
-function classifyAutoBlocker(error: string, fallbackMessage: string, errorCode?: string | null): InstallAutoBlocker {
+function classifyAutoBlocker(
+  error: string,
+  fallbackMessage: string,
+  errorCode?: string | null,
+  actionHint?: string | null,
+): InstallAutoBlocker {
+  if (actionHint === "open_settings_auth") {
+    return {
+      code: errorCode || "auth_missing",
+      message: fallbackMessage,
+      details: error,
+      actions: ["settings", "resume"],
+    };
+  }
+  if (actionHint === "open_instances") {
+    return {
+      code: errorCode || "remote_target_missing",
+      message: fallbackMessage,
+      details: error,
+      actions: ["instances", "resume"],
+    };
+  }
+  if (actionHint === "open_doctor") {
+    return {
+      code: errorCode || "diagnosis_required",
+      message: fallbackMessage,
+      details: error,
+      actions: ["doctor", "resume"],
+    };
+  }
   if (errorCode === "permission_denied") {
     return {
       code: "permission_denied",
@@ -414,6 +443,8 @@ export function InstallHub({
             const blocker = classifyAutoBlocker(
               decision.reason || "",
               t("home.install.blocked.orchestratorSource", { source: decision.source }),
+              decision.errorCode,
+              decision.actionHint,
             );
             setAutoBlocker(blocker);
             const target = ensureInstanceByMethod(current);

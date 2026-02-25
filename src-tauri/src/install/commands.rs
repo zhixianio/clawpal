@@ -138,6 +138,8 @@ pub struct InstallOrchestratorDecision {
     pub step: Option<String>,
     pub reason: String,
     pub source: String,
+    pub error_code: Option<String>,
+    pub action_hint: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -156,6 +158,52 @@ fn parse_decider_json(raw: &str) -> Result<ExternalDeciderOutput, String> {
     let slice = &raw[start..=end];
     serde_json::from_str::<ExternalDeciderOutput>(slice)
         .map_err(|e| format!("invalid decider json: {e}"))
+}
+
+fn classify_orchestrator_error(raw: &str) -> (String, String) {
+    let lower = raw.to_lowercase();
+    if lower.contains("no compatible api key found")
+        || lower.contains("no auth profile")
+        || lower.contains("openrouter_api_key")
+        || lower.contains("anthropic_api_key")
+        || lower.contains("openai_api_key")
+    {
+        return ("auth_missing".to_string(), "open_settings_auth".to_string());
+    }
+    if lower.contains("no ssh host config with id")
+        || lower.contains("remote ssh host not found")
+        || lower.contains("remote ssh target missing")
+    {
+        return ("remote_target_missing".to_string(), "open_instances".to_string());
+    }
+    if lower.contains("cannot connect to the docker daemon")
+        || lower.contains("docker: command not found")
+        || lower.contains("command failed: docker")
+    {
+        return ("docker_unavailable".to_string(), "open_doctor".to_string());
+    }
+    if lower.contains("permission denied") || lower.contains("operation not permitted") {
+        return ("permission_denied".to_string(), "open_doctor".to_string());
+    }
+    if lower.contains("timed out")
+        || lower.contains("network")
+        || lower.contains("failed to connect")
+        || lower.contains("temporary failure")
+    {
+        return ("network_error".to_string(), "open_doctor".to_string());
+    }
+    ("orchestrator_error".to_string(), "resume".to_string())
+}
+
+fn make_orchestrator_error_decision(reason: String, source: &str) -> InstallOrchestratorDecision {
+    let (error_code, action_hint) = classify_orchestrator_error(&reason);
+    InstallOrchestratorDecision {
+        step: None,
+        reason,
+        source: source.to_string(),
+        error_code: Some(error_code),
+        action_hint: Some(action_hint),
+    }
 }
 
 fn zeroclaw_config_dir() -> Result<PathBuf, String> {
@@ -201,6 +249,8 @@ fn run_stdin_decider(session: &InstallSession, goal: &str, cmd: &PathBuf) -> Res
         step: parsed.step,
         reason: parsed.reason.unwrap_or_else(|| "sidecar decider".to_string()),
         source: "zeroclaw-sidecar".to_string(),
+        error_code: None,
+        action_hint: None,
     })
 }
 
@@ -409,6 +459,8 @@ fn run_zeroclaw_agent_decider(
             .reason
             .unwrap_or_else(|| "zeroclaw agent decision".to_string()),
         source: "zeroclaw-sidecar".to_string(),
+        error_code: None,
+        action_hint: None,
     })
 }
 
@@ -512,12 +564,24 @@ fn orchestrator_next_internal(
         .ok_or_else(|| format!("install session not found: {id}"))?;
 
     if allow_sidecar {
-        if let Some(mut decision) = run_external_decider(&session, goal)? {
+        let sidecar_decision = match run_external_decider(&session, goal) {
+            Ok(v) => v,
+            Err(err) => return Ok(make_orchestrator_error_decision(err, "error")),
+        };
+        if let Some(mut decision) = sidecar_decision {
             let inferred = next_step_from_state(&session.state);
             let decided_step = decision.step.clone();
             match decided_step {
                 Some(step) => {
-                    let parsed = parse_step(&step)?;
+                    let parsed = match parse_step(&step) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            return Ok(make_orchestrator_error_decision(
+                                format!("decider proposed unsupported step '{step}'"),
+                                "error",
+                            ))
+                        }
+                    };
                     if !is_step_allowed(&session.state, &parsed) {
                         if let Some(fixed) = inferred {
                             decision.step = Some(fixed.clone());
@@ -526,10 +590,15 @@ fn orchestrator_next_internal(
                                 decision.reason, step, fixed
                             );
                             decision.source = "zeroclaw-sidecar".to_string();
+                            decision.error_code = None;
+                            decision.action_hint = None;
                         } else {
-                            return Err(format!(
-                                "decider proposed invalid step '{step}' for state '{}'",
-                                session.state.as_str()
+                            return Ok(make_orchestrator_error_decision(
+                                format!(
+                                    "decider proposed invalid step '{step}' for state '{}'",
+                                    session.state.as_str()
+                                ),
+                                "error",
                             ));
                         }
                     }
@@ -542,6 +611,14 @@ fn orchestrator_next_internal(
                             decision.reason, fixed
                         );
                         decision.source = "zeroclaw-sidecar".to_string();
+                        decision.error_code = None;
+                        decision.action_hint = None;
+                    } else {
+                        return Ok(make_orchestrator_error_decision(
+                            "decider returned no step and no inferred fallback step is available"
+                                .to_string(),
+                            "error",
+                        ));
                     }
                 }
             }
@@ -553,6 +630,8 @@ fn orchestrator_next_internal(
         step: next_step_from_state(&session.state),
         reason: format!("fallback by state '{}'", session.state.as_str()),
         source: "fallback".to_string(),
+        error_code: None,
+        action_hint: None,
     })
 }
 
