@@ -1,5 +1,8 @@
 use super::session_store::InstallSessionStore;
-use super::types::{InstallMethod, InstallSession, InstallState, InstallStep, InstallStepResult};
+use super::types::{
+    InstallMethod, InstallMethodCapability, InstallSession, InstallState, InstallStep,
+    InstallStepResult,
+};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -109,6 +112,31 @@ fn make_result(
     }
 }
 
+fn list_method_capabilities() -> Vec<InstallMethodCapability> {
+    vec![
+        InstallMethodCapability {
+            method: "local".to_string(),
+            available: true,
+            hint: None,
+        },
+        InstallMethodCapability {
+            method: "wsl2".to_string(),
+            available: cfg!(target_os = "windows"),
+            hint: Some("Requires WSL2 environment".to_string()),
+        },
+        InstallMethodCapability {
+            method: "docker".to_string(),
+            available: true,
+            hint: Some("Requires Docker daemon to be running".to_string()),
+        },
+        InstallMethodCapability {
+            method: "remote_ssh".to_string(),
+            available: true,
+            hint: Some("Requires reachable SSH host".to_string()),
+        },
+    ]
+}
+
 fn run_step(store: &InstallSessionStore, session_id_raw: &str, step_raw: &str) -> Result<InstallStepResult, String> {
     let session_id = session_id_raw.trim();
     if session_id.is_empty() {
@@ -199,6 +227,11 @@ pub async fn install_run_step(
     run_step(&store, &session_id, &step)
 }
 
+#[tauri::command]
+pub async fn install_list_methods() -> Result<Vec<InstallMethodCapability>, String> {
+    Ok(list_method_capabilities())
+}
+
 pub async fn create_session_for_test(method: &str) -> Result<InstallSession, String> {
     create_session(&TEST_SESSION_STORE, method)
 }
@@ -215,4 +248,8 @@ pub async fn get_session_for_test(session_id: &str) -> Result<InstallSession, St
 
 pub async fn run_step_for_test(session_id: &str, step: &str) -> Result<InstallStepResult, String> {
     run_step(&TEST_SESSION_STORE, session_id, step)
+}
+
+pub async fn list_methods_for_test() -> Result<Vec<InstallMethodCapability>, String> {
+    Ok(list_method_capabilities())
 }

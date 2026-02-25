@@ -1,5 +1,7 @@
 use clawpal::install::types::InstallSession;
-use clawpal::install::commands::{create_session_for_test, get_session_for_test, run_step_for_test};
+use clawpal::install::commands::{
+    create_session_for_test, get_session_for_test, list_methods_for_test, run_step_for_test,
+};
 
 #[test]
 fn install_session_serialization_roundtrip() {
@@ -43,4 +45,13 @@ async fn run_step_precheck_updates_state_and_next_step() {
         .await
         .expect("get session should succeed");
     assert_eq!(refreshed.state.as_str(), "precheck_passed");
+}
+
+#[tokio::test]
+async fn list_methods_returns_all_four_methods() {
+    let methods = list_methods_for_test()
+        .await
+        .expect("list methods should succeed");
+    let names: Vec<String> = methods.into_iter().map(|m| m.method).collect();
+    assert_eq!(names, vec!["local", "wsl2", "docker", "remote_ssh"]);
 }

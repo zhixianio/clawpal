@@ -39,7 +39,9 @@ use crate::commands::{
     log_app_event,
     remote_read_app_log, remote_read_error_log, remote_read_gateway_log, remote_read_gateway_error_log,
 };
-use crate::install::commands::{install_create_session, install_get_session, install_run_step};
+use crate::install::commands::{
+    install_create_session, install_get_session, install_list_methods, install_run_step,
+};
 use crate::install::session_store::InstallSessionStore;
 use crate::bridge_client::BridgeClient;
 use crate::doctor_commands::{
@@ -90,6 +92,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             install_create_session,
             install_get_session,
+            install_list_methods,
             install_run_step,
             get_system_status,
             get_status_light,

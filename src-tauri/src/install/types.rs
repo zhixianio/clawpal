@@ -107,3 +107,10 @@ pub struct InstallStepResult {
     pub next_step: Option<String>,
     pub error_code: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InstallMethodCapability {
+    pub method: String,
+    pub available: bool,
+    pub hint: Option<String>,
+}

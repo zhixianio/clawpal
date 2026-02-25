@@ -416,3 +416,9 @@ export interface InstallStepResult {
   next_step: string | null;
   error_code: string | null;
 }
+
+export interface InstallMethodCapability {
+  method: InstallMethod;
+  available: boolean;
+  hint: string | null;
+}

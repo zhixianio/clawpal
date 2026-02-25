@@ -1,11 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, GatewayCredentials, HistoryItem, InstallSession, InstallStepResult, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, GatewayCredentials, HistoryItem, InstallMethodCapability, InstallSession, InstallStepResult, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
 
 export const api = {
   installCreateSession: (method: "local" | "wsl2" | "docker" | "remote_ssh"): Promise<InstallSession> =>
     invoke("install_create_session", { method }),
   installGetSession: (sessionId: string): Promise<InstallSession> =>
     invoke("install_get_session", { sessionId }),
+  installListMethods: (): Promise<InstallMethodCapability[]> =>
+    invoke("install_list_methods", {}),
   installRunStep: (sessionId: string, step: "precheck" | "install" | "init" | "verify"): Promise<InstallStepResult> =>
     invoke("install_run_step", { sessionId, step }),
   getSystemStatus: (): Promise<SystemStatus> =>
