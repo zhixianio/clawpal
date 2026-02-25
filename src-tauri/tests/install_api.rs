@@ -1,8 +1,9 @@
 use clawpal::install::types::InstallSession;
 use clawpal::install::commands::{
-    create_session_for_test, get_session_for_test, list_methods_for_test, run_local_precheck_for_test,
-    run_step_for_test,
+    create_session_for_test, failed_state_for_test, get_session_for_test, list_methods_for_test,
+    run_local_precheck_for_test, run_step_for_test,
 };
+use clawpal::install::runners::docker::docker_verify_compose_command_for_test;
 
 #[test]
 fn install_session_serialization_roundtrip() {
@@ -64,4 +65,18 @@ async fn local_precheck_returns_command_summary() {
         .expect("local precheck should succeed");
     assert!(!result.commands.is_empty());
     assert!(result.summary.contains("precheck"));
+}
+
+#[test]
+fn verify_failure_keeps_init_passed_state() {
+    let state = failed_state_for_test("verify").expect("should return failed-state mapping");
+    assert_eq!(state, "init_passed");
+}
+
+#[test]
+fn docker_verify_command_sets_safe_env_defaults() {
+    let command = docker_verify_compose_command_for_test("/tmp/openclaw");
+    assert!(command.contains("OPENCLAW_CONFIG_DIR="));
+    assert!(command.contains("OPENCLAW_WORKSPACE_DIR="));
+    assert!(command.contains("docker compose config"));
 }

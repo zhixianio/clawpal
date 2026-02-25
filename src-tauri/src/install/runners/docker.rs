@@ -19,6 +19,17 @@ fn repo_dir_str(path: &PathBuf) -> String {
     path.to_string_lossy().to_string()
 }
 
+fn docker_verify_compose_command(repo_str: &str) -> String {
+    format!(
+        "cd \"{repo}\" && OPENCLAW_CONFIG_DIR=\"$HOME/.openclaw\" OPENCLAW_WORKSPACE_DIR=\"$HOME/.openclaw/workspace\" OPENCLAW_GATEWAY_TOKEN=\"clawpal-install\" CLAUDE_AI_SESSION_KEY=\"dummy\" CLAUDE_WEB_SESSION_KEY=\"dummy\" CLAUDE_WEB_COOKIE=\"dummy\" docker compose config",
+        repo = repo_str
+    )
+}
+
+pub fn docker_verify_compose_command_for_test(repo_str: &str) -> String {
+    docker_verify_compose_command(repo_str)
+}
+
 pub fn run_step(
     step: &InstallStep,
     _artifacts: &HashMap<String, Value>,
@@ -78,7 +89,7 @@ pub fn run_step(
             })
         }
         InstallStep::Verify => {
-            let compose_check = format!("cd \"{}\" && docker compose config", repo_str);
+            let compose_check = docker_verify_compose_command(&repo_str);
             let compose = run_command("bash", &["-lc", &compose_check])?;
             let inspect = run_command("docker", &["image", "inspect", "openclaw:local"])?;
             Ok(RunnerOutput {

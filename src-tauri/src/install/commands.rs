@@ -87,7 +87,7 @@ fn failed_state(step: &InstallStep) -> InstallState {
         InstallStep::Precheck => InstallState::PrecheckFailed,
         InstallStep::Install => InstallState::InstallFailed,
         InstallStep::Init => InstallState::InitFailed,
-        InstallStep::Verify => InstallState::InitFailed,
+        InstallStep::Verify => InstallState::InitPassed,
     }
 }
 
@@ -371,4 +371,9 @@ pub async fn run_local_precheck_for_test() -> Result<InstallStepResult, String> 
     result.commands = output.commands;
     result.artifacts = output.artifacts;
     Ok(result)
+}
+
+pub fn failed_state_for_test(step: &str) -> Result<String, String> {
+    let parsed = parse_step(step)?;
+    Ok(failed_state(&parsed).as_str().to_string())
 }

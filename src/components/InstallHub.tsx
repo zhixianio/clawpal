@@ -261,7 +261,7 @@ export function InstallHub({
                   <div className="font-medium">{lastResult.summary}</div>
                   <div className="text-muted-foreground">{lastResult.details}</div>
                   {lastResult.commands.length > 0 && (
-                    <div className="font-mono text-[11px]">
+                    <div className="max-h-40 overflow-auto rounded border bg-background/70 p-2 font-mono text-[11px] whitespace-pre-wrap break-all">
                       {lastResult.commands.join("\n")}
                     </div>
                   )}
