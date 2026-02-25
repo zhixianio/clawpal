@@ -4,6 +4,7 @@ use super::types::{
     InstallMethod, InstallMethodCapability, InstallSession, InstallState, InstallStep,
     InstallStepResult,
 };
+use crate::ssh::SshConnectionPool;
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -142,7 +143,49 @@ fn list_method_capabilities() -> Vec<InstallMethodCapability> {
     ]
 }
 
-fn run_step(store: &InstallSessionStore, session_id_raw: &str, step_raw: &str) -> Result<InstallStepResult, String> {
+async fn run_remote_ssh_step(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    step: &InstallStep,
+    artifacts: &HashMap<String, Value>,
+) -> Result<runners::RunnerOutput, runners::RunnerFailure> {
+    let status = if pool.is_connected(host_id).await {
+        "connected".to_string()
+    } else {
+        "disconnected".to_string()
+    };
+    if status != "connected" {
+        let hosts = crate::commands::list_ssh_hosts().map_err(|e| runners::RunnerFailure {
+            error_code: "validation_failed".to_string(),
+            summary: "remote ssh host lookup failed".to_string(),
+            details: e,
+            commands: vec![],
+        })?;
+        let host = hosts
+            .into_iter()
+            .find(|h| h.id == host_id)
+            .ok_or_else(|| runners::RunnerFailure {
+                error_code: "validation_failed".to_string(),
+                summary: "remote ssh host not found".to_string(),
+                details: format!("No SSH host config with id: {host_id}"),
+                commands: vec![],
+            })?;
+        pool.connect(&host).await.map_err(|e| runners::RunnerFailure {
+            error_code: runners::classify_error_code(&e),
+            summary: "remote ssh connect failed".to_string(),
+            details: e,
+            commands: vec![format!("connect host {host_id}")],
+        })?;
+    }
+    runners::remote_ssh::run_step(pool, host_id, step, artifacts).await
+}
+
+async fn run_step(
+    store: &InstallSessionStore,
+    pool: Option<&SshConnectionPool>,
+    session_id_raw: &str,
+    step_raw: &str,
+) -> Result<InstallStepResult, String> {
     let session_id = session_id_raw.trim();
     if session_id.is_empty() {
         return Err("session_id is required".to_string());
@@ -186,7 +229,42 @@ fn run_step(store: &InstallSessionStore, session_id_raw: &str, step_raw: &str) -
     session.updated_at = Utc::now().to_rfc3339();
     store.upsert(session.clone())?;
 
-    let run_outcome = runners::run_step(&method, &step, &session.artifacts);
+    let run_outcome = match method {
+        InstallMethod::RemoteSsh => {
+            let Some(host_id) = session
+                .artifacts
+                .get("ssh_host_id")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            else {
+                session.state = failed_state(&step);
+                session.updated_at = Utc::now().to_rfc3339();
+                store.upsert(session)?;
+                return Ok(make_result(
+                    false,
+                    "remote ssh target missing".to_string(),
+                    "Please select an existing remote instance before starting".to_string(),
+                    None,
+                    Some("validation_failed".to_string()),
+                ));
+            };
+            let Some(pool) = pool else {
+                session.state = failed_state(&step);
+                session.updated_at = Utc::now().to_rfc3339();
+                store.upsert(session)?;
+                return Ok(make_result(
+                    false,
+                    "remote ssh unavailable".to_string(),
+                    "SSH connection pool is unavailable".to_string(),
+                    None,
+                    Some("validation_failed".to_string()),
+                ));
+            };
+            run_remote_ssh_step(pool, &host_id, &step, &session.artifacts).await
+        }
+        _ => runners::run_step(&method, &step, &session.artifacts),
+    };
     match run_outcome {
         Ok(output) => {
             for (key, value) in &output.artifacts {
@@ -247,9 +325,10 @@ pub async fn install_get_session(
 pub async fn install_run_step(
     session_id: String,
     step: String,
+    pool: State<'_, SshConnectionPool>,
     store: State<'_, InstallSessionStore>,
 ) -> Result<InstallStepResult, String> {
-    run_step(&store, &session_id, &step)
+    run_step(&store, Some(&pool), &session_id, &step).await
 }
 
 #[tauri::command]
@@ -272,7 +351,7 @@ pub async fn get_session_for_test(session_id: &str) -> Result<InstallSession, St
 }
 
 pub async fn run_step_for_test(session_id: &str, step: &str) -> Result<InstallStepResult, String> {
-    run_step(&TEST_SESSION_STORE, session_id, step)
+    run_step(&TEST_SESSION_STORE, None, session_id, step).await
 }
 
 pub async fn list_methods_for_test() -> Result<Vec<InstallMethodCapability>, String> {

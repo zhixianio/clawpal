@@ -16,6 +16,7 @@ import type {
   InstallSession,
   InstallStep,
   InstallStepResult,
+  SshHost,
 } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 
@@ -74,6 +75,8 @@ export function InstallHub({
   const [runningStep, setRunningStep] = useState<InstallStep | null>(null);
   const [session, setSession] = useState<InstallSession | null>(null);
   const [lastResult, setLastResult] = useState<InstallStepResult | null>(null);
+  const [sshHosts, setSshHosts] = useState<SshHost[]>([]);
+  const [selectedSshHostId, setSelectedSshHostId] = useState<string>("");
 
   useEffect(() => {
     setLoadingMethods(true);
@@ -89,6 +92,17 @@ export function InstallHub({
       .finally(() => setLoadingMethods(false));
   }, [ua, showToast]);
 
+  useEffect(() => {
+    ua.listSshHosts()
+      .then((hosts) => {
+        setSshHosts(hosts);
+        if (hosts.length > 0) {
+          setSelectedSshHostId(hosts[0].id);
+        }
+      })
+      .catch(() => {});
+  }, [ua]);
+
   const selectedMeta = useMemo(
     () => methods.find((m) => m.method === selectedMethod) ?? null,
     [methods, selectedMethod],
@@ -97,9 +111,16 @@ export function InstallHub({
   const methodLabel = (method: InstallMethod): string => t(`home.install.method.${method}`);
 
   const handleCreateSession = () => {
+    if (selectedMethod === "remote_ssh" && !selectedSshHostId) {
+      showToast?.(t("home.install.remoteHostRequired"), "error");
+      return;
+    }
     setCreating(true);
     setLastResult(null);
-    ua.installCreateSession(selectedMethod)
+    const options = selectedMethod === "remote_ssh"
+      ? { ssh_host_id: selectedSshHostId }
+      : undefined;
+    ua.installCreateSession(selectedMethod, options)
       .then((next) => {
         setSession(next);
         showToast?.(t("home.install.sessionCreated"), "success");
@@ -172,6 +193,29 @@ export function InstallHub({
           </div>
           {selectedMeta?.hint && (
             <p className="text-xs text-muted-foreground">{selectedMeta.hint}</p>
+          )}
+          {selectedMethod === "remote_ssh" && (
+            <div className="flex items-center gap-2">
+              <Select
+                value={selectedSshHostId}
+                onValueChange={setSelectedSshHostId}
+                disabled={creating || runningStep !== null || sshHosts.length === 0}
+              >
+                <SelectTrigger size="sm" className="w-[260px]">
+                  <SelectValue placeholder={t("home.install.selectRemoteHost")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {sshHosts.map((host) => (
+                    <SelectItem key={host.id} value={host.id}>
+                      {host.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {sshHosts.length === 0 && (
+                <span className="text-xs text-muted-foreground">{t("home.install.noRemoteHosts")}</span>
+              )}
+            </div>
           )}
 
           {session && (

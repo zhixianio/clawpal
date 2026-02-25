@@ -105,6 +105,11 @@ pub fn run_step(
         InstallMethod::Local => local::run_step(step, artifacts),
         InstallMethod::Wsl2 => wsl2::run_step(step, artifacts),
         InstallMethod::Docker => docker::run_step(step, artifacts),
-        InstallMethod::RemoteSsh => remote_ssh::run_step(step, artifacts),
+        InstallMethod::RemoteSsh => Err(RunnerFailure {
+            error_code: "validation_failed".to_string(),
+            summary: "remote runner requires ssh connection pool".to_string(),
+            details: "Use async remote runner path".to_string(),
+            commands: vec![],
+        }),
     }
 }
