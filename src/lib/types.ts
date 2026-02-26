@@ -269,6 +269,14 @@ export interface DockerInstance {
   clawpalDataDir?: string;
 }
 
+export interface RegisteredInstance {
+  id: string;
+  instanceType: "local" | "docker" | "remote_ssh";
+  label: string;
+  openclawHome?: string | null;
+  clawpalDataDir?: string | null;
+}
+
 export interface SshExecResult {
   stdout: string;
   stderr: string;

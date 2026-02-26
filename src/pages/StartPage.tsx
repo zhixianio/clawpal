@@ -16,7 +16,7 @@ import {
 import { InstanceCard } from "@/components/InstanceCard";
 import { InstallHub } from "@/components/InstallHub";
 import { api } from "@/lib/api";
-import type { DockerInstance, SshHost, InstallSession } from "@/lib/types";
+import type { DockerInstance, SshHost, InstallSession, RegisteredInstance } from "@/lib/types";
 
 interface StartPageProps {
   dockerInstances: DockerInstance[];
@@ -55,6 +55,7 @@ export function StartPage({
   // SSH manual check state: tracks which hosts have been checked / are checking
   const [sshChecked, setSshChecked] = useState<Record<string, boolean>>({});
   const [sshChecking, setSshChecking] = useState<Record<string, boolean>>({});
+  const [registeredInstances, setRegisteredInstances] = useState<RegisteredInstance[]>([]);
 
   // Install dialog
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
@@ -78,6 +79,24 @@ export function StartPage({
   // Health polling — local, Docker (own openclawHome), and connected SSH
   useEffect(() => {
     let cancelled = false;
+    const refresh = async () => {
+      try {
+        const data = await api.listRegisteredInstances();
+        if (!cancelled) setRegisteredInstances(data);
+      } catch {
+        if (!cancelled) setRegisteredInstances([]);
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     const poll = async () => {
       const updates: Record<string, { healthy: boolean | null; agentCount: number }> = {};
 
@@ -89,8 +108,19 @@ export function StartPage({
         updates.local = { healthy: null, agentCount: 0 };
       }
 
+      const dockerTargets =
+        registeredInstances.filter((r) => r.instanceType === "docker").length > 0
+          ? registeredInstances
+              .filter((r) => r.instanceType === "docker")
+              .map((r) => ({
+                id: r.id,
+                openclawHome: r.openclawHome || undefined,
+                clawpalDataDir: r.clawpalDataDir || undefined,
+              }))
+          : dockerInstances;
+
       // Poll each Docker instance using its own openclawHome
-      for (const d of dockerInstances) {
+      for (const d of dockerTargets) {
         if (cancelled) break;
         if (d.openclawHome) {
           try {
@@ -119,7 +149,7 @@ export function StartPage({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [dockerInstances]);
+  }, [dockerInstances, registeredInstances]);
 
   // Manual SSH health check
   const handleSshCheck = useCallback(async (hostId: string) => {
@@ -143,19 +173,25 @@ export function StartPage({
   }, []);
 
   // Build unified instances list
-  const instances = [
-    { id: "local", label: t("instance.local"), type: "local" as const },
-    ...dockerInstances.map((d) => ({
-      id: d.id,
-      label: d.label || d.id,
-      type: "docker" as const,
-    })),
-    ...sshHosts.map((h) => ({
-      id: h.id,
-      label: h.label || h.host,
-      type: "ssh" as const,
-    })),
-  ];
+  const instances = registeredInstances.length > 0
+    ? registeredInstances.map((r) => ({
+        id: r.id,
+        label: r.label || r.id,
+        type: r.instanceType === "remote_ssh" ? "ssh" as const : r.instanceType as "local" | "docker",
+      }))
+    : [
+        { id: "local", label: t("instance.local"), type: "local" as const },
+        ...dockerInstances.map((d) => ({
+          id: d.id,
+          label: d.label || d.id,
+          type: "docker" as const,
+        })),
+        ...sshHosts.map((h) => ({
+          id: h.id,
+          label: h.label || h.host,
+          type: "ssh" as const,
+        })),
+      ];
 
   // Docker rename handlers
   const openDockerRename = useCallback((instance: DockerInstance) => {
