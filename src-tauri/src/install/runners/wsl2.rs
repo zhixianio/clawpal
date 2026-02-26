@@ -26,7 +26,7 @@ pub fn run_step(
             })
         }
         InstallStep::Install => {
-            let script = "command -v openclaw >/dev/null 2>&1 || (curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard)";
+            let script = "command -v openclaw >/dev/null 2>&1 || (mkdir -p ~/.clawpal/install/cache && INSTALLER=~/.clawpal/install/cache/openclaw-install.sh && ( [ -s \"$INSTALLER\" ] || curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh -o \"$INSTALLER\" ) && bash \"$INSTALLER\" --no-prompt --no-onboard)";
             let install = run_command(wsl(), &["bash", "-lc", script])?;
             Ok(RunnerOutput {
                 summary: "wsl2 install completed".to_string(),

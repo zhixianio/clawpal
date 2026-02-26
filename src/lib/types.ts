@@ -388,6 +388,8 @@ export type InstallState =
   | "init_running"
   | "init_failed"
   | "init_passed"
+  | "verify_running"
+  | "verify_failed"
   | "ready";
 
 export type InstallStep = "precheck" | "install" | "init" | "verify";
@@ -429,6 +431,24 @@ export interface InstallOrchestratorDecision {
   step: string | null;
   reason: string;
   source: string;
+  errorCode?: string | null;
+  actionHint?: string | null;
+}
+
+export interface InstallUiAction {
+  id: string;
+  kind: string;
+  label: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface InstallTargetDecision {
+  method: InstallMethod | null;
+  reason: string;
+  source: string;
+  requiresSshHost: boolean;
+  requiredFields?: string[];
+  uiActions?: InstallUiAction[];
   errorCode?: string | null;
   actionHint?: string | null;
 }

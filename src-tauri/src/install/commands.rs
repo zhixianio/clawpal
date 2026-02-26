@@ -6,12 +6,12 @@ use super::types::{
 };
 use crate::ssh::SshConnectionPool;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::LazyLock;
 use tauri::State;
 use uuid::Uuid;
@@ -44,6 +44,12 @@ fn create_session(
     options: Option<HashMap<String, Value>>,
 ) -> Result<InstallSession, String> {
     let method = parse_method(method_raw)?;
+    if !is_method_available(&method) {
+        return Err(format!(
+            "install method '{}' is unavailable on this platform",
+            method.as_str()
+        ));
+    }
     let now = Utc::now().to_rfc3339();
     let session = InstallSession {
         id: format!("install-{}", Uuid::new_v4()),
@@ -64,7 +70,7 @@ fn is_step_allowed(state: &InstallState, step: &InstallStep) -> bool {
         InstallStep::Precheck => matches!(state, InstallState::SelectedMethod | InstallState::PrecheckFailed),
         InstallStep::Install => matches!(state, InstallState::PrecheckPassed | InstallState::InstallFailed),
         InstallStep::Init => matches!(state, InstallState::InstallPassed | InstallState::InitFailed),
-        InstallStep::Verify => matches!(state, InstallState::InitPassed),
+        InstallStep::Verify => matches!(state, InstallState::InitPassed | InstallState::VerifyFailed),
     }
 }
 
@@ -73,7 +79,7 @@ fn running_state(step: &InstallStep) -> InstallState {
         InstallStep::Precheck => InstallState::PrecheckRunning,
         InstallStep::Install => InstallState::InstallRunning,
         InstallStep::Init => InstallState::InitRunning,
-        InstallStep::Verify => InstallState::InitPassed,
+        InstallStep::Verify => InstallState::VerifyRunning,
     }
 }
 
@@ -91,7 +97,7 @@ fn failed_state(step: &InstallStep) -> InstallState {
         InstallStep::Precheck => InstallState::PrecheckFailed,
         InstallStep::Install => InstallState::InstallFailed,
         InstallStep::Init => InstallState::InitFailed,
-        InstallStep::Verify => InstallState::InitPassed,
+        InstallStep::Verify => InstallState::VerifyFailed,
     }
 }
 
@@ -104,13 +110,12 @@ fn next_step(step: &InstallStep) -> Option<String> {
     }
 }
 
-fn next_step_from_state(state: &InstallState) -> Option<String> {
-    match state {
-        InstallState::SelectedMethod | InstallState::PrecheckFailed => Some("precheck".to_string()),
-        InstallState::PrecheckPassed | InstallState::InstallFailed => Some("install".to_string()),
-        InstallState::InstallPassed | InstallState::InitFailed => Some("init".to_string()),
-        InstallState::InitPassed => Some("verify".to_string()),
-        _ => None,
+fn is_method_available(method: &InstallMethod) -> bool {
+    match method {
+        InstallMethod::Local => true,
+        InstallMethod::Wsl2 => cfg!(target_os = "windows"),
+        InstallMethod::Docker => true,
+        InstallMethod::RemoteSsh => true,
     }
 }
 
@@ -144,20 +149,62 @@ pub struct InstallOrchestratorDecision {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct InstallUiAction {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(default)]
+    pub payload: HashMap<String, Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallTargetDecision {
+    pub method: Option<String>,
+    pub reason: String,
+    pub source: String,
+    pub requires_ssh_host: bool,
+    #[serde(default)]
+    pub required_fields: Vec<String>,
+    #[serde(default)]
+    pub ui_actions: Vec<InstallUiAction>,
+    pub error_code: Option<String>,
+    pub action_hint: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 struct ExternalDeciderOutput {
     pub step: Option<String>,
     pub reason: Option<String>,
 }
 
-fn parse_decider_json(raw: &str) -> Result<ExternalDeciderOutput, String> {
-    if let Ok(parsed) = serde_json::from_str::<ExternalDeciderOutput>(raw) {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct ExternalTargetDeciderOutput {
+    pub method: Option<String>,
+    pub reason: Option<String>,
+    pub requires_ssh_host: Option<bool>,
+    pub required_fields: Option<Vec<String>>,
+    pub ui_actions: Option<Vec<InstallUiAction>>,
+}
+
+fn parse_json_from_output<T: DeserializeOwned>(raw: &str) -> Result<T, String> {
+    if let Ok(parsed) = serde_json::from_str::<T>(raw) {
         return Ok(parsed);
     }
     let start = raw.find('{').ok_or_else(|| "missing '{' in decider output".to_string())?;
     let end = raw.rfind('}').ok_or_else(|| "missing '}' in decider output".to_string())?;
     let slice = &raw[start..=end];
-    serde_json::from_str::<ExternalDeciderOutput>(slice)
-        .map_err(|e| format!("invalid decider json: {e}"))
+    serde_json::from_str::<T>(slice).map_err(|e| format!("invalid decider json: {e}"))
+}
+
+fn parse_decider_json(raw: &str) -> Result<ExternalDeciderOutput, String> {
+    parse_json_from_output::<ExternalDeciderOutput>(raw)
+}
+
+fn parse_target_decider_json(raw: &str) -> Result<ExternalTargetDeciderOutput, String> {
+    parse_json_from_output::<ExternalTargetDeciderOutput>(raw)
 }
 
 fn classify_orchestrator_error(raw: &str) -> (String, String) {
@@ -206,10 +253,126 @@ fn make_orchestrator_error_decision(reason: String, source: &str) -> InstallOrch
     }
 }
 
+fn make_target_error_decision(reason: String, source: &str) -> InstallTargetDecision {
+    let (error_code, action_hint_raw) = classify_orchestrator_error(&reason);
+    let mut ui_actions = Vec::<InstallUiAction>::new();
+    let mut required_fields = Vec::<String>::new();
+    match action_hint_raw.as_str() {
+        "open_settings_auth" => {
+            ui_actions.push(InstallUiAction {
+                id: "open-settings-auth".to_string(),
+                kind: "open_settings".to_string(),
+                label: "配置 Auth".to_string(),
+                payload: HashMap::new(),
+            });
+            required_fields.push("auth_profile".to_string());
+        }
+        "open_instances" => {
+            ui_actions.push(InstallUiAction {
+                id: "open-instance-manager".to_string(),
+                kind: "open_instances".to_string(),
+                label: "添加/选择实例".to_string(),
+                payload: HashMap::new(),
+            });
+            required_fields.push("ssh_host_id".to_string());
+        }
+        "open_doctor" => {
+            ui_actions.push(InstallUiAction {
+                id: "open-doctor".to_string(),
+                kind: "open_doctor".to_string(),
+                label: "打开 Doctor".to_string(),
+                payload: HashMap::new(),
+            });
+        }
+        _ => {}
+    }
+    InstallTargetDecision {
+        method: None,
+        reason,
+        source: source.to_string(),
+        requires_ssh_host: false,
+        required_fields,
+        ui_actions,
+        error_code: Some(error_code),
+        action_hint: Some(action_hint_raw),
+    }
+}
+
 fn zeroclaw_config_dir() -> Result<PathBuf, String> {
     let dir = crate::models::resolve_paths().clawpal_dir.join("zeroclaw-sidecar");
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create zeroclaw config dir: {e}"))?;
     Ok(dir)
+}
+
+fn decider_timeout_secs() -> u64 {
+    std::env::var("CLAWPAL_ZEROCLAW_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(20)
+}
+
+fn run_command_output_with_timeout(
+    cmd: &PathBuf,
+    args: &[String],
+    env_pairs: &[(String, String)],
+    stdin_payload: Option<&[u8]>,
+    context: &str,
+) -> Result<Output, String> {
+    let timeout_secs = decider_timeout_secs();
+    let mut command = Command::new(cmd);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(if stdin_payload.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+    for (key, value) in env_pairs {
+        command.env(key, value);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("failed to start {context} '{}': {e}", cmd.display()))?;
+
+    if let Some(payload) = stdin_payload {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(payload)
+                .map_err(|e| format!("failed to write stdin for {context}: {e}"))?;
+        }
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait().map_err(|e| format!("failed while waiting for {context}: {e}"))? {
+            Some(status) => {
+                let mut stdout_buf = Vec::new();
+                let mut stderr_buf = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_end(&mut stdout_buf);
+                }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_end(&mut stderr_buf);
+                }
+                return Ok(Output {
+                    status,
+                    stdout: stdout_buf,
+                    stderr: stderr_buf,
+                });
+            }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{context} timed out after {timeout_secs}s"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
 }
 
 fn run_stdin_decider(session: &InstallSession, goal: &str, cmd: &PathBuf) -> Result<InstallOrchestratorDecision, String> {
@@ -220,21 +383,14 @@ fn run_stdin_decider(session: &InstallSession, goal: &str, cmd: &PathBuf) -> Res
         "state": session.state.as_str(),
         "artifacts": session.artifacts,
     });
-    let mut child = Command::new(cmd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to start decider '{}': {e}", cmd.display()))?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
-        stdin
-            .write_all(&body)
-            .map_err(|e| format!("failed to write decider stdin: {e}"))?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("failed to wait decider: {e}"))?;
+    let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+    let output = run_command_output_with_timeout(
+        cmd,
+        &[],
+        &[],
+        Some(&body),
+        "zeroclaw decider",
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
@@ -348,11 +504,10 @@ fn resolve_decider_command_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
-fn run_zeroclaw_agent_decider(
-    session: &InstallSession,
-    goal: &str,
+fn run_zeroclaw_agent_prompt_json(
     cmd: &PathBuf,
-) -> Result<InstallOrchestratorDecision, String> {
+    prompt: String,
+) -> Result<String, String> {
     let cfg = zeroclaw_config_dir()?;
     let cfg_arg = cfg.to_string_lossy().to_string();
     let env_pairs = zeroclaw_env_pairs_from_clawpal();
@@ -363,11 +518,19 @@ fn run_zeroclaw_agent_decider(
         );
     }
     let provider = pick_zeroclaw_provider(&env_pairs);
-    let auth = Command::new(cmd)
-        .envs(env_pairs.clone())
-        .args(["--config-dir", &cfg_arg, "auth", "status"])
-        .output()
-        .map_err(|e| format!("failed to check zeroclaw auth status: {e}"))?;
+    let auth_args = vec![
+        "--config-dir".to_string(),
+        cfg_arg.clone(),
+        "auth".to_string(),
+        "status".to_string(),
+    ];
+    let auth = run_command_output_with_timeout(
+        cmd,
+        &auth_args,
+        &env_pairs,
+        None,
+        "zeroclaw auth status",
+    )?;
     let auth_text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&auth.stdout),
@@ -377,6 +540,77 @@ fn run_zeroclaw_agent_decider(
         return Err("zeroclaw sidecar is not configured: no auth profile. Run zeroclaw onboard/auth first.".to_string());
     }
 
+    let mut base_args = vec![
+        "--config-dir".to_string(),
+        cfg_arg,
+        "agent".to_string(),
+        "-m".to_string(),
+        prompt,
+    ];
+    let mut candidates = Vec::<String>::new();
+    if let Some(p) = provider {
+        base_args.push("-p".to_string());
+        base_args.push(p.to_string());
+        candidates = candidate_models_for_provider(p);
+    }
+
+    let mut last_error = String::new();
+    for model in candidates.into_iter() {
+        let mut args = base_args.clone();
+        args.push("--model".to_string());
+        args.push(model.clone());
+        let output = run_command_output_with_timeout(
+            cmd,
+            &args,
+            &env_pairs,
+            None,
+            "zeroclaw agent",
+        )?;
+        let merged = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+        let lower = merged.to_lowercase();
+        last_error = merged;
+        if lower.contains("not_found_error") || lower.contains("model:") {
+            continue;
+        }
+        return Err(format!("zeroclaw agent failed: {}", last_error.trim()));
+    }
+
+    let output = run_command_output_with_timeout(
+        cmd,
+        &base_args,
+        &env_pairs,
+        None,
+        "zeroclaw agent",
+    )?;
+    let merged = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        if !last_error.is_empty() {
+            return Err(format!(
+                "zeroclaw agent failed after model retries. last error: {}",
+                last_error.trim()
+            ));
+        }
+        return Err(format!("zeroclaw agent failed: {}", merged.trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn run_zeroclaw_agent_decider(
+    session: &InstallSession,
+    goal: &str,
+    cmd: &PathBuf,
+) -> Result<InstallOrchestratorDecision, String> {
     let mut allowed_steps = Vec::<&str>::new();
     for candidate in ["precheck", "install", "init", "verify"] {
         let parsed = parse_step(candidate)?;
@@ -390,69 +624,8 @@ fn run_zeroclaw_agent_decider(
         session.state.as_str(),
         allowed_steps.join(",")
     );
-    let mut base_args = vec![
-        "--config-dir".to_string(),
-        cfg_arg.clone(),
-        "agent".to_string(),
-        "-m".to_string(),
-        prompt,
-    ];
-    let mut candidates = Vec::<String>::new();
-    if let Some(p) = provider {
-        base_args.push("-p".to_string());
-        base_args.push(p.to_string());
-        candidates = candidate_models_for_provider(p);
-    }
-    let mut last_error = String::new();
-    let mut output_text: Option<String> = None;
-    for model in candidates.into_iter() {
-        let mut args = base_args.clone();
-        args.push("--model".to_string());
-        args.push(model.clone());
-        let output = Command::new(cmd)
-            .envs(env_pairs.clone())
-            .args(args)
-            .output()
-            .map_err(|e| format!("failed to run zeroclaw agent: {e}"))?;
-        let merged = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if output.status.success() {
-            output_text = Some(String::from_utf8_lossy(&output.stdout).to_string());
-            break;
-        }
-        let lower = merged.to_lowercase();
-        last_error = merged;
-        if lower.contains("not_found_error") || lower.contains("model:") {
-            continue;
-        }
-        return Err(format!("zeroclaw agent failed: {}", last_error.trim()));
-    }
-    if output_text.is_none() {
-        let output = Command::new(cmd)
-            .envs(env_pairs)
-            .args(base_args)
-            .output()
-            .map_err(|e| format!("failed to run zeroclaw agent: {e}"))?;
-        let merged = format!(
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if !output.status.success() {
-            if !last_error.is_empty() {
-                return Err(format!(
-                    "zeroclaw agent failed after model retries. last error: {}",
-                    last_error.trim()
-                ));
-            }
-            return Err(format!("zeroclaw agent failed: {}", merged.trim()));
-        }
-        output_text = Some(String::from_utf8_lossy(&output.stdout).to_string());
-    }
-    let parsed = parse_decider_json(output_text.as_deref().unwrap_or(""))?;
+    let output_text = run_zeroclaw_agent_prompt_json(cmd, prompt)?;
+    let parsed = parse_decider_json(&output_text)?;
     Ok(InstallOrchestratorDecision {
         step: parsed.step,
         reason: parsed
@@ -532,9 +705,9 @@ fn candidate_models_for_provider(provider: &str) -> Vec<String> {
 fn run_external_decider(
     session: &InstallSession,
     goal: &str,
-) -> Result<Option<InstallOrchestratorDecision>, String> {
+) -> Result<InstallOrchestratorDecision, String> {
     let Some(cmd) = resolve_decider_command_path() else {
-        return Ok(None);
+        return Err("zeroclaw decider binary not found".to_string());
     };
     let is_stdin_decider = cmd
         .file_name()
@@ -546,14 +719,151 @@ fn run_external_decider(
     } else {
         run_zeroclaw_agent_decider(session, goal, &cmd)?
     };
-    Ok(Some(decision))
+    Ok(decision)
+}
+
+fn run_stdin_target_decider(
+    goal: &str,
+    context: &HashMap<String, Value>,
+    cmd: &PathBuf,
+) -> Result<InstallTargetDecision, String> {
+    let available_methods: Vec<String> = list_method_capabilities()
+        .into_iter()
+        .filter(|m| m.available)
+        .map(|m| m.method)
+        .collect();
+    let payload = serde_json::json!({
+        "kind": "install_target",
+        "goal": goal,
+        "context": context,
+        "availableMethods": available_methods,
+    });
+    let body = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
+    let output = run_command_output_with_timeout(
+        cmd,
+        &[],
+        &[],
+        Some(&body),
+        "zeroclaw target decider",
+    )?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "target decider exited with code {:?}: {}",
+            output.status.code(),
+            stderr
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed = parse_target_decider_json(&stdout)?;
+    Ok(InstallTargetDecision {
+        method: parsed.method,
+        reason: parsed
+            .reason
+            .unwrap_or_else(|| "target decided by sidecar".to_string()),
+        source: "zeroclaw-sidecar".to_string(),
+        requires_ssh_host: parsed.requires_ssh_host.unwrap_or(false),
+        required_fields: parsed.required_fields.unwrap_or_default(),
+        ui_actions: parsed.ui_actions.unwrap_or_default(),
+        error_code: None,
+        action_hint: None,
+    })
+}
+
+fn run_zeroclaw_agent_target_decider(
+    goal: &str,
+    context: &HashMap<String, Value>,
+    cmd: &PathBuf,
+) -> Result<InstallTargetDecision, String> {
+    let available_methods: Vec<String> = list_method_capabilities()
+        .into_iter()
+        .filter(|m| m.available)
+        .map(|m| m.method)
+        .collect();
+    let methods_text = available_methods.join(",");
+    let context_json = serde_json::to_string(context).unwrap_or_else(|_| "{}".to_string());
+    let prompt = format!(
+        "You are install target planner. Choose one install method from [{methods_text}] based on user goal and runtime context. Goal: {goal}. Context JSON: {context_json}. Return ONLY JSON with fields: method (string), reason (string), requiresSshHost (boolean), requiredFields (array of strings), uiActions (array of objects with id/kind/label/payload)."
+    );
+    let output_text = run_zeroclaw_agent_prompt_json(cmd, prompt)?;
+    let parsed = parse_target_decider_json(&output_text)?;
+    Ok(InstallTargetDecision {
+        method: parsed.method,
+        reason: parsed
+            .reason
+            .unwrap_or_else(|| "target decided by zeroclaw".to_string()),
+        source: "zeroclaw-sidecar".to_string(),
+        requires_ssh_host: parsed.requires_ssh_host.unwrap_or(false),
+        required_fields: parsed.required_fields.unwrap_or_default(),
+        ui_actions: parsed.ui_actions.unwrap_or_default(),
+        error_code: None,
+        action_hint: None,
+    })
+}
+
+fn run_external_target_decider(
+    goal: &str,
+    context: &HashMap<String, Value>,
+) -> Result<InstallTargetDecision, String> {
+    let Some(cmd) = resolve_decider_command_path() else {
+        return Err("zeroclaw decider binary not found".to_string());
+    };
+    let is_stdin_decider = cmd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with("zeroclaw-decider"))
+        .unwrap_or(false);
+    if is_stdin_decider {
+        run_stdin_target_decider(goal, context, &cmd)
+    } else {
+        run_zeroclaw_agent_target_decider(goal, context, &cmd)
+    }
+}
+
+fn decide_target_internal(
+    goal: &str,
+    context: HashMap<String, Value>,
+) -> Result<InstallTargetDecision, String> {
+    let trimmed_goal = goal.trim();
+    if trimmed_goal.is_empty() {
+        return Err("goal is required".to_string());
+    }
+
+    let decision = match run_external_target_decider(trimmed_goal, &context) {
+        Ok(v) => v,
+        Err(err) => return Ok(make_target_error_decision(err, "error")),
+    };
+    let method = match decision.method.as_deref() {
+        Some(raw) => raw,
+        None => {
+            return Ok(make_target_error_decision(
+                "decider returned no method".to_string(),
+                "error",
+            ))
+        }
+    };
+    let parsed_method = match parse_method(method) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(make_target_error_decision(
+                format!("decider proposed unsupported method '{method}'"),
+                "error",
+            ))
+        }
+    };
+    if !is_method_available(&parsed_method) {
+        return Ok(make_target_error_decision(
+            format!("decider proposed unavailable method '{method}'"),
+            "error",
+        ));
+    }
+    Ok(decision)
 }
 
 fn orchestrator_next_internal(
     store: &InstallSessionStore,
     session_id: &str,
     goal: &str,
-    allow_sidecar: bool,
 ) -> Result<InstallOrchestratorDecision, String> {
     let id = session_id.trim();
     if id.is_empty() {
@@ -563,76 +873,43 @@ fn orchestrator_next_internal(
         .get(id)?
         .ok_or_else(|| format!("install session not found: {id}"))?;
 
-    if allow_sidecar {
-        let sidecar_decision = match run_external_decider(&session, goal) {
-            Ok(v) => v,
-            Err(err) => return Ok(make_orchestrator_error_decision(err, "error")),
-        };
-        if let Some(mut decision) = sidecar_decision {
-            let inferred = next_step_from_state(&session.state);
-            let decided_step = decision.step.clone();
-            match decided_step {
-                Some(step) => {
-                    let parsed = match parse_step(&step) {
-                        Ok(v) => v,
-                        Err(_) => {
-                            return Ok(make_orchestrator_error_decision(
-                                format!("decider proposed unsupported step '{step}'"),
-                                "error",
-                            ))
-                        }
-                    };
-                    if !is_step_allowed(&session.state, &parsed) {
-                        if let Some(fixed) = inferred {
-                            decision.step = Some(fixed.clone());
-                            decision.reason = format!(
-                                "{} | guardrail: replaced invalid step '{}' with '{}'",
-                                decision.reason, step, fixed
-                            );
-                            decision.source = "zeroclaw-sidecar".to_string();
-                            decision.error_code = None;
-                            decision.action_hint = None;
-                        } else {
-                            return Ok(make_orchestrator_error_decision(
-                                format!(
-                                    "decider proposed invalid step '{step}' for state '{}'",
-                                    session.state.as_str()
-                                ),
-                                "error",
-                            ));
-                        }
-                    }
-                }
-                None => {
-                    if let Some(fixed) = inferred {
-                        decision.step = Some(fixed.clone());
-                        decision.reason = format!(
-                            "{} | guardrail: filled missing step with '{}'",
-                            decision.reason, fixed
-                        );
-                        decision.source = "zeroclaw-sidecar".to_string();
-                        decision.error_code = None;
-                        decision.action_hint = None;
-                    } else {
-                        return Ok(make_orchestrator_error_decision(
-                            "decider returned no step and no inferred fallback step is available"
-                                .to_string(),
-                            "error",
-                        ));
-                    }
-                }
-            }
-            return Ok(decision);
-        }
-    }
+    let decision = match run_external_decider(&session, goal) {
+        Ok(v) => v,
+        Err(err) => return Ok(make_orchestrator_error_decision(err, "error")),
+    };
 
-    Ok(InstallOrchestratorDecision {
-        step: next_step_from_state(&session.state),
-        reason: format!("fallback by state '{}'", session.state.as_str()),
-        source: "fallback".to_string(),
-        error_code: None,
-        action_hint: None,
-    })
+    let step = match decision.step.as_deref() {
+        Some(raw) => raw,
+        None => {
+            return Ok(make_orchestrator_error_decision(
+                format!(
+                    "decider returned no step for state '{}'",
+                    session.state.as_str()
+                ),
+                "error",
+            ));
+        }
+    };
+
+    let parsed = match parse_step(step) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(make_orchestrator_error_decision(
+                format!("decider proposed unsupported step '{step}'"),
+                "error",
+            ))
+        }
+    };
+    if !is_step_allowed(&session.state, &parsed) {
+        return Ok(make_orchestrator_error_decision(
+            format!(
+                "decider proposed invalid step '{step}' for state '{}'",
+                session.state.as_str()
+            ),
+            "error",
+        ));
+    }
+    Ok(decision)
 }
 
 fn orchestrator_next(
@@ -640,7 +917,7 @@ fn orchestrator_next(
     session_id: &str,
     goal: &str,
 ) -> Result<InstallOrchestratorDecision, String> {
-    orchestrator_next_internal(store, session_id, goal, true)
+    orchestrator_next_internal(store, session_id, goal)
 }
 
 fn append_executed_commands(session: &mut InstallSession, commands: &[String]) {
@@ -666,22 +943,22 @@ fn list_method_capabilities() -> Vec<InstallMethodCapability> {
     vec![
         InstallMethodCapability {
             method: "local".to_string(),
-            available: true,
+            available: is_method_available(&InstallMethod::Local),
             hint: None,
         },
         InstallMethodCapability {
             method: "wsl2".to_string(),
-            available: cfg!(target_os = "windows"),
+            available: is_method_available(&InstallMethod::Wsl2),
             hint: Some("Requires WSL2 environment".to_string()),
         },
         InstallMethodCapability {
             method: "docker".to_string(),
-            available: true,
+            available: is_method_available(&InstallMethod::Docker),
             hint: Some("Requires Docker daemon to be running".to_string()),
         },
         InstallMethodCapability {
             method: "remote_ssh".to_string(),
-            available: true,
+            available: is_method_available(&InstallMethod::RemoteSsh),
             hint: Some("Requires reachable SSH host".to_string()),
         },
     ]
@@ -755,10 +1032,7 @@ async fn run_step(
     let method = session.method.clone();
 
     if !is_step_allowed(&session.state, &step) {
-        session.state = failed_state(&step);
-        session.updated_at = Utc::now().to_rfc3339();
         let blocked_state = session.state.as_str().to_string();
-        store.upsert(session)?;
         return Ok(make_result(
             false,
             format!("{} blocked", step.as_str()),
@@ -882,6 +1156,14 @@ pub async fn install_list_methods() -> Result<Vec<InstallMethodCapability>, Stri
 }
 
 #[tauri::command]
+pub async fn install_decide_target(
+    goal: String,
+    context: Option<HashMap<String, Value>>,
+) -> Result<InstallTargetDecision, String> {
+    decide_target_internal(&goal, context.unwrap_or_default())
+}
+
+#[tauri::command]
 pub async fn install_orchestrator_next(
     session_id: String,
     goal: String,
@@ -916,7 +1198,14 @@ pub async fn orchestrator_next_for_test(
     session_id: &str,
     goal: &str,
 ) -> Result<InstallOrchestratorDecision, String> {
-    orchestrator_next_internal(&TEST_SESSION_STORE, session_id, goal, false)
+    orchestrator_next_internal(&TEST_SESSION_STORE, session_id, goal)
+}
+
+pub async fn orchestrator_next_with_sidecar_for_test(
+    session_id: &str,
+    goal: &str,
+) -> Result<InstallOrchestratorDecision, String> {
+    orchestrator_next_internal(&TEST_SESSION_STORE, session_id, goal)
 }
 
 pub async fn run_local_precheck_for_test() -> Result<InstallStepResult, String> {

@@ -70,7 +70,7 @@ pub fn run_step(
                 });
             }
 
-            let script = "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard";
+            let script = "mkdir -p ~/.clawpal/install/cache && INSTALLER=~/.clawpal/install/cache/openclaw-install.sh && ( [ -s \"$INSTALLER\" ] || curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh -o \"$INSTALLER\" ) && bash \"$INSTALLER\" --no-prompt --no-onboard";
             let install = run_command("bash", &["-lc", script])?;
             Ok(RunnerOutput {
                 summary: "local install completed".to_string(),

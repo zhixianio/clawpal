@@ -113,6 +113,7 @@ function shouldLogRemoteInvokeMetric(ok: boolean, elapsedMs: number): boolean {
 export function useApi() {
   const { instanceId, instanceToken, isRemote, isDocker, isConnected, discordGuildChannels } = useInstance();
   const instanceCacheKey = `${instanceId}#${instanceToken}`;
+  const globalCacheKey = "__global__";
 
   const dispatch = useCallback(
     <TArgs extends unknown[], TResult>(
@@ -192,6 +193,18 @@ export function useApi() {
     [instanceCacheKey],
   );
 
+  const localGlobalCached = useCallback(
+    <TArgs extends unknown[], TResult>(
+      method: string,
+      ttlMs: number,
+      fn: (...args: TArgs) => Promise<TResult>,
+    ) => {
+      return (...args: TArgs): Promise<TResult> =>
+        callWithReadCache(globalCacheKey, method, args, ttlMs, () => fn(...args));
+    },
+    [globalCacheKey],
+  );
+
   const withInvalidation = useCallback(
     <TArgs extends unknown[], TResult>(
       fn: (...args: TArgs) => Promise<TResult>,
@@ -204,6 +217,21 @@ export function useApi() {
         });
     },
     [instanceCacheKey],
+  );
+
+  const withGlobalInvalidation = useCallback(
+    <TArgs extends unknown[], TResult>(
+      fn: (...args: TArgs) => Promise<TResult>,
+      methodsToInvalidate?: string[],
+    ) => {
+      return (...args: TArgs): Promise<TResult> =>
+        fn(...args).then((result) => {
+          invalidateReadCacheForInstance(instanceCacheKey, methodsToInvalidate);
+          invalidateReadCacheForInstance(globalCacheKey, methodsToInvalidate);
+          return result;
+        });
+    },
+    [instanceCacheKey, globalCacheKey],
   );
 
   return useMemo(
@@ -266,23 +294,23 @@ export function useApi() {
       ),
 
       // Models
-      listModelProfiles: localCached(
+      listModelProfiles: localGlobalCached(
         "listModelProfiles",
         10_000,
         api.listModelProfiles,
       ),
-      upsertModelProfile: withInvalidation(
+      upsertModelProfile: withGlobalInvalidation(
         api.upsertModelProfile,
       ),
-      deleteModelProfile: withInvalidation(
+      deleteModelProfile: withGlobalInvalidation(
         api.deleteModelProfile,
       ),
-      resolveApiKeys: localCached(
+      resolveApiKeys: localGlobalCached(
         "resolveApiKeys",
         10_000,
         api.resolveApiKeys,
       ),
-      extractModelProfilesFromConfig: withInvalidation(
+      extractModelProfilesFromConfig: withGlobalInvalidation(
         api.extractModelProfilesFromConfig,
         ["listModelProfiles", "resolveApiKeys"],
       ),
@@ -492,6 +520,7 @@ export function useApi() {
       ),
       installCreateSession: api.installCreateSession,
       installGetSession: api.installGetSession,
+      installDecideTarget: api.installDecideTarget,
       installOrchestratorNext: api.installOrchestratorNext,
       installRunStep: api.installRunStep,
 
@@ -506,6 +535,6 @@ export function useApi() {
       // Remote-only
       remoteWriteRawConfig: withInvalidation(api.remoteWriteRawConfig),
     }),
-    [dispatch, dispatchCached, localCached, withInvalidation, instanceId, isRemote, isDocker, isConnected, discordGuildChannels],
+    [dispatch, dispatchCached, localCached, localGlobalCached, withInvalidation, withGlobalInvalidation, instanceId, isRemote, isDocker, isConnected, discordGuildChannels],
   );
 }

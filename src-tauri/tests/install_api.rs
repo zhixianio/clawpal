@@ -1,12 +1,16 @@
 use clawpal::install::types::InstallSession;
 use clawpal::install::commands::{
     create_session_for_test, failed_state_for_test, get_session_for_test, list_methods_for_test,
-    orchestrator_next_for_test, run_local_precheck_for_test, run_step_for_test,
+    orchestrator_next_for_test, orchestrator_next_with_sidecar_for_test,
+    run_local_precheck_for_test, run_step_for_test,
 };
 use clawpal::install::runners::docker::docker_verify_compose_command_for_test;
 use clawpal::cli_runner::set_active_openclaw_home_override;
 use clawpal::cli_runner::set_active_clawpal_data_override;
 use clawpal::models::resolve_paths;
+use std::sync::Mutex;
+
+static DECIDER_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn install_session_serialization_roundtrip() {
@@ -36,6 +40,20 @@ async fn create_session_returns_selected_method_state() {
 }
 
 #[tokio::test]
+async fn create_session_rejects_unavailable_method_on_current_platform() {
+    if cfg!(target_os = "windows") {
+        return;
+    }
+    let err = create_session_for_test("wsl2")
+        .await
+        .expect_err("wsl2 should be unavailable on non-windows platforms");
+    assert!(
+        err.contains("unavailable"),
+        "expected unavailable error, got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn run_step_precheck_updates_state_and_next_step() {
     let session = create_session_for_test("local")
         .await
@@ -60,6 +78,23 @@ async fn run_step_precheck_updates_state_and_next_step() {
 }
 
 #[tokio::test]
+async fn invalid_step_does_not_mutate_session_state() {
+    let session = create_session_for_test("local")
+        .await
+        .expect("create session should succeed");
+    let result = run_step_for_test(&session.id, "verify")
+        .await
+        .expect("run_step should return a rejected result");
+    assert!(!result.ok);
+    assert_eq!(result.error_code.as_deref(), Some("validation_failed"));
+
+    let refreshed = get_session_for_test(&session.id)
+        .await
+        .expect("get session should succeed");
+    assert_eq!(refreshed.state.as_str(), "selected_method");
+}
+
+#[tokio::test]
 async fn list_methods_returns_all_four_methods() {
     let methods = list_methods_for_test()
         .await
@@ -69,7 +104,7 @@ async fn list_methods_returns_all_four_methods() {
 }
 
 #[tokio::test]
-async fn orchestrator_next_falls_back_without_decider() {
+async fn orchestrator_next_returns_error_without_decider() {
     std::env::remove_var("CLAWPAL_ZEROCLAW_DECIDER");
     let session = create_session_for_test("docker")
         .await
@@ -77,10 +112,54 @@ async fn orchestrator_next_falls_back_without_decider() {
     let decision = orchestrator_next_for_test(&session.id, "install:docker")
         .await
         .expect("orchestrator next should succeed");
-    assert_eq!(decision.source, "fallback");
-    assert_eq!(decision.step.as_deref(), Some("precheck"));
-    assert!(decision.error_code.is_none());
-    assert!(decision.action_hint.is_none());
+    assert_eq!(decision.source, "error");
+    assert!(decision.step.is_none());
+    assert!(decision.error_code.is_some());
+    assert!(decision.action_hint.is_some());
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn orchestrator_sidecar_timeout_returns_error_decision() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let _guard = DECIDER_ENV_LOCK.lock().expect("lock env guard");
+    let session = create_session_for_test("docker")
+        .await
+        .expect("create session should succeed");
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be monotonic")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("clawpal-install-timeout-{suffix}"));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let script_path = dir.join("slow-decider.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\nsleep 2\necho '{\"step\":\"precheck\",\"reason\":\"slow\"}'\n",
+    )
+    .expect("write script");
+    let mut perms = fs::metadata(&script_path).expect("stat script").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms).expect("chmod script");
+
+    std::env::set_var("CLAWPAL_ZEROCLAW_DECIDER", &script_path);
+    std::env::set_var("CLAWPAL_ZEROCLAW_TIMEOUT_SECS", "1");
+    let decision = orchestrator_next_with_sidecar_for_test(&session.id, "install:docker")
+        .await
+        .expect("orchestrator should return fallback decision");
+    std::env::remove_var("CLAWPAL_ZEROCLAW_DECIDER");
+    std::env::remove_var("CLAWPAL_ZEROCLAW_TIMEOUT_SECS");
+
+    assert_eq!(decision.source, "error");
+    assert!(decision.reason.to_lowercase().contains("timed out"), "reason={}", decision.reason);
+    assert_eq!(decision.error_code.as_deref(), Some("network_error"));
+
+    let _ = fs::remove_file(&script_path);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -93,9 +172,9 @@ async fn local_precheck_returns_command_summary() {
 }
 
 #[test]
-fn verify_failure_keeps_init_passed_state() {
+fn verify_failure_maps_to_verify_failed_state() {
     let state = failed_state_for_test("verify").expect("should return failed-state mapping");
-    assert_eq!(state, "init_passed");
+    assert_eq!(state, "verify_failed");
 }
 
 #[test]

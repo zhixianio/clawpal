@@ -36,6 +36,8 @@ pub enum InstallState {
     InitRunning,
     InitFailed,
     InitPassed,
+    VerifyRunning,
+    VerifyFailed,
     Ready,
 }
 
@@ -53,6 +55,8 @@ impl InstallState {
             InstallState::InitRunning => "init_running",
             InstallState::InitFailed => "init_failed",
             InstallState::InitPassed => "init_passed",
+            InstallState::VerifyRunning => "verify_running",
+            InstallState::VerifyFailed => "verify_failed",
             InstallState::Ready => "ready",
         }
     }

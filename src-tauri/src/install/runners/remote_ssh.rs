@@ -48,7 +48,7 @@ pub async fn run_step(
                     artifacts: HashMap::from([("openclaw_present".to_string(), Value::Bool(true))]),
                 });
             }
-            let script = "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard";
+            let script = "mkdir -p ~/.clawpal/install/cache && INSTALLER=~/.clawpal/install/cache/openclaw-install.sh && ( [ -s \"$INSTALLER\" ] || curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh -o \"$INSTALLER\" ) && bash \"$INSTALLER\" --no-prompt --no-onboard";
             let result = pool.exec_login(host_id, script).await.map_err(|e| RunnerFailure {
                 error_code: classify_error_code(&e),
                 summary: "remote ssh install failed".to_string(),

@@ -1,11 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, EnsureAccessResult, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, EnsureAccessResult, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, ResolvedApiKey, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
     invoke("set_active_openclaw_home", { path }),
   setActiveClawpalDataDir: (path: string | null): Promise<boolean> =>
     invoke("set_active_clawpal_data_dir", { path }),
+  localOpenclawConfigExists: (openclawHome: string): Promise<boolean> =>
+    invoke("local_openclaw_config_exists", { openclawHome }),
+  deleteLocalInstanceHome: (openclawHome: string): Promise<boolean> =>
+    invoke("delete_local_instance_home", { openclawHome }),
   ensureAccessProfile: (instanceId: string, transport: string): Promise<EnsureAccessResult> =>
     invoke("ensure_access_profile", { instanceId, transport }),
   recordInstallExperience: (sessionId: string, instanceId: string, goal: string): Promise<RecordInstallExperienceResult> =>
@@ -19,6 +23,8 @@ export const api = {
     invoke("install_get_session", { sessionId }),
   installListMethods: (): Promise<InstallMethodCapability[]> =>
     invoke("install_list_methods", {}),
+  installDecideTarget: (goal: string, context?: Record<string, unknown>): Promise<InstallTargetDecision> =>
+    invoke("install_decide_target", context ? { goal, context } : { goal }),
   installOrchestratorNext: (sessionId: string, goal: string): Promise<InstallOrchestratorDecision> =>
     invoke("install_orchestrator_next", { sessionId, goal }),
   installRunStep: (sessionId: string, step: "precheck" | "install" | "init" | "verify"): Promise<InstallStepResult> =>

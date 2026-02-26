@@ -31,6 +31,7 @@ use crate::commands::{
     remote_chat_via_openclaw, remote_check_openclaw_update,
     run_openclaw_upgrade, remote_run_openclaw_upgrade,
     set_active_openclaw_home, set_active_clawpal_data_dir,
+    local_openclaw_config_exists, delete_local_instance_home,
     remote_backup_before_upgrade, remote_list_backups, remote_restore_from_backup, remote_delete_backup,
     list_cron_jobs, get_cron_runs, trigger_cron_job, delete_cron_job,
     remote_list_cron_jobs, remote_get_cron_runs, remote_trigger_cron_job, remote_delete_cron_job,
@@ -42,7 +43,7 @@ use crate::commands::{
     ensure_access_profile, record_install_experience,
 };
 use crate::install::commands::{
-    install_create_session, install_get_session, install_list_methods, install_orchestrator_next, install_run_step,
+    install_create_session, install_decide_target, install_get_session, install_list_methods, install_orchestrator_next, install_run_step,
 };
 use crate::install::session_store::InstallSessionStore;
 use crate::doctor_commands::{
@@ -93,12 +94,15 @@ pub fn run() {
         .manage(InstallSessionStore::new())
         .invoke_handler(tauri::generate_handler![
             install_create_session,
+            install_decide_target,
             install_get_session,
             install_list_methods,
             install_orchestrator_next,
             install_run_step,
             set_active_openclaw_home,
             set_active_clawpal_data_dir,
+            local_openclaw_config_exists,
+            delete_local_instance_home,
             ensure_access_profile,
             record_install_experience,
             get_system_status,

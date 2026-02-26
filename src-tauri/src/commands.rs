@@ -614,14 +614,16 @@ pub fn upsert_model_profile(mut profile: ModelProfile) -> Result<ModelProfile, S
     if profile.name.trim().is_empty() {
         profile.name = format!("{}/{}", profile.provider, profile.model);
     }
+    let paths = resolve_paths();
+    let mut profiles = load_model_profiles(&paths);
+    fill_profile_auth_from_existing_or_provider_donor(&mut profile, &profiles);
     let has_api_key = profile.api_key.as_ref().is_some_and(|k| !k.trim().is_empty());
     if has_api_key && profile.auth_ref.trim().is_empty() {
         profile.auth_ref = format!("{}:default", profile.provider.trim());
     }
     if profile.auth_ref.trim().is_empty() && !has_api_key {
         // Auto-resolve auth ref from openclaw config or env vars
-        let paths_tmp = resolve_paths();
-        if let Ok(cfg) = read_openclaw_config(&paths_tmp) {
+        if let Ok(cfg) = read_openclaw_config(&paths) {
             if let Some(auth_ref) = resolve_auth_ref_for_provider(&cfg, &profile.provider) {
                 profile.auth_ref = auth_ref;
             }
@@ -641,17 +643,7 @@ pub fn upsert_model_profile(mut profile: ModelProfile) -> Result<ModelProfile, S
             return Err("API key or auth env var is required".into());
         }
     }
-    let paths = resolve_paths();
-    let mut profiles = load_model_profiles(&paths);
-    if profile.id.trim().is_empty() {
-        profile.id = uuid::Uuid::new_v4().to_string();
-    }
-    let id = profile.id.clone();
-    if let Some(existing) = profiles.iter_mut().find(|p| p.id == id) {
-        *existing = profile.clone();
-    } else {
-        profiles.push(profile.clone());
-    }
+    profile = upsert_profile_in_storage(&mut profiles, profile);
     save_model_profiles(&paths, &profiles)?;
     sync_profile_auth_to_main_agent(&paths, &profile)?;
     Ok(profile)
@@ -1847,12 +1839,16 @@ pub fn apply_config_patch(
     )?;
     let (candidate, _changes) = build_candidate_config_from_template(&current, &patch_template, &params)?;
     write_json(&paths.config_path, &candidate)?;
+    let mut warnings = Vec::new();
+    if let Err(err) = sync_main_auth_for_config(&paths, &candidate) {
+        warnings.push(format!("main auth sync skipped: {err}"));
+    }
     Ok(ApplyResult {
         ok: true,
         snapshot_id: Some(snapshot.id),
         config_path: paths.config_path.to_string_lossy().to_string(),
         backup_path: Some(snapshot.config_path),
-        warnings: Vec::new(),
+        warnings,
         errors: Vec::new(),
     })
 }
@@ -2158,6 +2154,50 @@ pub fn set_active_openclaw_home(path: Option<String>) -> Result<bool, String> {
 #[tauri::command]
 pub fn set_active_clawpal_data_dir(path: Option<String>) -> Result<bool, String> {
     crate::cli_runner::set_active_clawpal_data_override(path)?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn local_openclaw_config_exists(openclaw_home: String) -> Result<bool, String> {
+    let home = openclaw_home.trim();
+    if home.is_empty() {
+        return Ok(false);
+    }
+    let expanded = shellexpand::tilde(home).to_string();
+    let config_path = PathBuf::from(expanded).join(".openclaw").join("openclaw.json");
+    Ok(config_path.exists())
+}
+
+#[tauri::command]
+pub fn delete_local_instance_home(openclaw_home: String) -> Result<bool, String> {
+    let home = openclaw_home.trim();
+    if home.is_empty() {
+        return Err("openclaw_home is required".to_string());
+    }
+    let expanded = shellexpand::tilde(home).to_string();
+    let target = PathBuf::from(expanded);
+    if !target.exists() {
+        return Ok(true);
+    }
+
+    let canonical_target = target
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve target path: {e}"))?;
+    let user_home = dirs::home_dir().ok_or_else(|| "failed to resolve HOME directory".to_string())?;
+    let allowed_root = user_home.join(".clawpal");
+    let canonical_allowed_root = allowed_root
+        .canonicalize()
+        .map_err(|e| format!("failed to resolve ~/.clawpal path: {e}"))?;
+
+    if !canonical_target.starts_with(&canonical_allowed_root) {
+        return Err("refuse to delete path outside ~/.clawpal".to_string());
+    }
+    if canonical_target == canonical_allowed_root {
+        return Err("refuse to delete ~/.clawpal root".to_string());
+    }
+
+    fs::remove_dir_all(&canonical_target)
+        .map_err(|e| format!("failed to delete '{}': {e}", canonical_target.to_string_lossy()))?;
     Ok(true)
 }
 
@@ -3302,6 +3342,64 @@ fn load_model_profiles(paths: &crate::models::OpenClawPaths) -> Vec<ModelProfile
     parsed.profiles
 }
 
+fn fill_profile_auth_from_existing_or_provider_donor(
+    profile: &mut ModelProfile,
+    profiles: &[ModelProfile],
+) {
+    if !profile.id.trim().is_empty() {
+        if let Some(existing) = profiles.iter().find(|candidate| candidate.id == profile.id) {
+            if profile.api_key.as_ref().map_or(true, |key| key.trim().is_empty()) {
+                profile.api_key = existing.api_key.clone();
+            }
+            if profile.auth_ref.trim().is_empty() {
+                profile.auth_ref = existing.auth_ref.clone();
+            }
+            return;
+        }
+    }
+
+    let provider = profile.provider.trim();
+    if provider.is_empty() {
+        return;
+    }
+
+    if profile.api_key.as_ref().map_or(true, |key| key.trim().is_empty()) {
+        if let Some(donor) = profiles.iter().find(|candidate| {
+            candidate.provider.eq_ignore_ascii_case(provider)
+                && candidate
+                    .api_key
+                    .as_ref()
+                    .is_some_and(|key| !key.trim().is_empty())
+        }) {
+            profile.api_key = donor.api_key.clone();
+        }
+    }
+    if profile.auth_ref.trim().is_empty() {
+        if let Some(donor) = profiles.iter().find(|candidate| {
+            candidate.provider.eq_ignore_ascii_case(provider)
+                && !candidate.auth_ref.trim().is_empty()
+        }) {
+            profile.auth_ref = donor.auth_ref.clone();
+        }
+    }
+}
+
+fn upsert_profile_in_storage(
+    profiles: &mut Vec<ModelProfile>,
+    mut profile: ModelProfile,
+) -> ModelProfile {
+    if profile.id.trim().is_empty() {
+        profile.id = uuid::Uuid::new_v4().to_string();
+    }
+    let id = profile.id.clone();
+    if let Some(existing) = profiles.iter_mut().find(|candidate| candidate.id == id) {
+        *existing = profile.clone();
+    } else {
+        profiles.push(profile.clone());
+    }
+    profile
+}
+
 fn save_model_profiles(paths: &crate::models::OpenClawPaths, profiles: &[ModelProfile]) -> Result<(), String> {
     let path = model_profiles_path(paths);
     #[derive(serde::Serialize)]
@@ -3328,15 +3426,20 @@ fn sync_profile_auth_to_main_agent(
     paths: &crate::models::OpenClawPaths,
     profile: &ModelProfile,
 ) -> Result<(), String> {
-    let api_key = match profile
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-    {
-        Some(value) => value,
-        None => return Ok(()),
-    };
+    let source_base_dir = global_profile_base_dir();
+    sync_profile_auth_to_main_agent_with_source(paths, profile, &source_base_dir)
+}
+
+fn sync_profile_auth_to_main_agent_with_source(
+    paths: &crate::models::OpenClawPaths,
+    profile: &ModelProfile,
+    source_base_dir: &Path,
+) -> Result<(), String> {
+    let resolved_key = resolve_profile_api_key(profile, source_base_dir);
+    let api_key = resolved_key.trim();
+    if api_key.is_empty() {
+        return Ok(());
+    }
 
     let provider = profile.provider.trim();
     if provider.is_empty() {
@@ -3419,6 +3522,15 @@ fn maybe_sync_main_auth_for_model_value(
     paths: &crate::models::OpenClawPaths,
     model_value: Option<String>,
 ) -> Result<(), String> {
+    let source_base_dir = global_profile_base_dir();
+    maybe_sync_main_auth_for_model_value_with_source(paths, model_value, &source_base_dir)
+}
+
+fn maybe_sync_main_auth_for_model_value_with_source(
+    paths: &crate::models::OpenClawPaths,
+    model_value: Option<String>,
+    source_base_dir: &Path,
+) -> Result<(), String> {
     let Some(model_value) = model_value else {
         return Ok(());
     };
@@ -3430,10 +3542,54 @@ fn maybe_sync_main_auth_for_model_value(
     for profile in &profiles {
         let profile_model = profile_to_model_value(profile);
         if profile_model.trim().to_lowercase() == normalized {
-            return sync_profile_auth_to_main_agent(paths, profile);
+            return sync_profile_auth_to_main_agent_with_source(paths, profile, source_base_dir);
         }
     }
     Ok(())
+}
+
+fn collect_main_auth_model_candidates(cfg: &Value) -> Vec<String> {
+    let mut models = Vec::new();
+    if let Some(model) = cfg.pointer("/agents/defaults/model").and_then(read_model_value) {
+        models.push(model);
+    }
+    if let Some(agents) = cfg.pointer("/agents/list").and_then(Value::as_array) {
+        for agent in agents {
+            let is_main = agent
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| id.eq_ignore_ascii_case("main"))
+                .unwrap_or(false);
+            if !is_main {
+                continue;
+            }
+            if let Some(model) = agent.get("model").and_then(read_model_value) {
+                models.push(model);
+            }
+        }
+    }
+    models
+}
+
+fn sync_main_auth_for_config(
+    paths: &crate::models::OpenClawPaths,
+    cfg: &Value,
+) -> Result<(), String> {
+    let source_base_dir = global_profile_base_dir();
+    let mut seen = HashSet::new();
+    for model in collect_main_auth_model_candidates(cfg) {
+        let normalized = model.trim().to_lowercase();
+        if normalized.is_empty() || !seen.insert(normalized) {
+            continue;
+        }
+        maybe_sync_main_auth_for_model_value_with_source(paths, Some(model), &source_base_dir)?;
+    }
+    Ok(())
+}
+
+fn sync_main_auth_for_active_config(paths: &crate::models::OpenClawPaths) -> Result<(), String> {
+    let cfg = read_openclaw_config(paths)?;
+    sync_main_auth_for_config(paths, &cfg)
 }
 
 fn write_config_with_snapshot(
@@ -3763,6 +3919,146 @@ mod model_value_tests {
         assert_eq!(
             profile_to_model_value(&p),
             "openrouter/moonshotai/kimi-k2.5",
+        );
+    }
+}
+
+#[cfg(test)]
+mod model_profile_upsert_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn mk_profile(id: &str, provider: &str, model: &str, auth_ref: &str, api_key: Option<&str>) -> ModelProfile {
+        ModelProfile {
+            id: id.to_string(),
+            name: format!("{provider}/{model}"),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            auth_ref: auth_ref.to_string(),
+            api_key: api_key.map(str::to_string),
+            base_url: None,
+            description: None,
+            enabled: true,
+        }
+    }
+
+    fn mk_paths(base_dir: PathBuf, clawpal_dir: PathBuf) -> crate::models::OpenClawPaths {
+        crate::models::OpenClawPaths {
+            openclaw_dir: base_dir.clone(),
+            config_path: base_dir.join("openclaw.json"),
+            base_dir,
+            history_dir: clawpal_dir.join("history"),
+            metadata_path: clawpal_dir.join("metadata.json"),
+            clawpal_dir,
+        }
+    }
+
+    #[test]
+    fn preserve_existing_auth_fields_on_edit_when_payload_is_blank() {
+        let mut profiles = vec![mk_profile(
+            "p-1",
+            "kimi-coding",
+            "k2p5",
+            "kimi-coding:default",
+            Some("sk-old"),
+        )];
+        let mut incoming = mk_profile("p-1", "kimi-coding", "k2.5", "", None);
+        fill_profile_auth_from_existing_or_provider_donor(&mut incoming, &profiles);
+
+        assert_eq!(incoming.auth_ref, "kimi-coding:default");
+        assert_eq!(incoming.api_key.as_deref(), Some("sk-old"));
+
+        let persisted = upsert_profile_in_storage(&mut profiles, incoming);
+        assert_eq!(persisted.api_key.as_deref(), Some("sk-old"));
+        assert_eq!(persisted.auth_ref, "kimi-coding:default");
+        assert_eq!(profiles[0].model, "k2.5");
+    }
+
+    #[test]
+    fn reuse_provider_credentials_for_new_profile_when_missing() {
+        let donor = mk_profile(
+            "p-donor",
+            "openrouter",
+            "model-a",
+            "openrouter:default",
+            Some("sk-donor"),
+        );
+        let mut incoming = mk_profile("", "openrouter", "model-b", "", None);
+        fill_profile_auth_from_existing_or_provider_donor(&mut incoming, &[donor]);
+
+        assert_eq!(incoming.auth_ref, "openrouter:default");
+        assert_eq!(incoming.api_key.as_deref(), Some("sk-donor"));
+    }
+
+    #[test]
+    fn sync_auth_can_copy_key_from_auth_ref_source_store() {
+        let tmp_root = std::env::temp_dir().join(format!("clawpal-auth-sync-{}", uuid::Uuid::new_v4()));
+        let source_base = tmp_root.join("source-openclaw");
+        let target_base = tmp_root.join("target-openclaw");
+        let clawpal_dir = tmp_root.join("clawpal");
+        let source_auth_file = source_base
+            .join("agents")
+            .join("main")
+            .join("agent")
+            .join("auth-profiles.json");
+        let target_auth_file = target_base
+            .join("agents")
+            .join("main")
+            .join("agent")
+            .join("auth-profiles.json");
+
+        fs::create_dir_all(source_auth_file.parent().unwrap()).expect("create source auth dir");
+        let source_payload = serde_json::json!({
+            "version": 1,
+            "profiles": {
+                "kimi-coding:default": {
+                    "type": "api_key",
+                    "provider": "kimi-coding",
+                    "key": "sk-from-source-store"
+                }
+            }
+        });
+        write_text(
+            &source_auth_file,
+            &serde_json::to_string_pretty(&source_payload).expect("serialize source payload"),
+        )
+        .expect("write source auth");
+
+        let paths = mk_paths(target_base, clawpal_dir);
+        let profile = mk_profile("p1", "kimi-coding", "k2p5", "kimi-coding:default", None);
+        sync_profile_auth_to_main_agent_with_source(&paths, &profile, &source_base)
+            .expect("sync auth");
+
+        let target_text = fs::read_to_string(target_auth_file).expect("read target auth");
+        let target_json: Value = serde_json::from_str(&target_text).expect("parse target auth");
+        let key = target_json
+            .pointer("/profiles/kimi-coding:default/key")
+            .and_then(Value::as_str);
+        assert_eq!(key, Some("sk-from-source-store"));
+
+        let _ = fs::remove_dir_all(tmp_root);
+    }
+
+    #[test]
+    fn collect_main_auth_candidates_prefers_defaults_and_main_agent() {
+        let cfg = serde_json::json!({
+            "agents": {
+                "defaults": {
+                    "model": { "primary": "kimi-coding/k2p5" }
+                },
+                "list": [
+                    { "id": "main", "model": "anthropic/claude-opus-4-6" },
+                    { "id": "worker", "model": "openai/gpt-4.1" }
+                ]
+            }
+        });
+        let models = collect_main_auth_model_candidates(&cfg);
+        assert_eq!(
+            models,
+            vec![
+                "kimi-coding/k2p5".to_string(),
+                "anthropic/claude-opus-4-6".to_string(),
+            ]
         );
     }
 }
@@ -4260,6 +4556,10 @@ pub fn open_url(url: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn chat_via_openclaw(agent_id: String, message: String, session_id: Option<String>) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let paths = resolve_paths();
+        if let Err(err) = sync_main_auth_for_active_config(&paths) {
+            eprintln!("Warning: pre-chat main auth sync failed: {err}");
+        }
         let mut args = vec![
             "agent".to_string(),
             "--local".to_string(),
@@ -5799,29 +6099,13 @@ pub async fn remote_upsert_model_profile(
     }
     fn default_version() -> u8 { 1 }
     let mut storage: Storage = serde_json::from_str(&content).unwrap_or(Storage { profiles: Vec::new(), version: 1 });
-
-    if profile.id.trim().is_empty() {
-        profile.id = uuid::Uuid::new_v4().to_string();
+    fill_profile_auth_from_existing_or_provider_donor(&mut profile, &storage.profiles);
+    if profile.api_key.as_ref().is_some_and(|key| !key.trim().is_empty())
+        && profile.auth_ref.trim().is_empty()
+    {
+        profile.auth_ref = format!("{}:default", profile.provider.trim());
     }
-    let id = profile.id.clone();
-    if let Some(existing) = storage.profiles.iter_mut().find(|p| p.id == id) {
-        // Preserve existing API key if new one is empty
-        if profile.api_key.as_ref().map_or(true, |k| k.trim().is_empty()) {
-            profile.api_key = existing.api_key.clone();
-        }
-        *existing = profile.clone();
-    } else {
-        // New profile: if no API key provided, try to reuse from same-provider profile
-        if profile.api_key.as_ref().map_or(true, |k| k.trim().is_empty()) {
-            if let Some(donor) = storage.profiles.iter().find(|p| {
-                p.provider == profile.provider
-                    && p.api_key.as_ref().is_some_and(|k| !k.trim().is_empty())
-            }) {
-                profile.api_key = donor.api_key.clone();
-            }
-        }
-        storage.profiles.push(profile.clone());
-    }
+    profile = upsert_profile_in_storage(&mut storage.profiles, profile);
 
     // Ensure .clawpal dir exists
     let _ = pool.exec(&host_id, "mkdir -p ~/.clawpal").await;
