@@ -185,7 +185,21 @@ fn load_profiles() -> Result<Vec<ModelProfile>> {
         path: path.clone(),
         source,
     })?;
-    serde_json::from_str(&text).map_err(|source| ProfileError::ParseFile { path, source })
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Storage {
+        Wrapped {
+            #[serde(default)]
+            profiles: Vec<ModelProfile>,
+        },
+        Plain(Vec<ModelProfile>),
+    }
+    let parsed: Storage =
+        serde_json::from_str(&text).map_err(|source| ProfileError::ParseFile { path, source })?;
+    Ok(match parsed {
+        Storage::Wrapped { profiles } => profiles,
+        Storage::Plain(profiles) => profiles,
+    })
 }
 
 fn save_profiles(profiles: &[ModelProfile]) -> Result<()> {
@@ -260,6 +274,29 @@ mod tests {
         let cli = OpenclawCli::with_bin("echo".to_string());
         let saved = upsert_profile(&cli, profile("p2")).expect("upsert");
         assert_eq!(saved.id, "p2");
+    }
+
+    #[test]
+    fn list_profiles_supports_wrapped_storage_format() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = temp_data_dir();
+        std::env::set_var("CLAWPAL_DATA_DIR", &dir);
+        let path = dir.join("model-profiles.json");
+        let wrapped = serde_json::json!({
+            "profiles": [profile("wrapped-1")],
+            "version": 1
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&wrapped).expect("serialize wrapped"),
+        )
+        .expect("write wrapped storage");
+        let cli = OpenclawCli::with_bin("echo".to_string());
+        let listed = list_profiles(&cli).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "wrapped-1");
     }
 
     #[test]

@@ -4981,14 +4981,20 @@ fn load_model_profiles(paths: &crate::models::OpenClawPaths) -> Vec<ModelProfile
     let path = model_profiles_path(paths);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|_| r#"{"profiles":[]}"#.to_string());
     #[derive(serde::Deserialize)]
-    struct Storage {
-        #[serde(default)]
-        profiles: Vec<ModelProfile>,
+    #[serde(untagged)]
+    enum Storage {
+        Wrapped {
+            #[serde(default)]
+            profiles: Vec<ModelProfile>,
+        },
+        Plain(Vec<ModelProfile>),
     }
-    let parsed = serde_json::from_str::<Storage>(&text).unwrap_or(Storage {
+    match serde_json::from_str::<Storage>(&text).unwrap_or(Storage::Wrapped {
         profiles: Vec::new(),
-    });
-    parsed.profiles
+    }) {
+        Storage::Wrapped { profiles } => profiles,
+        Storage::Plain(profiles) => profiles,
+    }
 }
 
 fn fill_profile_auth_from_existing_or_provider_donor(
