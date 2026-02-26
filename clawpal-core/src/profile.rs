@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -111,12 +112,68 @@ pub fn test_profile(openclaw: &OpenclawCli, id: &str) -> Result<TestResult> {
         });
     };
     let output = openclaw
-        .run(&["--version"])
+        .run(&["models", "list", "--all", "--json"])
         .map_err(|e| ProfileError::Openclaw(e.to_string()))?;
+    if output.exit_code != 0 {
+        let err = output.stderr.trim();
+        return Ok(TestResult {
+            ok: false,
+            message: if err.is_empty() {
+                format!("{} (probe failed with exit code {})", profile.name, output.exit_code)
+            } else {
+                format!("{} ({err})", profile.name)
+            },
+        });
+    }
+    let listed = model_is_listed(&output.stdout, &profile.provider, &profile.model);
     Ok(TestResult {
-        ok: output.exit_code == 0,
-        message: format!("{} ({})", profile.name, output.stdout),
+        ok: listed,
+        message: if listed {
+            format!("{} (model available)", profile.name)
+        } else {
+            format!(
+                "{} (model '{}' not found in openclaw models list)",
+                profile.name, profile.model
+            )
+        },
     })
+}
+
+fn model_is_listed(raw: &str, provider: &str, model: &str) -> bool {
+    let Ok(json) = serde_json::from_str::<Value>(raw) else {
+        return raw.contains(model);
+    };
+    model_in_value(&json, provider, model)
+}
+
+fn model_in_value(value: &Value, provider: &str, model: &str) -> bool {
+    if let Some(array) = value.as_array() {
+        return array
+            .iter()
+            .any(|entry| model_in_value(entry, provider, model));
+    }
+
+    if let Some(object) = value.as_object() {
+        let provider_match = object
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(|v| v.eq_ignore_ascii_case(provider))
+            .unwrap_or(false);
+        let model_match = object
+            .get("model")
+            .or_else(|| object.get("id"))
+            .and_then(Value::as_str)
+            .map(|v| v == model || v.ends_with(&format!("/{model}")))
+            .unwrap_or(false);
+        if provider_match && model_match {
+            return true;
+        }
+        return object
+            .values()
+            .any(|entry| model_in_value(entry, provider, model));
+    }
+
+    false
 }
 
 fn load_profiles() -> Result<Vec<ModelProfile>> {
@@ -217,14 +274,26 @@ mod tests {
         assert!(removed);
     }
 
+    #[cfg(unix)]
+    fn create_fake_openclaw_models_script(body: &str) -> String {
+        let dir = temp_data_dir();
+        let path = dir.join("fake-openclaw-models.sh");
+        fs::write(&path, body).expect("write script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        path.to_string_lossy().to_string()
+    }
+
     #[test]
+    #[cfg(unix)]
     fn test_profile_returns_result() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("CLAWPAL_DATA_DIR", temp_data_dir());
-        let cli = OpenclawCli::with_bin("echo".to_string());
-        let _ = upsert_profile(&cli, profile("p4")).expect("upsert");
+        let cli = OpenclawCli::with_bin(create_fake_openclaw_models_script(
+            "#!/bin/sh\nif [ \"$1\" = \"models\" ]; then echo '[{\"provider\":\"openai\",\"model\":\"gpt-4.1\"}]'; exit 0; fi\nexit 1\n",
+        ));
+        let _ = upsert_profile(&OpenclawCli::with_bin("echo".to_string()), profile("p4")).expect("upsert");
         let result = test_profile(&cli, "p4").expect("test");
         assert!(result.ok);
     }
@@ -254,11 +323,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("clawpal-core-profile-fail-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         let script = dir.join("fake-openclaw-fail.sh");
-        fs::write(&script, "#!/bin/sh\necho 'boom' >&2\nexit 9\n").expect("write script");
+        fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = \"models\" ]; then echo 'boom' >&2; exit 9; fi\nexit 1\n",
+        )
+        .expect("write script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
 
         let cli = OpenclawCli::with_bin(script.to_string_lossy().to_string());
         let result = test_profile(&cli, "p5").expect("test");
+        assert!(!result.ok);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_profile_returns_false_when_model_missing() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CLAWPAL_DATA_DIR", temp_data_dir());
+        let _ = upsert_profile(&OpenclawCli::with_bin("echo".to_string()), profile("p6")).expect("upsert");
+
+        let cli = OpenclawCli::with_bin(create_fake_openclaw_models_script(
+            "#!/bin/sh\nif [ \"$1\" = \"models\" ]; then echo '[{\"provider\":\"openai\",\"model\":\"gpt-3.5\"}]'; exit 0; fi\nexit 1\n",
+        ));
+        let result = test_profile(&cli, "p6").expect("test");
         assert!(!result.ok);
     }
 }
