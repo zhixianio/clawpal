@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clawpal_core::connect::{connect_docker, connect_ssh};
 use clawpal_core::health::{check_instance, HealthStatus};
 use clawpal_core::install;
 use clawpal_core::instance::{Instance, InstanceRegistry, InstanceType};
@@ -70,8 +71,26 @@ enum InstallDockerSubcommands {
 
 #[derive(Subcommand, Debug)]
 enum ConnectCommands {
-    Docker,
-    Ssh,
+    Docker {
+        #[arg(long)]
+        home: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    Ssh {
+        #[arg(long)]
+        host: String,
+        #[arg(long, default_value_t = 22)]
+        port: u16,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        key_path: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -117,6 +136,7 @@ fn main() {
         Commands::Instance { command } => run_instance_command(command),
         Commands::Health { command } => run_health_command(command),
         Commands::Install { command } => run_install_command(command),
+        Commands::Connect { command } => run_connect_command(command),
         Commands::Profile { command } => run_profile_command(command),
         command => Ok(json!({
             "status": "not yet implemented",
@@ -249,6 +269,43 @@ fn run_install_command(command: InstallCommands) -> Result<serde_json::Value, St
         InstallCommands::Local => install::install_local(install::LocalInstallOptions::default())
             .map_err(|e| e.to_string())
             .map(|r| json!(r)),
+    }
+}
+
+fn run_connect_command(command: ConnectCommands) -> Result<serde_json::Value, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    match command {
+        ConnectCommands::Docker { home, label } => runtime
+            .block_on(connect_docker(&home, label.as_deref()))
+            .map_err(|e| e.to_string())
+            .map(|instance| json!(instance)),
+        ConnectCommands::Ssh {
+            host,
+            port,
+            user,
+            id,
+            label,
+            key_path,
+        } => {
+            let host_id = id.unwrap_or_else(|| format!("ssh:{host}"));
+            let config = clawpal_core::instance::SshHostConfig {
+                id: host_id,
+                label: label.unwrap_or_else(|| host.clone()),
+                host,
+                port,
+                username: user.unwrap_or_else(|| "root".to_string()),
+                auth_method: "key".to_string(),
+                key_path,
+                password: None,
+            };
+            runtime
+                .block_on(connect_ssh(config))
+                .map_err(|e| e.to_string())
+                .map(|instance| json!(instance))
+        }
     }
 }
 

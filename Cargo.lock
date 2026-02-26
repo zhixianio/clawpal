@@ -573,6 +573,7 @@ dependencies = [
  "clap",
  "clawpal-core",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -585,6 +586,7 @@ dependencies = [
  "russh-sftp",
  "serde",
  "serde_json",
+ "shellexpand",
  "thiserror 1.0.69",
  "tokio",
  "uuid",
