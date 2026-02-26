@@ -26,7 +26,7 @@ pub fn run_step(
             })
         }
         InstallStep::Install => {
-            let script = "command -v openclaw >/dev/null 2>&1 || (mkdir -p ~/.clawpal/install/cache && INSTALLER=~/.clawpal/install/cache/openclaw-install.sh && ( [ -s \"$INSTALLER\" ] || curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh -o \"$INSTALLER\" ) && bash \"$INSTALLER\" --no-prompt --no-onboard)";
+            let script = "export PATH=\"$HOME/.npm-global/bin:$PATH\"; command -v openclaw >/dev/null 2>&1 || (if command -v curl >/dev/null 2>&1; then curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard; elif command -v wget >/dev/null 2>&1; then wget -qO- https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard; else echo 'curl or wget is required to install openclaw' >&2; exit 1; fi)";
             let install = run_command(wsl(), &["bash", "-lc", script])?;
             Ok(RunnerOutput {
                 summary: "wsl2 install completed".to_string(),
@@ -58,7 +58,11 @@ pub fn run_step(
         InstallStep::Verify => {
             let verify = run_command(
                 wsl(),
-                &["bash", "-lc", "openclaw --version && openclaw config get agents --json >/dev/null"],
+                &[
+                    "bash",
+                    "-lc",
+                    "export PATH=\"$HOME/.npm-global/bin:$PATH\"; openclaw --version && openclaw config get agents --json >/dev/null",
+                ],
             )?;
             Ok(RunnerOutput {
                 summary: "wsl2 verify completed".to_string(),
