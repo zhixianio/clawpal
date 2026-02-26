@@ -16,12 +16,34 @@ pub fn pull(options: &DockerInstallOptions) -> Result<StepResult> {
 
     let repo = ensure_repo_checkout()?;
     let state_dir = openclaw_state_dir(options);
-    run_bash(
+    match run_bash(
         "docker compose pull",
         Some(&repo),
         compose_env(&state_dir),
         "docker_pull",
-    )
+    ) {
+        Ok(step) => Ok(step),
+        Err(err) => {
+            let message = err.to_string();
+            if needs_local_image_fallback(&message) {
+                let built = run_bash(
+                    "docker build -t openclaw:local -f Dockerfile .",
+                    Some(&repo),
+                    Vec::new(),
+                    "docker_pull_fallback_build",
+                )?;
+                return Ok(StepResult {
+                    step: "docker_pull".to_string(),
+                    ok: true,
+                    detail: format!(
+                        "compose pull unavailable for openclaw image; built local image fallback: {}",
+                        built.detail
+                    ),
+                });
+            }
+            Err(err)
+        }
+    }
 }
 
 pub fn configure(options: &DockerInstallOptions) -> Result<StepResult> {
@@ -126,6 +148,14 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn needs_local_image_fallback(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    (lower.contains("pull access denied for openclaw")
+        || lower.contains("repository does not exist")
+        || lower.contains("requested access to the resource is denied"))
+        && lower.contains("docker_pull failed")
+}
+
 fn repo_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
@@ -212,5 +242,11 @@ mod tests {
         };
         let result = up(&options).expect("up");
         assert!(result.ok);
+    }
+
+    #[test]
+    fn detects_pull_access_denied_for_fallback() {
+        let msg = "docker_pull failed (code Some(1)): pull access denied for openclaw";
+        assert!(needs_local_image_fallback(msg));
     }
 }

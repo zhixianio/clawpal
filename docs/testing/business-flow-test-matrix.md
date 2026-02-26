@@ -12,6 +12,7 @@ After GUI-CLI-Core layering, business logic verification is core/CLI-first, with
 1. `cargo test -p clawpal --test install_api --test runtime_types --test commands_delegation`
 2. `cargo run -p clawpal-cli -- instance list`
 3. `cargo run -p clawpal-cli -- ssh list`
+4. `cargo test -p clawpal --test wsl2_runner` (non-Windows host runs placeholder only)
 
 ## Remote Gate (requires reachable `vm1`)
 1. `cargo test -p clawpal --test remote_api -- --test-threads=1`
@@ -19,6 +20,20 @@ After GUI-CLI-Core layering, business logic verification is core/CLI-first, with
 Expected notes:
 - 4 tests are `ignored` in `remote_api` by design (manual/optional checks).
 - Environment must allow outbound SSH to `vm1`.
+
+## Optional Live Docker Gate (local machine only)
+1. `CLAWPAL_RUN_DOCKER_LIVE_TESTS=1 cargo test -p clawpal-core --test docker_live -- --nocapture`
+
+Expected notes:
+- If local port `18789` is occupied, the test will skip to avoid killing existing services.
+- When port is free, test runs real `docker compose` workflow and then `down -v` cleanup.
+
+## Optional WSL2 Gate (Windows only)
+1. `cargo test -p clawpal --test wsl2_runner -- --ignored`
+
+Expected notes:
+- Requires WSL2 installed on host.
+- `Install/Verify` cases depend on `openclaw` availability in WSL distribution.
 
 ## Layer Ownership
 - `clawpal-core`: business rules, persistence, SSH registry, install/connect health logic.
