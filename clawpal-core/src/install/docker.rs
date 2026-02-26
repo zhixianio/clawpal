@@ -141,11 +141,29 @@ fn ensure_command_exists(name: &str) -> Result<()> {
 }
 
 fn command_exists(name: &str) -> bool {
-    std::process::Command::new("bash")
-        .args(["-lc", &format!("command -v {name} >/dev/null 2>&1")])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path_var) {
+        #[cfg(windows)]
+        {
+            let with_exe = dir.join(format!("{name}.exe"));
+            if with_exe.is_file() {
+                return true;
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let candidate = dir.join(name);
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.is_file() && (meta.permissions().mode() & 0o111 != 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn needs_local_image_fallback(message: &str) -> bool {
@@ -248,5 +266,20 @@ mod tests {
     fn detects_pull_access_denied_for_fallback() {
         let msg = "docker_pull failed (code Some(1)): pull access denied for openclaw";
         assert!(needs_local_image_fallback(msg));
+    }
+
+    #[test]
+    fn command_exists_returns_false_when_path_is_empty_dir() {
+        let empty = std::env::temp_dir().join(format!("clawpal-empty-path-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&empty).expect("create empty dir");
+        let original = std::env::var_os("PATH");
+        std::env::set_var("PATH", &empty);
+        let exists = command_exists("docker");
+        if let Some(path) = original {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        assert!(!exists);
     }
 }

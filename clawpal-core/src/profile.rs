@@ -158,6 +158,8 @@ fn profiles_path() -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use uuid::Uuid;
 
     fn temp_data_dir() -> PathBuf {
@@ -225,5 +227,38 @@ mod tests {
         let _ = upsert_profile(&cli, profile("p4")).expect("upsert");
         let result = test_profile(&cli, "p4").expect("test");
         assert!(result.ok);
+    }
+
+    #[test]
+    fn test_profile_returns_not_found_for_missing_profile() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CLAWPAL_DATA_DIR", temp_data_dir());
+        let cli = OpenclawCli::with_bin("echo".to_string());
+        let result = test_profile(&cli, "missing").expect("test");
+        assert!(!result.ok);
+        assert!(result.message.contains("not found"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_profile_reports_failure_when_openclaw_command_fails() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("CLAWPAL_DATA_DIR", temp_data_dir());
+        let _ = upsert_profile(&OpenclawCli::with_bin("echo".to_string()), profile("p5"))
+            .expect("upsert");
+
+        let dir = std::env::temp_dir().join(format!("clawpal-core-profile-fail-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let script = dir.join("fake-openclaw-fail.sh");
+        fs::write(&script, "#!/bin/sh\necho 'boom' >&2\nexit 9\n").expect("write script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let cli = OpenclawCli::with_bin(script.to_string_lossy().to_string());
+        let result = test_profile(&cli, "p5").expect("test");
+        assert!(!result.ok);
     }
 }

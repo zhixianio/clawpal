@@ -40,7 +40,17 @@ pub async fn connect_ssh(host_config: SshHostConfig) -> Result<Instance> {
     let _ = session
         .exec("echo connected")
         .await
-        .map_err(|e| ConnectError::Ssh(e.to_string()))?;
+        .map_err(|e| ConnectError::Ssh(e.to_string()))
+        .and_then(|output| {
+            if output.exit_code == 0 {
+                Ok(output)
+            } else {
+                Err(ConnectError::Ssh(format!(
+                    "remote connectivity probe failed with exit code {}: {}",
+                    output.exit_code, output.stderr
+                )))
+            }
+        })?;
 
     let instance = Instance {
         id: host_config.id.clone(),

@@ -158,7 +158,7 @@ fn count_agents(value: &Value) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance::{Instance, InstanceType};
+    use crate::instance::{Instance, InstanceType, SshHostConfig};
     use uuid::Uuid;
 
     #[cfg(unix)]
@@ -179,6 +179,9 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn check_instance_reports_local_health() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let cli = OpenclawCli::with_bin(create_fake_openclaw_script());
         let instance = Instance {
             id: "local".to_string(),
@@ -192,5 +195,100 @@ mod tests {
         assert!(status.healthy);
         assert_eq!(status.active_agents, 1);
         assert_eq!(status.version.as_deref(), Some("openclaw 1.2.3"));
+    }
+
+    #[cfg(unix)]
+    fn create_fake_openclaw_unhealthy_script() -> String {
+        let dir = std::env::temp_dir().join(format!("clawpal-core-health-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("fake-openclaw-unhealthy.sh");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"openclaw 9.9.9\"; exit 0; fi\necho 'failed' >&2\nexit 2\n",
+        )
+        .expect("write script");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_instance_reports_unhealthy_when_agents_command_fails() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cli = OpenclawCli::with_bin(create_fake_openclaw_unhealthy_script());
+        let instance = Instance {
+            id: "local".to_string(),
+            instance_type: InstanceType::Local,
+            label: "Local".to_string(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: None,
+        };
+        let status = check_instance_with_cli(&instance, &cli).expect("check");
+        assert!(!status.healthy);
+        assert_eq!(status.active_agents, 0);
+        assert_eq!(status.version.as_deref(), Some("openclaw 9.9.9"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_instance_remote_ssh_path_works_with_fake_ssh() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("clawpal-core-health-ssh-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let ssh_bin = dir.join("ssh");
+        std::fs::write(
+            &ssh_bin,
+            "#!/bin/sh\ncase \"$*\" in\n  *\"openclaw agents list --json\"*) echo '[{\"id\":\"main\"}]'; exit 0 ;;\n  *\"openclaw --version\"*) echo 'openclaw 2.0.0'; exit 0 ;;\n  *) echo 'unexpected command' >&2; exit 1 ;;\nesac\n",
+        )
+        .expect("write fake ssh");
+        std::fs::set_permissions(&ssh_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake ssh");
+
+        let original_path = std::env::var_os("PATH");
+        let merged_path = format!(
+            "{}:{}",
+            dir.display(),
+            original_path
+                .as_ref()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default()
+        );
+        std::env::set_var("PATH", merged_path);
+
+        let instance = Instance {
+            id: "ssh:remote".to_string(),
+            instance_type: InstanceType::RemoteSsh,
+            label: "Remote".to_string(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: Some(SshHostConfig {
+                id: "ssh:remote".to_string(),
+                label: "Remote".to_string(),
+                host: "vm1".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                auth_method: "key".to_string(),
+                key_path: None,
+                password: None,
+            }),
+        };
+        let status = check_instance(&instance).expect("remote health");
+        assert!(status.healthy);
+        assert_eq!(status.active_agents, 1);
+        assert_eq!(status.version.as_deref(), Some("openclaw 2.0.0"));
+
+        if let Some(path) = original_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
     }
 }
