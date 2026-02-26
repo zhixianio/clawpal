@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { MonitorIcon, ContainerIcon, ServerIcon, EllipsisIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { MonitorIcon, ContainerIcon, ServerIcon, EllipsisIcon, PencilIcon, Trash2Icon, RefreshCwIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
@@ -15,7 +15,9 @@ interface InstanceCardProps {
   healthy: boolean | null; // null = unknown/loading
   agentCount: number;
   opened: boolean; // whether this instance is currently open in tab bar
-  connectionStatus?: "connected" | "disconnected" | "error";
+  checked?: boolean; // whether health has been checked (SSH only)
+  checking?: boolean; // whether a check is in progress (SSH only)
+  onCheck?: () => void; // trigger manual health check (SSH only)
   onClick: () => void;
   onRename?: () => void;
   onEdit?: () => void; // SSH edit only
@@ -48,7 +50,9 @@ export function InstanceCard({
   healthy,
   agentCount,
   opened,
-  connectionStatus,
+  checked,
+  checking,
+  onCheck,
   onClick,
   onRename,
   onEdit,
@@ -59,15 +63,8 @@ export function InstanceCard({
 
   const hasMenu = !!(onRename || onEdit || onDelete);
 
-  const isOffline = connectionStatus === "disconnected" || connectionStatus === "error";
-
-  const healthText = isOffline
-    ? t("start.offline")
-    : healthy === true
-      ? t("start.healthy")
-      : healthy === false
-        ? t("start.unhealthy")
-        : t("start.checking");
+  // SSH instances that haven't been checked yet: no status to show
+  const needsCheck = type === "ssh" && !checked && !checking;
 
   return (
     <Card
@@ -138,13 +135,38 @@ export function InstanceCard({
 
         {/* Bottom row: health + agent count */}
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <HealthDot healthy={healthy} offline={isOffline} />
-            {healthText}
-          </span>
-          <Badge variant="secondary" className="text-xs">
-            {t("start.agents", { count: agentCount })}
-          </Badge>
+          {needsCheck ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 text-xs gap-1.5"
+              onClick={(e) => { e.stopPropagation(); onCheck?.(); }}
+            >
+              <RefreshCwIcon className="size-3" />
+              {t("start.check")}
+            </Button>
+          ) : checking ? (
+            <span className="flex items-center gap-1.5">
+              <RefreshCwIcon className="size-3 animate-spin" />
+              {t("start.checking")}
+            </span>
+          ) : (
+            <>
+              <span className="flex items-center gap-1.5">
+                <HealthDot healthy={healthy} offline={checked === true && healthy === null} />
+                {checked === true && healthy === null
+                  ? t("start.unreachable")
+                  : healthy === true
+                    ? t("start.healthy")
+                    : healthy === false
+                      ? t("start.unhealthy")
+                      : t("start.checking")}
+              </span>
+              <Badge variant="secondary" className="text-xs">
+                {t("start.agents", { count: agentCount })}
+              </Badge>
+            </>
+          )}
           {opened && (
             <Badge variant="outline" className="text-xs">
               {t("start.opened")}

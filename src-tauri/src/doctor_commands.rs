@@ -8,6 +8,7 @@ use crate::bridge_client::extract_shell_command;
 use crate::models::resolve_paths;
 use crate::runtime::types::{RuntimeAdapter, RuntimeDomain, RuntimeEvent, RuntimeSessionKey};
 use crate::runtime::zeroclaw::adapter::ZeroclawDoctorAdapter;
+use crate::runtime::zeroclaw::install_adapter::ZeroclawInstallAdapter;
 use crate::ssh::SshConnectionPool;
 
 fn zeroclaw_pending_invokes() -> &'static Mutex<HashMap<String, Value>> {
@@ -15,7 +16,7 @@ fn zeroclaw_pending_invokes() -> &'static Mutex<HashMap<String, Value>> {
     STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_runtime_invoke(event: &RuntimeEvent) {
+pub fn register_runtime_invoke(event: &RuntimeEvent) {
     if let RuntimeEvent::Invoke { payload } = event {
         if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
             if let Ok(mut guard) = zeroclaw_pending_invokes().lock() {
@@ -119,6 +120,7 @@ pub async fn doctor_approve_invoke(
     target: String,
     session_key: String,
     agent_id: String,
+    domain: Option<String>,
 ) -> Result<Value, String> {
     let invoke = take_zeroclaw_invoke(&invoke_id)
         .ok_or_else(|| format!("No pending invoke with id: {invoke_id}"))?;
@@ -211,15 +213,21 @@ pub async fn doctor_approve_invoke(
     } else {
         format!("[Command executed: `{command}`]\nResult: {result}")
     };
+    let is_install = domain.as_deref() == Some("install");
+    let rt_domain = if is_install { RuntimeDomain::Install } else { RuntimeDomain::Doctor };
     let key = RuntimeSessionKey::new(
         "zeroclaw",
-        RuntimeDomain::Doctor,
+        rt_domain,
         target.clone(),
         agent_id.clone(),
         session_key.clone(),
     );
-    let adapter = ZeroclawDoctorAdapter;
-    if let Ok(events) = adapter.send(&key, &result_text) {
+    let send_result = if is_install {
+        ZeroclawInstallAdapter.send(&key, &result_text)
+    } else {
+        ZeroclawDoctorAdapter.send(&key, &result_text)
+    };
+    if let Ok(events) = send_result {
         for ev in events {
             register_runtime_invoke(&ev);
             emit_runtime_event(&app, ev);

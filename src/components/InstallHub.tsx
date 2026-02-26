@@ -1,272 +1,136 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type {
-  EnsureAccessResult,
-  ModelProfile,
-  InstallMethod,
-  InstallMethodCapability,
-  InstallTargetDecision,
-  InstallUiAction,
-  InstallSession,
-  InstallStep,
-  InstallStepResult,
-  SshHost,
-} from "@/lib/types";
-import { useApi } from "@/lib/use-api";
-import { appendOrchestratorEvent } from "@/lib/orchestrator-log";
-import { api } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { AgentMessageBubble } from "@/components/AgentMessageBubble";
+import { SshFormWidget } from "@/components/SshFormWidget";
+import { useDoctorAgent } from "@/lib/use-doctor-agent";
+import type { DoctorChatMessage, InstallMethod, InstallSession, SshHost } from "@/lib/types";
+import i18n from "../i18n";
 
-const METHOD_ORDER: InstallMethod[] = ["local", "wsl2", "docker", "remote_ssh"];
-const INSTALL_SESSION_STORAGE_PREFIX = "clawpal_install_session_v1:";
-const INSTALL_RESUME_STORAGE_PREFIX = "clawpal_install_resume_v1:";
-const DOCKER_INSTANCES_STORAGE_KEY = "clawpal_docker_instances";
-const DEFAULT_DOCKER_INSTANCE_ID = "docker:local";
-const INTENT_HINTS = ["本机", "Docker", "远程 SSH", "连接已有实例"];
-
-type BlockerAction = "resume" | "settings" | "doctor" | "instances";
-
-interface InstallAutoBlocker {
-  code: string;
-  message: string;
-  details?: string;
-  actions: BlockerAction[];
+/**
+ * Detect assistant messages that describe tool-call actions rather than user-facing content.
+ * These are the agent "narrating" what it's doing (e.g. "建议执行诊断命令：docker ...").
+ */
+function isToolNarration(text: string): boolean {
+  const t = text.trim();
+  return /^建议执行.*命令[：:]/.test(t)
+    || /^原因[：:]/.test(t)
+    || /^(Running|Executing|Checking)[：: ]/i.test(t)
+    || /^正在(执行|检查|运行)/.test(t);
 }
 
-type StepState = "done" | "running" | "failed" | "pending";
+/**
+ * Parse numbered/bulleted choice lists from assistant text.
+ * Matches many patterns the agent uses:
+ *   1. Option text        |  1) Option text
+ *   - Option text         |  • Option text
+ *   选项 1: Option text   |  Option 1: text
+ *   **Option text**       (bold list items)
+ */
+function extractChoices(text: string): { prose: string; options: Array<{ label: string; value: string }> } | null {
+  const lines = text.split("\n");
+  const optionLines: Array<{ idx: number; label: string }> = [];
+  // Broad pattern: numbered (1. / 1) / 选项1: / Option 1:) or bulleted (- / •)
+  const listPattern = /^\s*(?:(?:选项|option)\s*\d+\s*[:：]\s*|(?:\*{1,2})?\d+[.)：:]\s*(?:\*{1,2})?\s*|[-•]\s+)\*{0,2}(.+?)\*{0,2}\s*$/i;
 
-function getStepState(session: InstallSession, step: InstallStep): StepState {
-  const stepOrder: InstallStep[] = ["precheck", "install", "init", "verify"];
-  const currentIdx = session.current_step ? stepOrder.indexOf(session.current_step) : -1;
-  const thisIdx = stepOrder.indexOf(step);
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(listPattern);
+    if (match) {
+      optionLines.push({ idx: i, label: match[1].trim() });
+    }
+  }
 
-  if (session.state === "ready") return "done";
-  if (session.current_step === step) {
-    const stateStr = session.state;
-    if (stateStr.endsWith("_failed")) return "failed";
-    if (stateStr.endsWith("_running")) return "running";
-    return "running";
-  }
-  if (thisIdx < currentIdx) return "done";
-  return "pending";
-}
+  if (optionLines.length < 2) return null;
 
-function StepIndicator({ state }: { state: StepState }) {
-  if (state === "done") return <span className="size-4 rounded-full bg-green-500 flex items-center justify-center text-white text-[10px]">✓</span>;
-  if (state === "running") return <span className="size-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />;
-  if (state === "failed") return <span className="size-4 rounded-full bg-red-500 flex items-center justify-center text-white text-[10px]">✕</span>;
-  return <span className="size-4 rounded-full border-2 border-muted-foreground/30" />;
-}
+  const firstIdx = optionLines[0].idx;
+  const lastIdx = optionLines[optionLines.length - 1].idx;
+  const blockSize = lastIdx - firstIdx + 1;
+  if (blockSize > optionLines.length + 2) return null;
 
-function hasStorage(): boolean {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
-}
-
-function storageSessionKey(instanceId: string): string {
-  return `${INSTALL_SESSION_STORAGE_PREFIX}${instanceId || "local"}`;
-}
-
-function storageResumeKey(instanceId: string): string {
-  return `${INSTALL_RESUME_STORAGE_PREFIX}${instanceId || "local"}`;
-}
-
-function readStoredSessionId(instanceId: string): string | null {
-  if (!hasStorage()) return null;
-  return window.localStorage.getItem(storageSessionKey(instanceId));
-}
-
-function writeStoredSessionId(instanceId: string, sessionId: string): void {
-  if (!hasStorage()) return;
-  window.localStorage.setItem(storageSessionKey(instanceId), sessionId);
-}
-
-function clearStoredSessionId(instanceId: string): void {
-  if (!hasStorage()) return;
-  window.localStorage.removeItem(storageSessionKey(instanceId));
-}
-
-function readResumeSessionId(instanceId: string): string | null {
-  if (!hasStorage()) return null;
-  return window.localStorage.getItem(storageResumeKey(instanceId));
-}
-
-function writeResumeSessionId(instanceId: string, sessionId: string): void {
-  if (!hasStorage()) return;
-  window.localStorage.setItem(storageResumeKey(instanceId), sessionId);
-}
-
-function clearResumeSessionId(instanceId: string): void {
-  if (!hasStorage()) return;
-  window.localStorage.removeItem(storageResumeKey(instanceId));
-}
-
-function readStoredDockerInstanceIds(): Set<string> {
-  if (!hasStorage()) return new Set();
-  const raw = window.localStorage.getItem(DOCKER_INSTANCES_STORAGE_KEY);
-  if (!raw) return new Set();
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed
-        .map((item) => (typeof item?.id === "string" ? item.id.trim() : ""))
-        .filter((id) => id.length > 0),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-function allocateDockerInstanceMeta(): { id: string; label: string } {
-  const ids = readStoredDockerInstanceIds();
-  if (!ids.has(DEFAULT_DOCKER_INSTANCE_ID)) {
-    return { id: DEFAULT_DOCKER_INSTANCE_ID, label: "Docker Local" };
-  }
-  let index = 2;
-  while (ids.has(`docker:local-${index}`)) {
-    index += 1;
-  }
-  return { id: `docker:local-${index}`, label: `Docker Local ${index}` };
-}
-
-function classifyAutoBlocker(
-  error: string,
-  fallbackMessage: string,
-  errorCode?: string | null,
-  actionHint?: string | null,
-): InstallAutoBlocker {
-  if (actionHint === "open_settings_auth") {
-    return {
-      code: errorCode || "auth_missing",
-      message: fallbackMessage,
-      details: error,
-      actions: ["settings", "resume"],
-    };
-  }
-  if (actionHint === "open_instances") {
-    return {
-      code: errorCode || "remote_target_missing",
-      message: fallbackMessage,
-      details: error,
-      actions: ["instances", "resume"],
-    };
-  }
-  if (actionHint === "open_doctor") {
-    return {
-      code: errorCode || "diagnosis_required",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  if (errorCode === "permission_denied") {
-    return {
-      code: "permission_denied",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  if (errorCode === "network_error") {
-    return {
-      code: "network_error",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  if (errorCode === "env_missing") {
-    return {
-      code: "env_missing",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  const lower = error.toLowerCase();
-  if (
-    lower.includes("no compatible api key found")
-    || lower.includes("no auth profile")
-    || lower.includes("openrouter_api_key")
-    || lower.includes("anthropic_api_key")
-    || lower.includes("openai_api_key")
-  ) {
-    return {
-      code: "auth_missing",
-      message: fallbackMessage,
-      details: error,
-      actions: ["settings", "resume"],
-    };
-  }
-  if (
-    lower.includes("no ssh host config with id")
-    || lower.includes("remote ssh host not found")
-    || lower.includes("remote ssh target missing")
-  ) {
-    return {
-      code: "remote_target_missing",
-      message: fallbackMessage,
-      details: error,
-      actions: ["instances", "resume"],
-    };
-  }
-  if (
-    lower.includes("cannot connect to the docker daemon")
-    || lower.includes("docker: command not found")
-    || lower.includes("command failed: docker")
-  ) {
-    return {
-      code: "docker_unavailable",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  if (lower.includes("permission denied") || lower.includes("operation not permitted")) {
-    return {
-      code: "permission_denied",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  if (lower.includes("network") || lower.includes("timed out") || lower.includes("failed to connect")) {
-    return {
-      code: "network_error",
-      message: fallbackMessage,
-      details: error,
-      actions: ["doctor", "resume"],
-    };
-  }
-  return {
-    code: "unknown",
-    message: fallbackMessage,
-    details: error,
-    actions: ["resume"],
+  // Prose = lines before the list, excluding "请选择" / "你想要" type headers and trailing "请告诉我" lines
+  const isHeaderLine = (l: string) => {
+    const t = l.trim();
+    return t.length === 0
+      || /[：:]$/.test(t)
+      || /^请/.test(t)
+      || /choose|select/i.test(t);
   };
+  const proseLines = lines.slice(0, firstIdx).filter((l) => !isHeaderLine(l));
+  // Also skip trailing "请告诉我你的选择" / "Please tell me" after the list
+  const afterLines = lines.slice(lastIdx + 1).filter((l) => {
+    const t = l.trim();
+    return t.length > 0 && !/^请/.test(t) && !/please/i.test(t);
+  });
+  const prose = [...proseLines, ...afterLines].join("\n").trim();
+
+  const options = optionLines.map((o) => {
+    // Split "label — description" for cleaner buttons
+    const dashMatch = o.label.match(/^(.+?)\s*[-—–]+\s+(.+)$/);
+    return {
+      label: dashMatch ? dashMatch[1].trim() : o.label,
+      value: o.label,
+    };
+  });
+
+  return { prose, options };
 }
 
-function sortMethods(methods: InstallMethodCapability[]): InstallMethodCapability[] {
-  const rank = new Map(METHOD_ORDER.map((method, index) => [method, index]));
-  return [...methods].sort((a, b) => (rank.get(a.method) ?? 99) - (rank.get(b.method) ?? 99));
+function ToolResultCollapsible({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const preview = content.length > 120 ? content.slice(0, 120) + "…" : content;
+  return (
+    <div className="rounded-md text-xs border border-border/50 bg-muted/20 text-muted-foreground font-mono">
+      <button
+        type="button"
+        className="w-full text-left px-3 py-1.5 hover:text-foreground cursor-pointer"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? "▾ result" : `▸ ${preview}`}
+      </button>
+      {expanded && (
+        <pre className="px-3 pb-2 overflow-auto max-h-48 whitespace-pre-wrap break-all">
+          {content}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+const PRESET_TAGS = [
+  { key: "local", labelKey: "installChat.tag.local" },
+  { key: "docker", labelKey: "installChat.tag.docker" },
+  { key: "ssh", labelKey: "installChat.tag.ssh" },
+  { key: "digitalocean", labelKey: "installChat.tag.digitalocean" },
+];
+
+function buildInstallPrompt(userIntent: string): string {
+  const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
+  return [
+    `Respond in ${lang}. Keep replies to 1-2 sentences max.`,
+    "",
+    "INSTALL KNOWLEDGE:",
+    "- Docker: Use the official OpenClaw docker-compose.yml from the openclaw repo.",
+    "- Local: Use the official install script.",
+    "- Auto-generate ALL tokens, secrets, and config values. NEVER ask the user for tokens.",
+    "- Use sensible defaults for all paths (e.g. ~/.openclaw).",
+    "",
+    "VERIFICATION (MANDATORY):",
+    "- NEVER claim installation succeeded without verifying via commands.",
+    "- After install, you MUST check: container logs (docker logs), service health (curl), process status (docker ps).",
+    "- If a container is in a restart loop or crashed, report the actual error.",
+    "",
+    `User intent: ${userIntent}`,
+  ].join("\n");
 }
 
 export function InstallHub({
@@ -275,841 +139,381 @@ export function InstallHub({
   showToast,
   onNavigate,
   onReady,
-  onRequestAddSsh,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   showToast?: (message: string, type?: "success" | "error") => void;
   onNavigate?: (route: string) => void;
   onReady?: (session: InstallSession) => void;
-  onRequestAddSsh?: () => void;
 }) {
   const { t } = useTranslation();
-  const ua = useApi();
-  const [methods, setMethods] = useState<InstallMethodCapability[]>([]);
-  const [loadingMethods, setLoadingMethods] = useState(true);
-  const [selectedMethod, setSelectedMethod] = useState<InstallMethod>("local");
-  const [creating, setCreating] = useState(false);
-  const [runningStep, setRunningStep] = useState<InstallStep | null>(null);
-  const [autoRunning, setAutoRunning] = useState(false);
-  const [session, setSession] = useState<InstallSession | null>(null);
-  const [lastResult, setLastResult] = useState<InstallStepResult | null>(null);
-  const [lastAccessResult, setLastAccessResult] = useState<EnsureAccessResult | null>(null);
-  const [lastAccessError, setLastAccessError] = useState<string | null>(null);
-  const [ensuringAccess, setEnsuringAccess] = useState(false);
-  const [lastOrchestratorReason, setLastOrchestratorReason] = useState<string>("");
-  const [lastOrchestratorSource, setLastOrchestratorSource] = useState<string>("");
-  const [autoBlocker, setAutoBlocker] = useState<InstallAutoBlocker | null>(null);
-  const [resumeSessionId, setResumeSessionId] = useState<string | null>(null);
-  const [sshHosts, setSshHosts] = useState<SshHost[]>([]);
-  const [selectedSshHostId, setSelectedSshHostId] = useState<string>("");
-  const [installIntent, setInstallIntent] = useState("本机 Docker");
-  const [checkingAuth, setCheckingAuth] = useState(false);
-  const [syncingAuth, setSyncingAuth] = useState(false);
-  const [authRequired, setAuthRequired] = useState(false);
-  const [decidingTarget, setDecidingTarget] = useState(false);
-  const [targetDecision, setTargetDecision] = useState<InstallTargetDecision | null>(null);
+  const agent = useDoctorAgent();
+  const [input, setInput] = useState("");
+  const [sessionStarted, setSessionStarted] = useState(false);
+  const [mode, setMode] = useState<"idle" | "chat" | "connect">("idle");
+  const [installMethod, setInstallMethod] = useState<InstallMethod>("local");
+  // Connect-existing form state
+  const [connectPath, setConnectPath] = useState("~/.clawpal/docker-local");
+  const [connectLabel, setConnectLabel] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Auto-scroll on new messages
   useEffect(() => {
-    setLoadingMethods(true);
-    ua.listInstallMethods()
-      .then((result) => {
-        const sorted = sortMethods(result);
-        setMethods(sorted);
-        if (sorted.length > 0) {
-          setSelectedMethod(sorted[0].method);
-        }
-      })
-      .catch((e) => showToast?.(String(e), "error"))
-      .finally(() => setLoadingMethods(false));
-  }, [ua, showToast]);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [agent.messages, agent.loading]);
 
+  // Connect on dialog open, disconnect on close
   useEffect(() => {
-    ua.listSshHosts()
-      .then((hosts) => {
-        setSshHosts(hosts);
-        setSelectedSshHostId((prev) => (
-          prev && hosts.some((host) => host.id === prev) ? prev : ""
-        ));
-      })
-      .catch(() => {});
-  }, [ua]);
-
-  useEffect(() => {
-    const instanceId = ua.instanceId || "local";
-    setSession(null);
-    setAutoBlocker(null);
-    setLastResult(null);
-    setLastAccessResult(null);
-    setLastAccessError(null);
-    setLastOrchestratorReason("");
-    setLastOrchestratorSource("");
-    setTargetDecision(null);
-    setResumeSessionId(readResumeSessionId(instanceId));
-
-    const sessionId = readStoredSessionId(instanceId);
-    if (!sessionId) return;
-    ua.installGetSession(sessionId)
-      .then((restored) => {
-        setSession(restored);
-        setSelectedMethod(restored.method);
-        if (restored.state === "ready") {
-          clearResumeSessionId(instanceId);
-          setResumeSessionId(null);
-        }
-      })
-      .catch(() => {
-        clearStoredSessionId(instanceId);
-        clearResumeSessionId(instanceId);
-        setResumeSessionId(null);
-      });
-  }, [ua.instanceId]);
-
-  const selectedTargetMeta = useMemo(
-    () => methods.find((m) => m.method === targetDecision?.method) ?? null,
-    [methods, targetDecision?.method],
-  );
-  const targetUiActions = targetDecision?.uiActions ?? [];
-  const targetRequiredFields = targetDecision?.requiredFields ?? [];
-  const targetRequiresSshHost = Boolean(
-    targetDecision?.requiresSshHost || targetRequiredFields.includes("ssh_host_id"),
-  );
-  const intentPlaceholder = t("home.install.intentPlaceholder");
-  const methodLabel = (method: InstallMethod): string => t(`home.install.method.${method}`);
-  const requiredFieldLabel = (field: string): string => {
-    if (field === "ssh_host_id") return t("home.install.selectRemoteHost");
-    if (field === "auth_profile") return t("home.install.authRequiredTitle");
-    return field;
-  };
-  const resolveGoal = (targetSession: InstallSession): string => {
-    const fromArtifacts = typeof targetSession.artifacts?.install_goal_intent === "string"
-      ? targetSession.artifacts.install_goal_intent.trim()
-      : "";
-    return fromArtifacts || `install:${targetSession.method}`;
-  };
-
-  const checkCompatibleAuth = async (): Promise<boolean> => {
-    setCheckingAuth(true);
-    try {
-      const keys = await api.resolveApiKeys();
-      const hasAny = keys.some((item) => Boolean(item.maskedKey && item.maskedKey.trim().length > 0));
-      setAuthRequired(!hasAny);
-      return hasAny;
-    } catch (e) {
-      showToast?.(String(e), "error");
-      setAuthRequired(true);
-      return false;
-    } finally {
-      setCheckingAuth(false);
+    if (open) {
+      agent.connect().catch(() => {});
+    } else {
+      agent.disconnect().catch(() => {});
+      agent.reset();
+      agent.setFullAuto(false);
+      setSessionStarted(false);
+      setInput("");
+      setMode("idle");
+      setInstallMethod("local");
+      setConnectPath("~/.clawpal/docker-local");
+      setConnectLabel("");
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  const syncAuthFromRemoteHost = async (): Promise<boolean> => {
-    if (!selectedSshHostId) {
-      showToast?.(t("home.install.remoteHostRequired"), "error");
-      return false;
+  // Start agent session with the user's first message baked into the system prompt
+  const startSession = useCallback((userIntent: string) => {
+    if (sessionStarted || !agent.bridgeConnected) return;
+    setSessionStarted(true);
+    // Auto-approve all tool invocations — install runs silently
+    agent.setFullAuto(true);
+    const prompt = buildInstallPrompt(userIntent);
+    agent.startDiagnosis("", "main", undefined, "local", prompt, "install").catch(() => {});
+  }, [sessionStarted, agent]);
+
+  const handleSend = useCallback(() => {
+    const text = input.trim();
+    if (!text || agent.loading) return;
+    if (!sessionStarted) {
+      // First message — intent is baked into the system prompt, don't also sendMessage
+      setMode("chat");
+      startSession(text);
+    } else {
+      agent.sendMessage(text);
     }
-    setSyncingAuth(true);
-    try {
-      await api.sshConnect(selectedSshHostId).catch(() => {});
-      const profiles = await api.remoteListModelProfiles(selectedSshHostId);
-      let imported = 0;
-      for (const profile of profiles as ModelProfile[]) {
-        await api.upsertModelProfile(profile);
-        imported += 1;
-      }
-      showToast?.(t("home.install.authSynced", { count: imported }), "success");
-      showToast?.(t("home.install.authRotateHint"), "error");
-      setAuthRequired(false);
-      return true;
-    } catch (e) {
-      showToast?.(t("home.install.authSyncFailed", { error: String(e) }), "error");
-      return false;
-    } finally {
-      setSyncingAuth(false);
+    setInput("");
+  }, [input, agent, sessionStarted, startSession]);
+
+  const handleTagClick = useCallback((tagKey: string, tagLabel: string) => {
+    if (agent.loading) return;
+    // Derive install method from the tag key
+    if (tagKey === "docker") setInstallMethod("docker");
+    else if (tagKey === "ssh") setInstallMethod("remote_ssh");
+    else setInstallMethod("local");
+    setMode("chat");
+    if (!sessionStarted) {
+      startSession(tagLabel);
+    } else {
+      agent.sendMessage(tagLabel);
     }
-  };
+  }, [agent, sessionStarted, startSession]);
 
-  const ensureInstanceByMethod = (nextSession: InstallSession): { instanceId: string; transport: string } | null => {
-    if (nextSession.method === "local") {
-      return { instanceId: "local", transport: "local" };
-    }
-    if (nextSession.method === "docker") {
-      const instanceId = typeof nextSession.artifacts?.docker_instance_id === "string"
-        ? nextSession.artifacts.docker_instance_id.trim()
-        : "";
-      return { instanceId: instanceId || DEFAULT_DOCKER_INSTANCE_ID, transport: "docker_local" };
-    }
-    if (nextSession.method === "wsl2") {
-      return { instanceId: "wsl2:local", transport: "wsl2" };
-    }
-    if (nextSession.method === "remote_ssh") {
-      const hostId = (nextSession.artifacts?.ssh_host_id as string | undefined) || selectedSshHostId;
-      if (!hostId) return null;
-      return { instanceId: hostId, transport: "remote_ssh" };
-    }
-    return null;
-  };
-
-  const runEnsureAccess = async (nextSession: InstallSession): Promise<EnsureAccessResult | null> => {
-    const target = ensureInstanceByMethod(nextSession);
-    if (!target) return null;
-    setEnsuringAccess(true);
-    setLastAccessError(null);
-    try {
-      const result = await ua.ensureAccessProfile(target.instanceId, target.transport);
-      setLastAccessResult(result);
-      showToast?.(
-        t("home.install.access.ready", {
-          chain: result.workingChain.join(" -> "),
-        }),
-        "success",
-      );
-      appendOrchestratorEvent({
-        level: "success",
-        message: "access discovery completed",
-        instanceId: target.instanceId,
-        sessionId: nextSession.id,
-        goal: `install:${nextSession.method}`,
-        source: "aad",
-        state: nextSession.state,
-        details: result.workingChain.join(" -> "),
-      });
-      return result;
-    } catch (e) {
-      const message = String(e);
-      setLastAccessError(message);
-      showToast?.(t("home.install.access.failed", { error: message }), "error");
-      appendOrchestratorEvent({
-        level: "error",
-        message: "access discovery failed",
-        instanceId: target.instanceId,
-        sessionId: nextSession.id,
-        goal: `install:${nextSession.method}`,
-        source: "aad",
-        state: nextSession.state,
-        details: message,
-      });
-      return null;
-    } finally {
-      setEnsuringAccess(false);
-    }
-  };
-
-  const runRecordExperience = async (nextSession: InstallSession) => {
-    const target = ensureInstanceByMethod(nextSession);
-    if (!target) return;
-    try {
-      const result = await ua.recordInstallExperience(
-        nextSession.id,
-        target.instanceId,
-        `install:${nextSession.method}`,
-      );
-      showToast?.(
-        t("home.install.access.experienceSaved", { count: result.totalCount }),
-        "success",
-      );
-      appendOrchestratorEvent({
-        level: "success",
-        message: "experience saved",
-        instanceId: target.instanceId,
-        sessionId: nextSession.id,
-        goal: `install:${nextSession.method}`,
-        source: "experience-store",
-        state: nextSession.state,
-        details: `total=${result.totalCount}`,
-      });
-    } catch (e) {
-      showToast?.(t("home.install.access.experienceFailed", { error: String(e) }), "error");
-      appendOrchestratorEvent({
-        level: "error",
-        message: "experience save failed",
-        instanceId: target.instanceId,
-        sessionId: nextSession.id,
-        goal: `install:${nextSession.method}`,
-        source: "experience-store",
-        state: nextSession.state,
-        details: String(e),
-      });
-    }
-  };
-
-  const runStepAndRefresh = async (
-    targetSession: InstallSession,
-    step: InstallStep,
-    quiet = false,
-  ): Promise<{ result: InstallStepResult; session: InstallSession | null }> => {
-    setRunningStep(step);
-    try {
-      const result = await ua.installRunStep(targetSession.id, step);
-      setLastResult(result);
-      if (!quiet) {
-        showToast?.(result.summary, result.ok ? "success" : "error");
-      }
-      const next = await refreshSession(targetSession.id);
-      if (result.ok) {
-        setAutoBlocker(null);
-      }
-      const target = ensureInstanceByMethod(next);
-      appendOrchestratorEvent({
-        level: result.ok ? "success" : "error",
-        message: result.summary,
-        instanceId: target?.instanceId || "local",
-        sessionId: targetSession.id,
-        goal: `install:${targetSession.method}`,
-        source: "step-runner",
-        step,
-        state: next.state,
-        details: result.details,
-      });
-      if (next.state === "init_passed" || next.state === "ready") {
-        await runEnsureAccess(next);
-      }
-      if (next.state === "ready") {
-        await runRecordExperience(next);
-        onReady?.(next);
-      }
-      return { result, session: next };
-    } catch (e) {
-      const message = String(e);
-      if (!quiet) {
-        showToast?.(message, "error");
-      }
-      return {
-        result: {
-          ok: false,
-          summary: message,
-          details: message,
-          commands: [],
-          artifacts: {},
-          next_step: null,
-          error_code: "runtime_error",
-        },
-        session: null,
-      };
-    } finally {
-      setRunningStep(null);
-    }
-  };
-
-  const runAutoInstall = async (startSession: InstallSession) => {
-    setAutoRunning(true);
-    setAutoBlocker(null);
-    try {
-      let current = startSession;
-      const goal = resolveGoal(startSession);
-      const initialTarget = ensureInstanceByMethod(startSession);
-      appendOrchestratorEvent({
-        level: "info",
-        message: "auto-install started",
-        instanceId: initialTarget?.instanceId || "local",
-        sessionId: startSession.id,
-        goal,
-        source: "orchestrator",
-        state: startSession.state,
-      });
-      while (current.state !== "ready") {
-        let step: InstallStep | null = null;
-        try {
-          const decision = await ua.installOrchestratorNext(current.id, goal);
-          setLastOrchestratorReason(decision.reason || "");
-          setLastOrchestratorSource(decision.source || "");
-          if (decision.source !== "zeroclaw-sidecar") {
-            const blocker = classifyAutoBlocker(
-              decision.reason || "",
-              t("home.install.blocked.orchestratorSource", { source: decision.source }),
-              decision.errorCode,
-              decision.actionHint,
-            );
-            setAutoBlocker(blocker);
-            const target = ensureInstanceByMethod(current);
-            appendOrchestratorEvent({
-              level: "error",
-              message: "orchestrator fallback blocked (strict mode)",
-              instanceId: target?.instanceId || "local",
-              sessionId: current.id,
-              goal,
-              source: decision.source,
-              state: current.state,
-              details: decision.reason,
-            });
-            showToast?.(t("home.install.orchestratorStrict", { source: decision.source }), "error");
-            return;
-          }
-          step = decision.step as InstallStep | null;
-          const target = ensureInstanceByMethod(current);
-          appendOrchestratorEvent({
-            level: "info",
-            message: `orchestrator selected step: ${decision.step || "stop"}`,
-            instanceId: target?.instanceId || "local",
-            sessionId: current.id,
-            goal,
-            source: decision.source,
-            state: current.state,
-            details: decision.reason,
-          });
-        } catch (e) {
-          const blocker = classifyAutoBlocker(
-            String(e),
-            t("home.install.blocked.orchestratorUnavailable"),
-          );
-          setAutoBlocker(blocker);
-          setLastOrchestratorReason(String(e));
-          setLastOrchestratorSource("error");
-          const target = ensureInstanceByMethod(current);
-          appendOrchestratorEvent({
-            level: "error",
-            message: "orchestrator decision failed",
-            instanceId: target?.instanceId || "local",
-            sessionId: current.id,
-            goal,
-            source: "error",
-            state: current.state,
-            details: String(e),
-          });
-          showToast?.(t("home.install.orchestratorUnavailable", { error: String(e) }), "error");
-          return;
-        }
-        if (!step) {
-          const blocker = classifyAutoBlocker(
-            "orchestrator returned no step",
-            t("home.install.blocked.orchestratorUnavailable"),
-          );
-          setAutoBlocker(blocker);
-          showToast?.(t("home.install.blocked.orchestratorUnavailable"), "error");
-          return;
-        }
-        const { result, session: refreshed } = await runStepAndRefresh(current, step, true);
-        if (!result.ok || !refreshed) {
-          const blocker = classifyAutoBlocker(
-            result.details || result.summary,
-            t("home.install.blocked.stepFailed", { step: t(`home.install.step.${step}`) }),
-            result.error_code,
-          );
-          setAutoBlocker(blocker);
-          showToast?.(result.summary, "error");
-          return;
-        }
-        current = refreshed;
-      }
-      if (current.state === "ready") {
-        setAutoBlocker(null);
-        showToast?.(t("home.install.autoDone"), "success");
-        const target = ensureInstanceByMethod(current);
-        appendOrchestratorEvent({
-          level: "success",
-          message: "auto-install completed",
-          instanceId: target?.instanceId || "local",
-          sessionId: current.id,
-          goal,
-          source: "orchestrator",
-          state: current.state,
-        });
-      }
-    } finally {
-      setAutoRunning(false);
-    }
-  };
-
-  useEffect(() => {
-    const instanceId = ua.instanceId || "local";
-    if (!session) {
-      clearStoredSessionId(instanceId);
-      return;
-    }
-    writeStoredSessionId(instanceId, session.id);
-    if (session.state === "ready") {
-      clearResumeSessionId(instanceId);
-      if (resumeSessionId) {
-        setResumeSessionId(null);
-      }
-    }
-  }, [session, ua.instanceId, resumeSessionId]);
-
-  useEffect(() => {
-    if (!session || !resumeSessionId) return;
-    if (session.id !== resumeSessionId) return;
-    if (session.state === "ready") {
-      clearResumeSessionId(ua.instanceId || "local");
-      setResumeSessionId(null);
-      return;
-    }
-    if (autoRunning || creating || runningStep !== null) return;
-    clearResumeSessionId(ua.instanceId || "local");
-    setResumeSessionId(null);
-    void runAutoInstall(session);
-  }, [session, resumeSessionId, autoRunning, creating, runningStep, ua.instanceId]);
-
-  const navigateWithAutoResume = (route: string, keepResumeMarker = false) => {
-    if (keepResumeMarker && session) {
-      const instanceId = ua.instanceId || "local";
-      writeResumeSessionId(instanceId, session.id);
-      setResumeSessionId(session.id);
-    }
-    onNavigate?.(route);
-  };
-
-  const createInstallSession = async (method: InstallMethod, goalIntent: string) => {
-    setCreating(true);
-    setLastResult(null);
-    setLastAccessResult(null);
-    setLastAccessError(null);
-    setAutoBlocker(null);
-    setSelectedMethod(method);
-    const dockerMeta = method === "docker" ? allocateDockerInstanceMeta() : null;
-    const options = method === "remote_ssh"
-      ? {
-          ssh_host_id: selectedSshHostId,
-          install_goal_intent: goalIntent,
-        }
-      : method === "docker"
-        ? {
-            docker_instance_id: dockerMeta?.id || DEFAULT_DOCKER_INSTANCE_ID,
-            docker_instance_label: dockerMeta?.label || "Docker Local",
-            install_goal_intent: goalIntent,
-          }
-        : {
-            install_goal_intent: goalIntent,
-          };
-    ua.installCreateSession(method, options)
-      .then((next) => {
-        setSession(next);
-        showToast?.(t("home.install.sessionCreated"), "success");
-        const target = ensureInstanceByMethod(next);
-        appendOrchestratorEvent({
-          level: "info",
-          message: "install session created",
-          instanceId: target?.instanceId || "local",
-          sessionId: next.id,
-          goal: `install:${next.method}`,
-          source: "ui",
-          state: next.state,
-        });
-        void runAutoInstall(next);
-      })
-      .catch((e) => showToast?.(String(e), "error"))
-      .finally(() => setCreating(false));
-  };
-
-  const handleLauncherConfirm = async () => {
-    const goalIntent = installIntent.trim() || "install";
-    const intentLower = goalIntent.toLowerCase();
-    const isConnect = intentLower.includes("连接") || intentLower.includes("connect");
-    const mode = isConnect ? "connect" : "install";
-
-    setDecidingTarget(true);
-    let decision: InstallTargetDecision;
-    try {
-      decision = await ua.installDecideTarget(goalIntent, {
-        selected_ssh_host_id: selectedSshHostId || null,
-        ssh_host_count: sshHosts.length,
-        available_methods: methods
-          .filter((item) => item.available)
-          .map((item) => item.method),
-        mode,
-      });
-    } catch (e) {
-      const message = String(e);
-      showToast?.(message, "error");
-      setDecidingTarget(false);
-      return;
-    } finally {
-      setDecidingTarget(false);
-    }
-
-    setTargetDecision(decision);
-
-    if (decision.source !== "zeroclaw-sidecar" || !decision.method) {
-      showToast?.(decision.reason || t("home.install.targetDecisionFailed"), "error");
-      return;
-    }
-
-    const decisionMethod = decision.method;
-    const decisionNeedsSshHost = Boolean(
-      decision.requiresSshHost || decision.requiredFields?.includes("ssh_host_id"),
-    );
-    if (decisionNeedsSshHost && !selectedSshHostId) {
-      showToast?.(t("home.install.remoteHostRequired"), "error");
-      return;
-    }
-
-    if (isConnect) {
-      // Connect flow: sync auth from remote if SSH, then signal done
-      if (decisionMethod === "remote_ssh" && selectedSshHostId) {
-        await syncAuthFromRemoteHost().catch(() => false);
-      }
-      showToast?.(t("home.install.connectDone"), "success");
-      return;
-    }
-
-    // Install flow
-    const methodMeta = methods.find((item) => item.method === decisionMethod) ?? null;
-    if (!methodMeta?.available) {
-      showToast?.(methodMeta?.hint || t("home.install.needsSetup"), "error");
-      return;
-    }
-
-    const hasAuth = await checkCompatibleAuth();
-    if (!hasAuth) {
-      setAuthRequired(true);
-      return;
-    }
-
-    setAuthRequired(false);
-    await createInstallSession(decisionMethod, goalIntent);
-  };
-
-  const refreshSession = (sessionId: string) => {
-    return ua.installGetSession(sessionId).then((next) => {
-      setSession(next);
-      return next;
-    });
-  };
-
-  const runTargetUiAction = (action: InstallUiAction) => {
-    if (action.kind === "open_settings") {
-      onNavigate?.("settings");
-      return;
-    }
-    if (action.kind === "open_instances") {
-      if (onRequestAddSsh) {
-        onRequestAddSsh();
-      } else {
-        onNavigate?.("home");
-      }
-      return;
-    }
-    if (action.kind === "open_doctor") {
-      onNavigate?.("doctor");
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{t("home.install.setupTitle")}</DialogTitle>
-          <DialogDescription>{t("home.install.setupDesc")}</DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3">
-          {autoRunning && <Badge variant="outline">{t("home.install.autoRunning")}</Badge>}
-
-          <div className="flex flex-wrap items-center gap-2 text-xs min-h-5">
-            {targetDecision?.method && (
-              <Badge variant="outline">{methodLabel(targetDecision.method)}</Badge>
-            )}
-            {targetDecision?.method && selectedTargetMeta && (
-              <Badge variant={selectedTargetMeta.available ? "secondary" : "outline"}>
-                {selectedTargetMeta.available
-                  ? t("home.install.available")
-                  : t("home.install.needsSetup")}
-              </Badge>
-            )}
-          </div>
-          {targetDecision?.reason && targetDecision.source !== "zeroclaw-sidecar" && (
-            <p className="text-xs text-muted-foreground">{targetDecision.reason}</p>
-          )}
-          {targetRequiredFields.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              {targetRequiredFields.map((field) => (
-                <Badge key={field} variant="outline">
-                  {requiredFieldLabel(field)}
-                </Badge>
-              ))}
-            </div>
-          )}
-          {targetUiActions.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              {targetUiActions.map((action) => (
-                <Button
-                  key={action.id}
-                  size="xs"
-                  variant="outline"
-                  onClick={() => runTargetUiAction(action)}
-                >
-                  {action.label}
-                </Button>
-              ))}
-            </div>
-          )}
-
-          {(authRequired
-            || decidingTarget
-            || targetRequiresSshHost
-            || sshHosts.length > 0) && (
-            <div className="space-y-2">
-              <div className="text-xs font-medium">{t("home.install.selectRemoteHost")}</div>
-              <Select
-                value={selectedSshHostId}
-                onValueChange={setSelectedSshHostId}
-                disabled={creating || runningStep !== null || autoRunning || sshHosts.length === 0}
-              >
-                <SelectTrigger size="sm">
-                  <SelectValue placeholder={t("home.install.selectRemoteHost")} />
-                </SelectTrigger>
-                <SelectContent>
-                  {sshHosts.map((host) => (
-                    <SelectItem key={host.id} value={host.id}>
-                      {host.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {sshHosts.length === 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">{t("home.install.noRemoteHosts")}</span>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    onClick={() => onRequestAddSsh?.()}
-                  >
-                    {t("instance.addSsh")}
-                  </Button>
+  // A2UI: intercept render_form tool-calls + parse text-based choices from assistant messages
+  const extraRenderer = useCallback((msg: DoctorChatMessage) => {
+    // Parse numbered/bulleted choices from assistant messages into clickable buttons
+    if (msg.role === "assistant" && msg.content) {
+      const parsed = extractChoices(msg.content);
+      if (parsed) {
+        return (
+          <div className="flex flex-col gap-2">
+            {parsed.prose && (
+              <div className="flex justify-start">
+                <div className="px-3 py-2 rounded-lg max-w-[85%] bg-[oklch(0.93_0_0)] dark:bg-muted dark:text-foreground">
+                  <div className="text-sm whitespace-pre-wrap">{parsed.prose}</div>
                 </div>
-              )}
-            </div>
-          )}
-
-          {authRequired && (
-            <div className="rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs space-y-2">
-              <div className="font-medium">{t("home.install.authRequiredHint")}</div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() => onNavigate?.("settings")}
-                >
-                  {t("home.install.goSettings")}
-                </Button>
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={syncingAuth || !selectedSshHostId}
-                  onClick={() => void syncAuthFromRemoteHost()}
-                >
-                  {syncingAuth
-                    ? t("home.install.syncingAuth")
-                    : t("home.install.syncAuthFromRemote")}
-                </Button>
               </div>
-            </div>
-          )}
-
-          {/* Intent input */}
-          <div className="space-y-2">
-            <Textarea
-              value={installIntent}
-              onChange={(event) => setInstallIntent(event.target.value)}
-              placeholder={intentPlaceholder}
-              className="min-h-16"
-            />
-            <div className="flex flex-wrap items-center gap-1.5">
-              {INTENT_HINTS.map((hint) => (
+            )}
+            <div className="flex flex-wrap gap-2 pl-1">
+              {parsed.options.map((opt) => (
                 <button
-                  key={hint}
+                  key={opt.value}
                   type="button"
-                  className="text-xs px-2 py-1 rounded border hover:bg-muted/40 transition-colors"
-                  onClick={() => setInstallIntent(hint)}
+                  className="text-sm px-3 py-2 rounded-lg border cursor-pointer hover:bg-muted/60 hover:border-primary/40 transition-colors text-left"
+                  onClick={() => agent.sendMessage(opt.value)}
                 >
-                  {hint}
+                  {opt.label}
                 </button>
               ))}
             </div>
-            <div className="flex items-center justify-end">
-              <Button
-                onClick={() => void handleLauncherConfirm()}
-                disabled={
-                  loadingMethods
-                  || creating
-                  || decidingTarget
-                  || checkingAuth
-                  || syncingAuth
-                  || (targetRequiresSshHost && !selectedSshHostId)
-                }
-              >
-                {t("home.install.launcherRun")}
-              </Button>
-            </div>
           </div>
+        );
+      }
+    }
 
-          {/* A2UI Stepper */}
-          {session && (
-            <div className="space-y-2 mt-4">
-              {(["precheck", "install", "init", "verify"] as const).map((step) => {
-                const state = getStepState(session, step);
-                return (
-                  <div key={step} className="flex items-center gap-2.5">
-                    <StepIndicator state={state} />
-                    <span className={cn(
-                      "text-sm",
-                      state === "running" && "font-medium text-primary",
-                      state === "failed" && "text-destructive",
-                      state === "done" && "text-foreground",
-                      state === "pending" && "text-muted-foreground",
-                    )}>
-                      {t(`home.install.step.${step}`)}
-                    </span>
-                    {state === "running" && (
-                      <span className="text-xs text-muted-foreground animate-pulse">
-                        {t("home.install.running")}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+    // Render non-render_form tool-calls as minimal read-only activity indicators
+    if (msg.role === "tool-call" && msg.invoke?.command !== "render_form") {
+      const inv = msg.invoke!;
+      return (
+        <div className="rounded-md px-3 py-1.5 text-xs border border-border/50 bg-muted/20 text-muted-foreground font-mono">
+          <span className="opacity-60">⚙</span> {inv.command}
+          {inv.args?.path ? <span className="ml-1 opacity-70">{String(inv.args.path)}</span> : null}
+        </div>
+      );
+    }
 
-          {/* Blocker recovery */}
-          {autoBlocker && session && session.state !== "ready" && !autoRunning && (
-            <Card className="border-destructive/30 bg-destructive/5 mt-4">
-              <CardContent className="space-y-3">
-                <p className="text-sm font-medium">{autoBlocker.message}</p>
-                {autoBlocker.details && (
-                  <details className="text-xs text-muted-foreground">
-                    <summary className="cursor-pointer">{t("home.install.showDetails")}</summary>
-                    <pre className="mt-1 whitespace-pre-wrap font-mono">{autoBlocker.details}</pre>
-                  </details>
-                )}
-                <div className="flex gap-2">
-                  {autoBlocker.actions.includes("settings") && (
-                    <Button size="sm" variant="outline" onClick={() => onNavigate?.("settings")}>
-                      {t("home.install.goSettings")}
-                    </Button>
-                  )}
-                  {autoBlocker.actions.includes("doctor") && (
-                    <Button size="sm" variant="outline" onClick={() => onNavigate?.("doctor")}>
-                      {t("home.install.openDoctor")}
-                    </Button>
-                  )}
-                  {autoBlocker.actions.includes("resume") && (
-                    <Button size="sm" onClick={() => { setAutoBlocker(null); void runAutoInstall(session); }}>
-                      {t("home.install.retry")}
-                    </Button>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          )}
+    // Render tool-results as collapsible detail
+    if (msg.role === "tool-result") {
+      return (
+        <ToolResultCollapsible content={msg.content} />
+      );
+    }
 
-          {/* Completion */}
-          {session?.state === "ready" && (
-            <div className="space-y-3 mt-4">
-              <p className="text-sm text-green-600 dark:text-green-400 font-medium">
-                {t("home.install.ready")}
-              </p>
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => { onOpenChange(false); onNavigate?.("settings"); }}>
-                  {t("home.install.goSettings")}
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => { onOpenChange(false); onNavigate?.("channels"); }}>
-                  {t("home.install.goChannels")}
+    if (msg.role !== "tool-call" || msg.invoke?.command !== "render_form") return null;
+    const formKind = msg.invoke.args?.formKind as string | undefined;
+
+    if (formKind === "ssh_host") {
+      return (
+        <SshFormWidget
+          invokeId={msg.invoke.id}
+          defaults={msg.invoke.args?.defaults as Partial<SshHost> | undefined}
+          onSubmit={(invokeId, host) => {
+            agent.sendMessage(JSON.stringify(host));
+            agent.approveInvoke(invokeId);
+          }}
+          onCancel={(invokeId) => {
+            agent.rejectInvoke(invokeId, "User cancelled form");
+          }}
+        />
+      );
+    }
+
+    if (formKind === "choice") {
+      const options = (msg.invoke.args?.options as Array<{ label: string; value: string; description?: string }>) ?? [];
+      const alreadyChosen = msg.status === "approved" || msg.status === "auto";
+      return (
+        <div className="flex flex-wrap gap-2">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={alreadyChosen}
+              className="text-sm px-3 py-2 rounded-lg border cursor-pointer hover:bg-muted/60 hover:border-primary/40 disabled:opacity-50 disabled:cursor-default transition-colors text-left"
+              onClick={() => {
+                agent.sendMessage(opt.value);
+                agent.approveInvoke(msg.invoke!.id);
+              }}
+            >
+              <div className="font-medium">{opt.label}</div>
+              {opt.description && (
+                <div className="text-xs text-muted-foreground mt-0.5">{opt.description}</div>
+              )}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    return null;
+  }, [agent]);
+
+  // Filter messages: hide tool-narration assistant messages, show tool activity
+  const visibleMessages = agent.messages.filter((msg) => {
+    // Hide assistant messages that just narrate tool actions
+    if (msg.role === "assistant" && isToolNarration(msg.content)) return false;
+    return true;
+  });
+
+  const hasMessages = visibleMessages.length > 0;
+
+  // Done button handler — builds a synthetic InstallSession and calls onReady
+  const handleDone = useCallback(() => {
+    if (!onReady) return;
+    const now = new Date().toISOString();
+    onReady({
+      id: `install-${Date.now()}`,
+      method: installMethod,
+      state: "ready",
+      current_step: null,
+      logs: [],
+      artifacts: {},
+      created_at: now,
+      updated_at: now,
+    });
+  }, [onReady, installMethod]);
+
+  // Connect-existing submit handler
+  const handleConnectSubmit = useCallback(() => {
+    if (!onReady || !connectPath.trim()) return;
+    const now = new Date().toISOString();
+    onReady({
+      id: `install-${Date.now()}`,
+      method: "docker",
+      state: "ready",
+      current_step: null,
+      logs: [],
+      artifacts: {
+        docker_openclaw_home: connectPath.trim(),
+        docker_clawpal_data_dir: `${connectPath.trim()}/data`,
+        ...(connectLabel.trim() ? { docker_label: connectLabel.trim() } : {}),
+      },
+      created_at: now,
+      updated_at: now,
+    });
+  }, [onReady, connectPath, connectLabel]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>
+            {mode === "connect" ? t("installChat.connectTitle") : t("installChat.title")}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {mode === "connect" ? t("installChat.connectTitle") : t("installChat.title")}
+          </DialogDescription>
+        </DialogHeader>
+
+        {mode === "connect" ? (
+          /* ── Connect Existing form ── */
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>{t("installChat.connectType")}</Label>
+              <div>
+                <Button variant="outline" size="sm" disabled>
+                  {t("installChat.connectDocker")}
                 </Button>
               </div>
             </div>
-          )}
-        </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="connect-path">{t("installChat.connectPath")}</Label>
+              <Input
+                id="connect-path"
+                value={connectPath}
+                onChange={(e) => setConnectPath(e.target.value)}
+                placeholder={t("installChat.connectPathPlaceholder")}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="connect-label">{t("installChat.connectLabel")}</Label>
+              <Input
+                id="connect-label"
+                value={connectLabel}
+                onChange={(e) => setConnectLabel(e.target.value)}
+                placeholder={t("installChat.connectLabelPlaceholder")}
+              />
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Preset tags — visible until user starts the conversation */}
+            {!hasMessages && mode === "idle" && (
+              <div className="flex flex-wrap items-center gap-2">
+                {PRESET_TAGS.map((tag) => (
+                  <button
+                    key={tag.key}
+                    type="button"
+                    className="text-sm px-3 py-1.5 rounded-full border cursor-pointer hover:bg-muted/60 hover:border-primary/40 transition-colors"
+                    onClick={() => handleTagClick(tag.key, t(tag.labelKey))}
+                    disabled={agent.loading || !agent.bridgeConnected}
+                  >
+                    {t(tag.labelKey)}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="text-sm px-3 py-1.5 rounded-full border cursor-pointer hover:bg-muted/60 hover:border-primary/40 transition-colors"
+                  onClick={() => setMode("connect")}
+                >
+                  {t("installChat.tag.connect")}
+                </button>
+              </div>
+            )}
+
+            {/* Chat message list */}
+            <div
+              ref={scrollRef}
+              className="flex-1 min-h-[300px] max-h-[50vh] border rounded-md p-3 bg-muted/30 overflow-y-auto"
+            >
+              <div className="space-y-3">
+                {agent.error && !agent.error.includes("Auto-approve") && (
+                  <div className="text-sm text-destructive border border-destructive/30 rounded-md px-3 py-2 bg-destructive/5">
+                    {agent.error}
+                  </div>
+                )}
+                {!agent.bridgeConnected && !agent.error && (
+                  <div className="text-sm text-muted-foreground animate-pulse">
+                    {t("installChat.connecting")}
+                  </div>
+                )}
+                {agent.bridgeConnected && !hasMessages && !agent.loading && (
+                  <div className="text-sm text-muted-foreground">
+                    {t("installChat.inputPlaceholder")}
+                  </div>
+                )}
+                {visibleMessages.map((msg) => (
+                  <AgentMessageBubble
+                    key={msg.id}
+                    message={msg}
+                    onApprove={agent.approveInvoke}
+                    onReject={agent.rejectInvoke}
+                    extraRenderer={extraRenderer}
+                  />
+                ))}
+                {agent.loading && (
+                  <div className="text-sm text-muted-foreground animate-pulse">
+                    {t("doctor.agentThinking")}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Input bar */}
+            <div className="flex gap-2">
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                placeholder={t("installChat.inputPlaceholder")}
+                disabled={!agent.bridgeConnected || agent.loading}
+                className="flex-1"
+              />
+              <Button
+                onClick={handleSend}
+                disabled={!agent.bridgeConnected || agent.loading || !input.trim()}
+                size="sm"
+              >
+                {t("chat.send")}{" "}
+                <kbd className="ml-1 text-xs opacity-60">
+                  {navigator.platform.includes("Mac") ? "⌘↵" : "Ctrl↵"}
+                </kbd>
+              </Button>
+            </div>
+          </>
+        )}
+
+        {/* Footer with Done / Connect button */}
+        {mode === "connect" && (
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMode("idle")}>
+              {t("installChat.cancel")}
+            </Button>
+            <Button onClick={handleConnectSubmit} disabled={!connectPath.trim()}>
+              {t("installChat.connectSubmit")}
+            </Button>
+          </DialogFooter>
+        )}
+        {mode === "chat" && sessionStarted && !agent.loading && (
+          <DialogFooter>
+            <Button onClick={handleDone}>
+              {t("installChat.done")}
+            </Button>
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );

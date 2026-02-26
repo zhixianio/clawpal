@@ -1,12 +1,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeDomain {
     Doctor,
+    Install,
 }
 
 impl RuntimeDomain {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Doctor => "doctor",
+            Self::Install => "install",
         }
     }
 }

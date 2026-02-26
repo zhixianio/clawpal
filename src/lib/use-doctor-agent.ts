@@ -38,6 +38,7 @@ export function useDoctorAgent() {
   // Locked at diagnosis start — immune to tab switching during diagnosis
   const targetRef = useRef("local");
   const instanceScopeRef = useRef("local");
+  const domainRef = useRef<"doctor" | "install">("doctor");
   // Last connection params for reconnect
   const wasConnectedRef = useRef(false);
 
@@ -210,7 +211,7 @@ export function useDoctorAgent() {
 
   const autoApprove = useCallback(async (invokeId: string) => {
     try {
-      await api.doctorApproveInvoke(invokeId, targetRef.current, sessionKeyRef.current, agentIdRef.current);
+      await api.doctorApproveInvoke(invokeId, targetRef.current, sessionKeyRef.current, agentIdRef.current, domainRef.current);
       setMessages((prev) =>
         prev.map((m) => {
           if (m.invoke?.id === invokeId && m.role === "tool-call") {
@@ -271,10 +272,13 @@ export function useDoctorAgent() {
       agentId = "main",
       instanceScope?: string,
       instanceTransport: "local" | "docker_local" | "remote_ssh" = "local",
+      systemPrompt?: string,
+      domain: "doctor" | "install" = "doctor",
     ) => {
     agentIdRef.current = agentId;
     targetRef.current = target;
     instanceScopeRef.current = instanceScope ?? target;
+    domainRef.current = domain;
     setLoading(true);
     setMessages([]);
     setPendingInvokes(new Map());
@@ -285,22 +289,31 @@ export function useDoctorAgent() {
     sessionActiveRef.current = true;
     try {
       const scope = instanceScopeRef.current;
-      const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
-      const transportLine =
-        instanceTransport === "docker_local"
-          ? `Current target transport is docker_local (instance: ${scope}).`
-          : instanceTransport === "remote_ssh"
-            ? `Current target transport is remote_ssh (instance: ${scope}).`
-            : "Current target transport is local.";
-      const prompt = [
-        `You are ClawPal's diagnostic assistant powered by Doctor Claw. Respond in ${lang}.`,
-        "Identity rule: you are Doctor Claw (the diagnosing engine), not the target machine itself.",
-        "When asked who/where you are, always state both: engine=Doctor Claw, target=<current target>.",
-        transportLine,
-        `\nSystem context:\n${context}\n`,
-        "Analyze issues directly and give concrete next actions. Keep response concise.",
-      ].join("\n");
-      await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId, scope);
+      let prompt: string;
+      if (systemPrompt) {
+        prompt = systemPrompt;
+      } else {
+        const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
+        const transportLine =
+          instanceTransport === "docker_local"
+            ? `Current target transport is docker_local (instance: ${scope}).`
+            : instanceTransport === "remote_ssh"
+              ? `Current target transport is remote_ssh (instance: ${scope}).`
+              : "Current target transport is local.";
+        prompt = [
+          `You are ClawPal's diagnostic assistant powered by Doctor Claw. Respond in ${lang}.`,
+          "Identity rule: you are Doctor Claw (the diagnosing engine), not the target machine itself.",
+          "When asked who/where you are, always state both: engine=Doctor Claw, target=<current target>.",
+          transportLine,
+          `\nSystem context:\n${context}\n`,
+          "Analyze issues directly and give concrete next actions. Keep response concise.",
+        ].join("\n");
+      }
+      if (domain === "install") {
+        await api.installStartSession(prompt, sessionKeyRef.current, agentId, scope);
+      } else {
+        await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId, scope);
+      }
     } catch (err) {
       setError(`Start diagnosis failed: ${err}`);
       setLoading(false);
@@ -312,7 +325,11 @@ export function useDoctorAgent() {
     streamingRef.current = "";
     setMessages((prev) => [...prev, { id: nextMsgId(), role: "user", content: message }]);
     try {
-      await api.doctorSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
+      if (domainRef.current === "install") {
+        await api.installSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
+      } else {
+        await api.doctorSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
+      }
     } catch (err) {
       setError(`Send message failed: ${err}`);
       setLoading(false);
@@ -333,7 +350,7 @@ export function useDoctorAgent() {
       })
     );
     try {
-      await api.doctorApproveInvoke(invokeId, targetRef.current, sessionKeyRef.current, agentIdRef.current);
+      await api.doctorApproveInvoke(invokeId, targetRef.current, sessionKeyRef.current, agentIdRef.current, domainRef.current);
     } catch (err) {
       setError(`Approve failed: ${err}`);
     }

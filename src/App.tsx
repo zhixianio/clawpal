@@ -747,7 +747,6 @@ export function App() {
             <StartPage
               dockerInstances={dockerInstances}
               sshHosts={sshHosts}
-              connectionStatus={connectionStatus}
               openTabIds={new Set(openTabIds)}
               onOpenInstance={openTab}
               onRenameDocker={renameDockerInstance}
@@ -757,7 +756,6 @@ export function App() {
               }}
               onEditSsh={() => {}}
               onInstallReady={handleInstallReady}
-              onRequestAddSsh={() => {}}
               showToast={showToast}
               onNavigate={(r) => setRoute(r as Route)}
             />

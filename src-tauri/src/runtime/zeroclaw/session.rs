@@ -24,9 +24,11 @@ pub fn append_history(session_key: &str, role: &str, content: &str) {
 }
 
 pub fn build_prompt_with_history(session_key: &str, latest_user_message: &str) -> String {
-    let mut prompt = String::from(
-        "You are continuing a Doctor troubleshooting chat. Keep continuity with prior turns.\n",
-    );
+    build_prompt_with_history_preamble(session_key, latest_user_message, "You are continuing a Doctor troubleshooting chat. Keep continuity with prior turns.\n")
+}
+
+pub fn build_prompt_with_history_preamble(session_key: &str, latest_user_message: &str, preamble: &str) -> String {
+    let mut prompt = String::from(preamble);
     if let Ok(guard) = history_store().lock() {
         if let Some(history) = guard.get(session_key) {
             if !history.is_empty() {

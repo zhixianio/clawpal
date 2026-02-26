@@ -289,14 +289,19 @@ export const api = {
     invoke("doctor_start_diagnosis", { context, sessionKey, agentId: agentId ?? "main", instanceId: instanceId ?? "local" }),
   doctorSendMessage: (message: string, sessionKey: string, agentId?: string, instanceId?: string): Promise<void> =>
     invoke("doctor_send_message", { message, sessionKey, agentId: agentId ?? "main", instanceId: instanceId ?? "local" }),
-  doctorApproveInvoke: (invokeId: string, target: string, sessionKey: string, agentId: string): Promise<Record<string, unknown>> =>
-    invoke("doctor_approve_invoke", { invokeId, target, sessionKey, agentId }),
+  doctorApproveInvoke: (invokeId: string, target: string, sessionKey: string, agentId: string, domain?: string): Promise<Record<string, unknown>> =>
+    invoke("doctor_approve_invoke", { invokeId, target, sessionKey, agentId, domain }),
   doctorRejectInvoke: (invokeId: string, reason: string): Promise<void> =>
     invoke("doctor_reject_invoke", { invokeId, reason }),
   collectDoctorContext: (): Promise<string> =>
     invoke("collect_doctor_context"),
   collectDoctorContextRemote: (hostId: string): Promise<string> =>
     invoke("collect_doctor_context_remote", { hostId }),
+  // Install Agent
+  installStartSession: (context: string, sessionKey: string, agentId?: string, instanceId?: string): Promise<void> =>
+    invoke("install_start_session", { context, sessionKey, agentId: agentId ?? "main", instanceId: instanceId ?? "local" }),
+  installSendMessage: (message: string, sessionKey: string, agentId?: string, instanceId?: string): Promise<void> =>
+    invoke("install_send_message", { message, sessionKey, agentId: agentId ?? "main", instanceId: instanceId ?? "local" }),
   // Logs
   readAppLog: (lines?: number): Promise<string> =>
     invoke("read_app_log", { lines }),

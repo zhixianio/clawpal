@@ -52,6 +52,7 @@ use crate::doctor_commands::{
     doctor_approve_invoke, doctor_reject_invoke, collect_doctor_context,
     collect_doctor_context_remote,
 };
+use crate::install_commands::{install_start_session, install_send_message};
 use crate::cli_runner::{
     queue_command, remove_queued_command, list_queued_commands,
     discard_queued_commands, queued_commands_count,
@@ -72,6 +73,7 @@ pub mod config_io;
 pub mod doctor;
 pub mod doctor_commands;
 pub mod doctor_runtime_bridge;
+pub mod install_commands;
 pub mod history;
 pub mod install;
 pub mod logging;
@@ -242,6 +244,8 @@ pub fn run() {
             doctor_reject_invoke,
             collect_doctor_context,
             collect_doctor_context_remote,
+            install_start_session,
+            install_send_message,
         ])
         .setup(|_app| {
             // Run PATH fix in background so it doesn't block window creation.

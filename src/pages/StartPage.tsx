@@ -21,7 +21,6 @@ import type { DockerInstance, SshHost, InstallSession } from "@/lib/types";
 interface StartPageProps {
   dockerInstances: DockerInstance[];
   sshHosts: SshHost[];
-  connectionStatus: Record<string, "connected" | "disconnected" | "error">;
   openTabIds: Set<string>;
   onOpenInstance: (id: string) => void;
   onRenameDocker: (id: string, label: string) => void;
@@ -29,7 +28,6 @@ interface StartPageProps {
   onDeleteSsh: (hostId: string) => void;
   onEditSsh: (host: SshHost) => void;
   onInstallReady: (session: InstallSession) => void;
-  onRequestAddSsh: () => void;
   showToast: (message: string, type?: "success" | "error") => void;
   onNavigate: (route: string) => void;
 }
@@ -37,7 +35,6 @@ interface StartPageProps {
 export function StartPage({
   dockerInstances,
   sshHosts,
-  connectionStatus,
   openTabIds,
   onOpenInstance,
   onRenameDocker,
@@ -45,7 +42,6 @@ export function StartPage({
   onDeleteSsh,
   onEditSsh,
   onInstallReady,
-  onRequestAddSsh,
   showToast,
   onNavigate,
 }: StartPageProps) {
@@ -55,6 +51,10 @@ export function StartPage({
   const [healthMap, setHealthMap] = useState<
     Record<string, { healthy: boolean | null; agentCount: number }>
   >({});
+
+  // SSH manual check state: tracks which hosts have been checked / are checking
+  const [sshChecked, setSshChecked] = useState<Record<string, boolean>>({});
+  const [sshChecking, setSshChecking] = useState<Record<string, boolean>>({});
 
   // Install dialog
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
@@ -75,7 +75,7 @@ export function StartPage({
   const [sshDeleteOpen, setSshDeleteOpen] = useState(false);
   const [deletingHost, setDeletingHost] = useState<SshHost | null>(null);
 
-  // Health polling — local, Docker (mirrors local), and connected SSH
+  // Health polling — local, Docker (own openclawHome), and connected SSH
   useEffect(() => {
     let cancelled = false;
     const poll = async () => {
@@ -89,20 +89,23 @@ export function StartPage({
         updates.local = { healthy: null, agentCount: 0 };
       }
 
-      // Docker instances share the local host runtime — mirror local health
+      // Poll each Docker instance using its own openclawHome
       for (const d of dockerInstances) {
-        updates[d.id] = { ...updates.local };
-      }
-
-      // Poll connected SSH instances
-      for (const h of sshHosts) {
         if (cancelled) break;
-        if (connectionStatus[h.id] !== "connected") continue;
-        try {
-          const status = await api.remoteGetInstanceStatus(h.id);
-          updates[h.id] = { healthy: status.healthy, agentCount: status.activeAgents };
-        } catch {
-          updates[h.id] = { healthy: null, agentCount: 0 };
+        if (d.openclawHome) {
+          try {
+            await api.setActiveOpenclawHome(d.openclawHome);
+            if (d.clawpalDataDir) await api.setActiveClawpalDataDir(d.clawpalDataDir);
+            const status = await api.getInstanceStatus();
+            updates[d.id] = { healthy: status.healthy, agentCount: status.activeAgents };
+          } catch {
+            updates[d.id] = { healthy: null, agentCount: 0 };
+          } finally {
+            await api.setActiveOpenclawHome(null);
+            await api.setActiveClawpalDataDir(null);
+          }
+        } else {
+          updates[d.id] = { healthy: null, agentCount: 0 };
         }
       }
 
@@ -116,7 +119,28 @@ export function StartPage({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [dockerInstances, sshHosts, connectionStatus]);
+  }, [dockerInstances]);
+
+  // Manual SSH health check
+  const handleSshCheck = useCallback(async (hostId: string) => {
+    setSshChecking((prev) => ({ ...prev, [hostId]: true }));
+    try {
+      await api.sshConnect(hostId);
+      const status = await api.remoteGetInstanceStatus(hostId);
+      setHealthMap((prev) => ({
+        ...prev,
+        [hostId]: { healthy: status.healthy, agentCount: status.activeAgents },
+      }));
+    } catch {
+      setHealthMap((prev) => ({
+        ...prev,
+        [hostId]: { healthy: null, agentCount: 0 },
+      }));
+    } finally {
+      setSshChecking((prev) => ({ ...prev, [hostId]: false }));
+      setSshChecked((prev) => ({ ...prev, [hostId]: true }));
+    }
+  }, []);
 
   // Build unified instances list
   const instances = [
@@ -200,11 +224,9 @@ export function StartPage({
               healthy={health?.healthy ?? null}
               agentCount={health?.agentCount ?? 0}
               opened={openTabIds.has(inst.id)}
-              connectionStatus={
-                inst.type === "local" ? "connected"
-                  : inst.type === "docker" ? "connected"
-                  : connectionStatus[inst.id]
-              }
+              checked={inst.type === "ssh" ? sshChecked[inst.id] ?? false : undefined}
+              checking={inst.type === "ssh" ? sshChecking[inst.id] ?? false : undefined}
+              onCheck={inst.type === "ssh" ? () => handleSshCheck(inst.id) : undefined}
               onClick={() => onOpenInstance(inst.id)}
               onRename={
                 inst.type === "docker" && dockerInst
@@ -250,7 +272,6 @@ export function StartPage({
           setInstallDialogOpen(false);
           onInstallReady(session);
         }}
-        onRequestAddSsh={onRequestAddSsh}
       />
 
       {/* Docker rename dialog */}
