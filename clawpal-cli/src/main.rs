@@ -9,6 +9,7 @@ use clawpal_core::profile::{
 };
 use clawpal_core::ssh::SshSession;
 use serde_json::json;
+use std::process::Command;
 
 #[derive(Parser, Debug)]
 #[command(name = "clawpal")]
@@ -44,6 +45,10 @@ enum Commands {
         #[command(subcommand)]
         command: ProfileCommands,
     },
+    Doctor {
+        #[command(subcommand)]
+        command: DoctorCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -57,6 +62,10 @@ enum InstallCommands {
     Docker {
         #[arg(long)]
         home: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long = "dry-run", alias = "dry_run")]
+        dry_run: bool,
         #[command(subcommand)]
         command: Option<InstallDockerSubcommands>,
     },
@@ -89,7 +98,7 @@ enum ConnectCommands {
         id: Option<String>,
         #[arg(long)]
         label: Option<String>,
-        #[arg(long)]
+        #[arg(long = "key-path", alias = "key_path")]
         key_path: Option<String>,
     },
 }
@@ -120,7 +129,7 @@ enum ProfileCommands {
         model: String,
         #[arg(long)]
         name: Option<String>,
-        #[arg(long)]
+        #[arg(long = "api-key", alias = "api_key")]
         api_key: Option<String>,
     },
     Remove {
@@ -128,6 +137,50 @@ enum ProfileCommands {
     },
     Test {
         id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DoctorCommands {
+    ProbeOpenclaw {
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    FixOpenclawPath {
+        #[arg(long)]
+        instance: String,
+    },
+    ConfigDelete {
+        path: String,
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    ConfigRead {
+        path: Option<String>,
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    ConfigUpsert {
+        path: String,
+        value: String,
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    SessionsRead {
+        path: Option<String>,
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    SessionsUpsert {
+        path: String,
+        value: String,
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    SessionsDelete {
+        path: String,
+        #[arg(long)]
+        instance: Option<String>,
     },
 }
 
@@ -140,6 +193,7 @@ fn main() {
         Commands::Connect { command } => run_connect_command(command),
         Commands::Profile { command } => run_profile_command(command),
         Commands::Ssh { command } => run_ssh_command(command),
+        Commands::Doctor { command } => run_doctor_command(command),
     };
 
     match result {
@@ -242,11 +296,16 @@ fn run_profile_command(command: ProfileCommands) -> Result<serde_json::Value, St
 
 fn run_install_command(command: InstallCommands) -> Result<serde_json::Value, String> {
     match command {
-        InstallCommands::Docker { home, command } => {
+        InstallCommands::Docker {
+            home,
+            label,
+            dry_run,
+            command,
+        } => {
             let options = install::DockerInstallOptions {
                 home,
-                label: None,
-                dry_run: false,
+                label,
+                dry_run,
             };
             let value = match command {
                 Some(InstallDockerSubcommands::Pull) => install::docker::pull(&options)
@@ -365,4 +424,620 @@ fn run_ssh_command(command: SshCommands) -> Result<serde_json::Value, String> {
             "note": "stateless ssh mode has no persistent session",
         })),
     }
+}
+
+#[derive(Debug)]
+enum DoctorTarget {
+    Local,
+    Remote { id: String, host: clawpal_core::instance::SshHostConfig },
+}
+
+fn resolve_doctor_target(instance: Option<String>) -> Result<DoctorTarget, String> {
+    let Some(instance_id) = instance else {
+        return Ok(DoctorTarget::Local);
+    };
+    if instance_id == "local" {
+        return Ok(DoctorTarget::Local);
+    }
+    let registry = InstanceRegistry::load().map_err(|e| e.to_string())?;
+    let instance = registry
+        .get(&instance_id)
+        .cloned()
+        .ok_or_else(|| format!("instance '{instance_id}' not found"))?;
+    let host = instance
+        .ssh_host_config
+        .ok_or_else(|| format!("instance '{instance_id}' is not an SSH instance"))?;
+    Ok(DoctorTarget::Remote {
+        id: instance_id,
+        host,
+    })
+}
+
+fn run_doctor_command(command: DoctorCommands) -> Result<serde_json::Value, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    match command {
+        DoctorCommands::ProbeOpenclaw { instance } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_probe_openclaw(target).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::FixOpenclawPath { instance } => {
+            let target = resolve_doctor_target(Some(instance))?;
+            runtime
+                .block_on(async { doctor_fix_openclaw_path(target).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::ConfigDelete { path, instance } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_config_delete(target, &path).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::ConfigRead { path, instance } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_config_read(target, path.as_deref()).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::ConfigUpsert {
+            path,
+            value,
+            instance,
+        } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_config_upsert(target, &path, &value).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::SessionsRead { path, instance } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_sessions_read(target, path.as_deref()).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::SessionsUpsert {
+            path,
+            value,
+            instance,
+        } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_sessions_upsert(target, &path, &value).await })
+                .map(|v| json!(v))
+        }
+        DoctorCommands::SessionsDelete { path, instance } => {
+            let target = resolve_doctor_target(instance)?;
+            runtime
+                .block_on(async { doctor_sessions_delete(target, &path).await })
+                .map(|v| json!(v))
+        }
+    }
+}
+
+async fn doctor_probe_openclaw(target: DoctorTarget) -> Result<serde_json::Value, String> {
+    match target {
+        DoctorTarget::Local => {
+            let version_out = Command::new(clawpal_core::openclaw::resolve_openclaw_bin())
+                .arg("--version")
+                .output()
+                .map_err(|e| format!("failed to run openclaw --version: {e}"))?;
+            let version = String::from_utf8_lossy(&version_out.stdout).trim().to_string();
+            let path_out = Command::new("bash")
+                .args(["-lc", "command -v openclaw 2>/dev/null || true"])
+                .output()
+                .map_err(|e| format!("failed to probe openclaw path: {e}"))?;
+            let openclaw_path = String::from_utf8_lossy(&path_out.stdout).trim().to_string();
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "version": if version.is_empty() { serde_json::Value::Null } else { json!(version) },
+                "openclawPath": if openclaw_path.is_empty() { serde_json::Value::Null } else { json!(openclaw_path) },
+                "path": std::env::var("PATH").unwrap_or_default(),
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let path = session
+                .exec("sh -lc 'command -v openclaw 2>/dev/null || true'")
+                .await
+                .map_err(|e| e.to_string())?
+                .stdout
+                .trim()
+                .to_string();
+            let version = session
+                .exec("sh -lc 'openclaw --version 2>/dev/null || true'")
+                .await
+                .map_err(|e| e.to_string())?
+                .stdout
+                .trim()
+                .to_string();
+            let env_path = session
+                .exec("sh -lc 'printf %s \"$PATH\"'")
+                .await
+                .map_err(|e| e.to_string())?
+                .stdout;
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "version": if version.is_empty() { serde_json::Value::Null } else { json!(version) },
+                "openclawPath": if path.is_empty() { serde_json::Value::Null } else { json!(path) },
+                "path": env_path.trim(),
+            }))
+        }
+    }
+}
+
+async fn doctor_fix_openclaw_path(target: DoctorTarget) -> Result<serde_json::Value, String> {
+    match target {
+        DoctorTarget::Local => Err("doctor fix-openclaw-path currently supports remote target only".to_string()),
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let result = session
+                .exec("sh -lc 'if command -v openclaw >/dev/null 2>&1; then command -v openclaw; elif [ -x /usr/local/bin/openclaw ]; then ln -sf /usr/local/bin/openclaw ~/.local/bin/openclaw 2>/dev/null || true; command -v openclaw || true; else echo missing; fi'")
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "fixed": result.exit_code == 0,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exitCode": result.exit_code,
+            }))
+        }
+    }
+}
+
+async fn doctor_config_delete(target: DoctorTarget, dotted_path: &str) -> Result<serde_json::Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor config-delete requires <json.path>".to_string());
+    }
+    match target {
+        DoctorTarget::Local => {
+            let openclaw_dir =
+                std::env::var("OPENCLAW_HOME").unwrap_or_else(|_| format!("{}/.openclaw", dirs::home_dir().map(|p| p.display().to_string()).unwrap_or_default()));
+            let config_path = std::path::PathBuf::from(openclaw_dir).join("openclaw.json");
+            let raw = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("failed to read local config: {e}"))?;
+            let mut json_doc: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|e| format!("invalid local config json: {e}"))?;
+            let deleted = delete_json_path(&mut json_doc, dotted_path);
+            if deleted {
+                let rendered = serde_json::to_string_pretty(&json_doc)
+                    .map_err(|e| format!("serialize config: {e}"))?;
+                std::fs::write(&config_path, rendered)
+                    .map_err(|e| format!("failed to write local config: {e}"))?;
+            }
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "configPath": config_path.to_string_lossy(),
+                "path": dotted_path,
+                "deleted": deleted,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let config_path = session
+                .exec("sh -lc 'echo \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}/openclaw.json\"'")
+                .await
+                .map_err(|e| e.to_string())?
+                .stdout
+                .trim()
+                .to_string();
+            let raw = session
+                .sftp_read(&config_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut json_doc: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|e| format!("invalid remote config json: {e}"))?;
+            let deleted = delete_json_path(&mut json_doc, dotted_path);
+            if deleted {
+                let rendered = serde_json::to_string_pretty(&json_doc)
+                    .map_err(|e| format!("serialize config: {e}"))?;
+                session
+                    .sftp_write(&config_path, rendered.as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "configPath": config_path,
+                "path": dotted_path,
+                "deleted": deleted,
+            }))
+        }
+    }
+}
+
+async fn doctor_config_read(
+    target: DoctorTarget,
+    dotted_path: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    match target {
+        DoctorTarget::Local => {
+            let openclaw_dir = std::env::var("OPENCLAW_HOME")
+                .unwrap_or_else(|_| format!("{}/.openclaw", dirs::home_dir().map(|p| p.display().to_string()).unwrap_or_default()));
+            let config_path = std::path::PathBuf::from(openclaw_dir).join("openclaw.json");
+            let raw = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("failed to read local config: {e}"))?;
+            let json_doc: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|e| format!("invalid local config json: {e}"))?;
+            let value = dotted_path
+                .and_then(|p| json_path_get(&json_doc, p).cloned())
+                .unwrap_or(json_doc.clone());
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "configPath": config_path.to_string_lossy(),
+                "path": dotted_path.unwrap_or(""),
+                "value": value,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let config_path = session
+                .exec("sh -lc 'echo \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}/openclaw.json\"'")
+                .await
+                .map_err(|e| e.to_string())?
+                .stdout
+                .trim()
+                .to_string();
+            let raw = session
+                .sftp_read(&config_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let json_doc: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|e| format!("invalid remote config json: {e}"))?;
+            let value = dotted_path
+                .and_then(|p| json_path_get(&json_doc, p).cloned())
+                .unwrap_or(json_doc.clone());
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "configPath": config_path,
+                "path": dotted_path.unwrap_or(""),
+                "value": value,
+            }))
+        }
+    }
+}
+
+async fn doctor_config_upsert(
+    target: DoctorTarget,
+    dotted_path: &str,
+    value_json: &str,
+) -> Result<serde_json::Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor config-upsert requires <json.path>".to_string());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(value_json)
+        .map_err(|e| format!("doctor config-upsert requires valid JSON value: {e}"))?;
+    match target {
+        DoctorTarget::Local => {
+            let openclaw_dir = std::env::var("OPENCLAW_HOME")
+                .unwrap_or_else(|_| format!("{}/.openclaw", dirs::home_dir().map(|p| p.display().to_string()).unwrap_or_default()));
+            let config_path = std::path::PathBuf::from(openclaw_dir).join("openclaw.json");
+            let raw = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("failed to read local config: {e}"))?;
+            let mut json_doc: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|e| format!("invalid local config json: {e}"))?;
+            upsert_json_path(&mut json_doc, dotted_path, parsed)?;
+            let rendered = serde_json::to_string_pretty(&json_doc)
+                .map_err(|e| format!("serialize config: {e}"))?;
+            std::fs::write(&config_path, rendered)
+                .map_err(|e| format!("failed to write local config: {e}"))?;
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "configPath": config_path.to_string_lossy(),
+                "path": dotted_path,
+                "upserted": true,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let config_path = session
+                .exec("sh -lc 'echo \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}/openclaw.json\"'")
+                .await
+                .map_err(|e| e.to_string())?
+                .stdout
+                .trim()
+                .to_string();
+            let raw = session
+                .sftp_read(&config_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut json_doc: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|e| format!("invalid remote config json: {e}"))?;
+            upsert_json_path(&mut json_doc, dotted_path, parsed)?;
+            let rendered = serde_json::to_string_pretty(&json_doc)
+                .map_err(|e| format!("serialize config: {e}"))?;
+            session
+                .sftp_write(&config_path, rendered.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "configPath": config_path,
+                "path": dotted_path,
+                "upserted": true,
+            }))
+        }
+    }
+}
+
+fn resolve_local_sessions_path() -> std::path::PathBuf {
+    let openclaw_dir = std::env::var("OPENCLAW_HOME").unwrap_or_else(|_| {
+        format!(
+            "{}/.openclaw",
+            dirs::home_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )
+    });
+    let agents_dir = std::path::PathBuf::from(&openclaw_dir).join("agents");
+    if let Ok(agent_entries) = std::fs::read_dir(&agents_dir) {
+        for agent_entry in agent_entries.flatten() {
+            let candidate = agent_entry.path().join("sessions").join("sessions.json");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    std::path::PathBuf::from(openclaw_dir)
+        .join("agents")
+        .join("test")
+        .join("sessions")
+        .join("sessions.json")
+}
+
+async fn resolve_remote_sessions_path(session: &SshSession) -> Result<String, String> {
+    let out = session
+        .exec("sh -lc 'root=\"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}\"; first=\"$(find \"$root/agents\" -type f -path \"*/sessions/sessions.json\" 2>/dev/null | head -n 1)\"; if [ -n \"$first\" ]; then printf \"%s\" \"$first\"; else printf \"%s\" \"$root/agents/test/sessions/sessions.json\"; fi'")
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(out.stdout.trim().to_string())
+}
+
+async fn doctor_sessions_read(
+    target: DoctorTarget,
+    dotted_path: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    match target {
+        DoctorTarget::Local => {
+            let sessions_path = resolve_local_sessions_path();
+            let raw = std::fs::read_to_string(&sessions_path)
+                .map_err(|e| format!("failed to read local sessions: {e}"))?;
+            let json_doc: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("invalid local sessions json: {e}"))?;
+            let value = dotted_path
+                .and_then(|p| json_path_get(&json_doc, p).cloned())
+                .unwrap_or(json_doc.clone());
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "sessionsPath": sessions_path.to_string_lossy(),
+                "path": dotted_path.unwrap_or(""),
+                "value": value,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let sessions_path = resolve_remote_sessions_path(&session).await?;
+            let raw = session
+                .sftp_read(&sessions_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let json_doc: serde_json::Value = serde_json::from_slice(&raw)
+                .map_err(|e| format!("invalid remote sessions json: {e}"))?;
+            let value = dotted_path
+                .and_then(|p| json_path_get(&json_doc, p).cloned())
+                .unwrap_or(json_doc.clone());
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "sessionsPath": sessions_path,
+                "path": dotted_path.unwrap_or(""),
+                "value": value,
+            }))
+        }
+    }
+}
+
+async fn doctor_sessions_upsert(
+    target: DoctorTarget,
+    dotted_path: &str,
+    value_json: &str,
+) -> Result<serde_json::Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor sessions-upsert requires <json.path>".to_string());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(value_json)
+        .map_err(|e| format!("doctor sessions-upsert requires valid JSON value: {e}"))?;
+    match target {
+        DoctorTarget::Local => {
+            let sessions_path = resolve_local_sessions_path();
+            let raw = std::fs::read_to_string(&sessions_path)
+                .map_err(|e| format!("failed to read local sessions: {e}"))?;
+            let mut json_doc: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("invalid local sessions json: {e}"))?;
+            upsert_json_path(&mut json_doc, dotted_path, parsed)?;
+            let rendered = serde_json::to_string_pretty(&json_doc)
+                .map_err(|e| format!("serialize sessions: {e}"))?;
+            std::fs::write(&sessions_path, rendered)
+                .map_err(|e| format!("failed to write local sessions: {e}"))?;
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "sessionsPath": sessions_path.to_string_lossy(),
+                "path": dotted_path,
+                "upserted": true,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let sessions_path = resolve_remote_sessions_path(&session).await?;
+            let raw = session
+                .sftp_read(&sessions_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut json_doc: serde_json::Value = serde_json::from_slice(&raw)
+                .map_err(|e| format!("invalid remote sessions json: {e}"))?;
+            upsert_json_path(&mut json_doc, dotted_path, parsed)?;
+            let rendered = serde_json::to_string_pretty(&json_doc)
+                .map_err(|e| format!("serialize sessions: {e}"))?;
+            session
+                .sftp_write(&sessions_path, rendered.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "sessionsPath": sessions_path,
+                "path": dotted_path,
+                "upserted": true,
+            }))
+        }
+    }
+}
+
+async fn doctor_sessions_delete(
+    target: DoctorTarget,
+    dotted_path: &str,
+) -> Result<serde_json::Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor sessions-delete requires <json.path>".to_string());
+    }
+    match target {
+        DoctorTarget::Local => {
+            let sessions_path = resolve_local_sessions_path();
+            let raw = std::fs::read_to_string(&sessions_path)
+                .map_err(|e| format!("failed to read local sessions: {e}"))?;
+            let mut json_doc: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("invalid local sessions json: {e}"))?;
+            let deleted = delete_json_path(&mut json_doc, dotted_path);
+            if deleted {
+                let rendered = serde_json::to_string_pretty(&json_doc)
+                    .map_err(|e| format!("serialize sessions: {e}"))?;
+                std::fs::write(&sessions_path, rendered)
+                    .map_err(|e| format!("failed to write local sessions: {e}"))?;
+            }
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "sessionsPath": sessions_path.to_string_lossy(),
+                "path": dotted_path,
+                "deleted": deleted,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let sessions_path = resolve_remote_sessions_path(&session).await?;
+            let raw = session
+                .sftp_read(&sessions_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut json_doc: serde_json::Value = serde_json::from_slice(&raw)
+                .map_err(|e| format!("invalid remote sessions json: {e}"))?;
+            let deleted = delete_json_path(&mut json_doc, dotted_path);
+            if deleted {
+                let rendered = serde_json::to_string_pretty(&json_doc)
+                    .map_err(|e| format!("serialize sessions: {e}"))?;
+                session
+                    .sftp_write(&sessions_path, rendered.as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "sessionsPath": sessions_path,
+                "path": dotted_path,
+                "deleted": deleted,
+            }))
+        }
+    }
+}
+
+fn delete_json_path(value: &mut serde_json::Value, dotted_path: &str) -> bool {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let mut cursor = value;
+    for part in &parts[..parts.len() - 1] {
+        if let Some(next) = cursor.get_mut(*part) {
+            cursor = next;
+        } else {
+            return false;
+        }
+    }
+    if let Some(obj) = cursor.as_object_mut() {
+        return obj.remove(parts[parts.len() - 1]).is_some();
+    }
+    false
+}
+
+fn upsert_json_path(
+    value: &mut serde_json::Value,
+    dotted_path: &str,
+    next_value: serde_json::Value,
+) -> Result<(), String> {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err("doctor config-upsert requires non-empty <json.path>".to_string());
+    }
+    let mut cursor = value;
+    for part in &parts[..parts.len() - 1] {
+        if cursor.get(*part).is_none() {
+            if let Some(obj) = cursor.as_object_mut() {
+                obj.insert((*part).to_string(), json!({}));
+            } else {
+                return Err(format!("path segment '{part}' is not an object"));
+            }
+        }
+        cursor = cursor
+            .get_mut(*part)
+            .ok_or_else(|| format!("path segment '{part}' is missing"))?;
+        if !cursor.is_object() {
+            return Err(format!("path segment '{part}' is not an object"));
+        }
+    }
+    let leaf = parts[parts.len() - 1];
+    let obj = cursor
+        .as_object_mut()
+        .ok_or_else(|| "target parent is not an object".to_string())?;
+    obj.insert(leaf.to_string(), next_value);
+    Ok(())
+}
+
+fn json_path_get<'a>(value: &'a serde_json::Value, dotted_path: &str) -> Option<&'a serde_json::Value> {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Some(value);
+    }
+    let mut cursor = value;
+    for part in parts {
+        cursor = cursor.get(part)?;
+    }
+    Some(cursor)
 }

@@ -21,14 +21,41 @@ function normalizeInvokeArgs(invoke: DoctorInvoke): string {
   return raw.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+function hasAnyPrefix(value: string, prefixes: string[]): boolean {
+  return prefixes.some((prefix) => value === prefix || value.startsWith(`${prefix} `));
+}
+
 function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "install"): boolean {
   if (domain !== "doctor") return false;
   const args = normalizeInvokeArgs(invoke);
-  if (invoke.command === "openclaw" && args === "doctor --fix") {
-    return true;
+  if (invoke.command === "clawpal") {
+    // Doctor domain file operations should be frictionless.
+    return hasAnyPrefix(args, [
+      "doctor probe-openclaw",
+      "doctor fix-openclaw-path",
+      "doctor config-read",
+      "doctor config-upsert",
+      "doctor config-delete",
+      "doctor sessions-read",
+      "doctor sessions-upsert",
+      "doctor sessions-delete",
+    ]);
   }
-  if (invoke.command === "clawpal" && args === "doctor fix-openclaw-path") {
-    return true;
+  if (invoke.command === "openclaw") {
+    // Allow diagnostics and config self-heal commands without manual approval.
+    return hasAnyPrefix(args, [
+      "--version",
+      "doctor",
+      "gateway status",
+      "health",
+      "config get",
+      "config set",
+      "config delete",
+      "config unset",
+      "agents list",
+      "memory status",
+      "security audit",
+    ]);
   }
   return false;
 }

@@ -128,14 +128,22 @@ pub async fn doctor_approve_invoke(
     // Security: commands reach here only after user approval in the UI
     // (write → "Execute" button, read → "Allow" button).
     // User approval is the security boundary, not command validation.
-    let result = match command {
-        "clawpal" => run_clawpal_tool(&pool, &args, &target).await?,
-        "openclaw" => run_openclaw_tool(&pool, &args, &target).await?,
+    let exec_result = match command {
+        "clawpal" => run_clawpal_tool(&pool, &args, &target).await,
+        "openclaw" => run_openclaw_tool(&pool, &args, &target).await,
         _ => {
             return Err(format!(
                 "unsupported tool '{command}', expected 'clawpal' or 'openclaw'"
             ))
         }
+    };
+    let result = match exec_result {
+        Ok(ok) => ok,
+        Err(err) => json!({
+            "stdout": "",
+            "stderr": err,
+            "exitCode": 2,
+        }),
     };
 
     // Emit tool result first so UI can render it directly under the tool call
@@ -150,13 +158,14 @@ pub async fn doctor_approve_invoke(
 
     // Feed execution result back into zeroclaw session so it can continue the diagnosis.
     let command = command.to_string();
+    let invoke_desc = describe_invoke(&command, &args);
     let result_text = if let Some(stdout) = result.get("stdout").and_then(|v| v.as_str()) {
         let stderr = result.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
         let exit_code = result
             .get("exitCode")
             .and_then(|v| v.as_i64())
             .unwrap_or(-1);
-        let mut msg = format!("[Command executed: `{command}`]\n");
+        let mut msg = format!("[Command executed: `{invoke_desc}`]\n");
         if !stdout.is_empty() {
             msg.push_str(&format!("stdout:\n```\n{stdout}\n```\n"));
         }
@@ -166,7 +175,7 @@ pub async fn doctor_approve_invoke(
         msg.push_str(&format!("exitCode: {exit_code}"));
         msg
     } else {
-        format!("[Command executed: `{command}`]\nResult: {result}")
+        format!("[Command executed: `{invoke_desc}`]\nResult: {result}")
     };
     let is_install = domain.as_deref() == Some("install");
     let rt_domain = if is_install {
@@ -490,6 +499,442 @@ fn parse_tool_tokens(raw: &str) -> Result<Vec<String>, String> {
     shell_words::split(raw).map_err(|e| format!("invalid command args: {e}"))
 }
 
+fn describe_invoke(command: &str, args: &Value) -> String {
+    let raw = args
+        .get("args")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if raw.is_empty() {
+        command.to_string()
+    } else {
+        format!("{command} {raw}")
+    }
+}
+
+fn delete_json_path(value: &mut Value, dotted_path: &str) -> bool {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+    let mut cursor = value;
+    for part in &parts[..parts.len() - 1] {
+        if let Some(next) = cursor.get_mut(*part) {
+            cursor = next;
+        } else {
+            return false;
+        }
+    }
+    if let Some(obj) = cursor.as_object_mut() {
+        return obj.remove(parts[parts.len() - 1]).is_some();
+    }
+    false
+}
+
+fn upsert_json_path(value: &mut Value, dotted_path: &str, next_value: Value) -> Result<(), String> {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Err("doctor config-upsert requires non-empty <json.path>".to_string());
+    }
+    let mut cursor = value;
+    for part in &parts[..parts.len() - 1] {
+        if cursor.get(*part).is_none() {
+            if let Some(obj) = cursor.as_object_mut() {
+                obj.insert((*part).to_string(), json!({}));
+            } else {
+                return Err(format!("path segment '{part}' is not an object"));
+            }
+        }
+        cursor = cursor
+            .get_mut(*part)
+            .ok_or_else(|| format!("path segment '{part}' is missing"))?;
+        if !cursor.is_object() {
+            return Err(format!("path segment '{part}' is not an object"));
+        }
+    }
+    let leaf = parts[parts.len() - 1];
+    let obj = cursor
+        .as_object_mut()
+        .ok_or_else(|| "target parent is not an object".to_string())?;
+    obj.insert(leaf.to_string(), next_value);
+    Ok(())
+}
+
+fn json_path_get<'a>(value: &'a Value, dotted_path: &str) -> Option<&'a Value> {
+    let parts: Vec<&str> = dotted_path
+        .split('.')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return Some(value);
+    }
+    let mut cursor = value;
+    for part in parts {
+        cursor = cursor.get(part)?;
+    }
+    Some(cursor)
+}
+
+async fn doctor_config_delete(
+    pool: &SshConnectionPool,
+    target: &str,
+    dotted_path: &str,
+) -> Result<Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor config-delete requires <json.path>".to_string());
+    }
+    if target_is_remote_instance(target) {
+        let config_path_result = pool
+            .exec_login(
+                target,
+                "echo \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}/openclaw.json\"",
+            )
+            .await?;
+        let config_path = config_path_result.stdout.trim().to_string();
+        let raw = pool.sftp_read(target, &config_path).await?;
+        let mut json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid remote config json: {e}"))?;
+        let deleted = delete_json_path(&mut json, dotted_path);
+        if deleted {
+            let next =
+                serde_json::to_string_pretty(&json).map_err(|e| format!("serialize config: {e}"))?;
+            pool.sftp_write(target, &config_path, &next).await?;
+        }
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "configPath": config_path,
+            "path": dotted_path,
+            "deleted": deleted,
+        }));
+    }
+
+    let paths = resolve_paths();
+    let config_path = paths.config_path;
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("failed to read local config: {e}"))?;
+    let mut json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid local config json: {e}"))?;
+    let deleted = delete_json_path(&mut json, dotted_path);
+    if deleted {
+        let next = serde_json::to_string_pretty(&json).map_err(|e| format!("serialize config: {e}"))?;
+        std::fs::write(&config_path, next).map_err(|e| format!("failed to write local config: {e}"))?;
+    }
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "configPath": config_path.to_string_lossy(),
+        "path": dotted_path,
+        "deleted": deleted,
+    }))
+}
+
+async fn doctor_config_read(
+    pool: &SshConnectionPool,
+    target: &str,
+    dotted_path: Option<&str>,
+) -> Result<Value, String> {
+    if target_is_remote_instance(target) {
+        let config_path_result = pool
+            .exec_login(
+                target,
+                "echo \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}/openclaw.json\"",
+            )
+            .await?;
+        let config_path = config_path_result.stdout.trim().to_string();
+        let raw = pool.sftp_read(target, &config_path).await?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid remote config json: {e}"))?;
+        let selected = dotted_path
+            .and_then(|p| json_path_get(&json, p).cloned())
+            .unwrap_or(json.clone());
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "configPath": config_path,
+            "path": dotted_path.unwrap_or(""),
+            "value": selected,
+        }));
+    }
+
+    let paths = resolve_paths();
+    let config_path = paths.config_path;
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("failed to read local config: {e}"))?;
+    let json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid local config json: {e}"))?;
+    let selected = dotted_path
+        .and_then(|p| json_path_get(&json, p).cloned())
+        .unwrap_or(json.clone());
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "configPath": config_path.to_string_lossy(),
+        "path": dotted_path.unwrap_or(""),
+        "value": selected,
+    }))
+}
+
+async fn doctor_config_upsert(
+    pool: &SshConnectionPool,
+    target: &str,
+    dotted_path: &str,
+    value_json: &str,
+) -> Result<Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor config-upsert requires <json.path>".to_string());
+    }
+    let next_value: Value = serde_json::from_str(value_json)
+        .map_err(|e| format!("doctor config-upsert requires valid JSON value: {e}"))?;
+    if target_is_remote_instance(target) {
+        let config_path_result = pool
+            .exec_login(
+                target,
+                "echo \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}/openclaw.json\"",
+            )
+            .await?;
+        let config_path = config_path_result.stdout.trim().to_string();
+        let raw = pool.sftp_read(target, &config_path).await?;
+        let mut json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid remote config json: {e}"))?;
+        upsert_json_path(&mut json, dotted_path, next_value)?;
+        let rendered =
+            serde_json::to_string_pretty(&json).map_err(|e| format!("serialize config: {e}"))?;
+        pool.sftp_write(target, &config_path, &rendered).await?;
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "configPath": config_path,
+            "path": dotted_path,
+            "upserted": true,
+        }));
+    }
+
+    let paths = resolve_paths();
+    let config_path = paths.config_path;
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("failed to read local config: {e}"))?;
+    let mut json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid local config json: {e}"))?;
+    upsert_json_path(&mut json, dotted_path, next_value)?;
+    let rendered =
+        serde_json::to_string_pretty(&json).map_err(|e| format!("serialize config: {e}"))?;
+    std::fs::write(&config_path, rendered).map_err(|e| format!("failed to write local config: {e}"))?;
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "configPath": config_path.to_string_lossy(),
+        "path": dotted_path,
+        "upserted": true,
+    }))
+}
+
+fn resolve_local_sessions_path() -> std::path::PathBuf {
+    let paths = resolve_paths();
+    let openclaw_root = paths
+        .config_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let agents_dir = openclaw_root.join("agents");
+    if let Ok(agent_entries) = std::fs::read_dir(&agents_dir) {
+        for agent_entry in agent_entries.flatten() {
+            let candidate = agent_entry.path().join("sessions").join("sessions.json");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    openclaw_root
+        .join("agents")
+        .join("test")
+        .join("sessions")
+        .join("sessions.json")
+}
+
+async fn resolve_remote_sessions_path(pool: &SshConnectionPool, target: &str) -> Result<String, String> {
+    let out = pool
+        .exec_login(
+            target,
+            "root=\"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}\"; \
+             first=\"$(find \"$root/agents\" -type f -path '*/sessions/sessions.json' 2>/dev/null | head -n 1)\"; \
+             if [ -n \"$first\" ]; then printf '%s' \"$first\"; else printf '%s' \"$root/agents/test/sessions/sessions.json\"; fi",
+        )
+        .await?;
+    Ok(out.stdout.trim().to_string())
+}
+
+async fn doctor_sessions_read(
+    pool: &SshConnectionPool,
+    target: &str,
+    dotted_path: Option<&str>,
+) -> Result<Value, String> {
+    if target_is_remote_instance(target) {
+        let sessions_path = resolve_remote_sessions_path(pool, target).await?;
+        let raw = pool.sftp_read(target, &sessions_path).await?;
+        let json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid remote sessions json: {e}"))?;
+        let selected = dotted_path
+            .and_then(|p| json_path_get(&json, p).cloned())
+            .unwrap_or(json.clone());
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "sessionsPath": sessions_path,
+            "path": dotted_path.unwrap_or(""),
+            "value": selected,
+        }));
+    }
+
+    let sessions_path = resolve_local_sessions_path();
+    let raw = std::fs::read_to_string(&sessions_path)
+        .map_err(|e| format!("failed to read local sessions: {e}"))?;
+    let json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid local sessions json: {e}"))?;
+    let selected = dotted_path
+        .and_then(|p| json_path_get(&json, p).cloned())
+        .unwrap_or(json.clone());
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "sessionsPath": sessions_path.to_string_lossy(),
+        "path": dotted_path.unwrap_or(""),
+        "value": selected,
+    }))
+}
+
+async fn doctor_sessions_upsert(
+    pool: &SshConnectionPool,
+    target: &str,
+    dotted_path: &str,
+    value_json: &str,
+) -> Result<Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor sessions-upsert requires <json.path>".to_string());
+    }
+    let next_value: Value = serde_json::from_str(value_json)
+        .map_err(|e| format!("doctor sessions-upsert requires valid JSON value: {e}"))?;
+    if target_is_remote_instance(target) {
+        let sessions_path = resolve_remote_sessions_path(pool, target).await?;
+        let raw = pool.sftp_read(target, &sessions_path).await?;
+        let mut json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid remote sessions json: {e}"))?;
+        upsert_json_path(&mut json, dotted_path, next_value)?;
+        let rendered =
+            serde_json::to_string_pretty(&json).map_err(|e| format!("serialize sessions: {e}"))?;
+        pool.sftp_write(target, &sessions_path, &rendered).await?;
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "sessionsPath": sessions_path,
+            "path": dotted_path,
+            "upserted": true,
+        }));
+    }
+
+    let sessions_path = resolve_local_sessions_path();
+    let raw = std::fs::read_to_string(&sessions_path)
+        .map_err(|e| format!("failed to read local sessions: {e}"))?;
+    let mut json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid local sessions json: {e}"))?;
+    upsert_json_path(&mut json, dotted_path, next_value)?;
+    let rendered =
+        serde_json::to_string_pretty(&json).map_err(|e| format!("serialize sessions: {e}"))?;
+    std::fs::write(&sessions_path, rendered)
+        .map_err(|e| format!("failed to write local sessions: {e}"))?;
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "sessionsPath": sessions_path.to_string_lossy(),
+        "path": dotted_path,
+        "upserted": true,
+    }))
+}
+
+async fn doctor_sessions_delete(
+    pool: &SshConnectionPool,
+    target: &str,
+    dotted_path: &str,
+) -> Result<Value, String> {
+    if dotted_path.trim().is_empty() {
+        return Err("doctor sessions-delete requires <json.path>".to_string());
+    }
+    if target_is_remote_instance(target) {
+        let sessions_path = resolve_remote_sessions_path(pool, target).await?;
+        let raw = pool.sftp_read(target, &sessions_path).await?;
+        let mut json: Value =
+            serde_json::from_str(&raw).map_err(|e| format!("invalid remote sessions json: {e}"))?;
+        let deleted = delete_json_path(&mut json, dotted_path);
+        if deleted {
+            let rendered =
+                serde_json::to_string_pretty(&json).map_err(|e| format!("serialize sessions: {e}"))?;
+            pool.sftp_write(target, &sessions_path, &rendered).await?;
+        }
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "sessionsPath": sessions_path,
+            "path": dotted_path,
+            "deleted": deleted,
+        }));
+    }
+
+    let sessions_path = resolve_local_sessions_path();
+    let raw = std::fs::read_to_string(&sessions_path)
+        .map_err(|e| format!("failed to read local sessions: {e}"))?;
+    let mut json: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("invalid local sessions json: {e}"))?;
+    let deleted = delete_json_path(&mut json, dotted_path);
+    if deleted {
+        let rendered =
+            serde_json::to_string_pretty(&json).map_err(|e| format!("serialize sessions: {e}"))?;
+        std::fs::write(&sessions_path, rendered)
+            .map_err(|e| format!("failed to write local sessions: {e}"))?;
+    }
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "sessionsPath": sessions_path.to_string_lossy(),
+        "path": dotted_path,
+        "deleted": deleted,
+    }))
+}
+
+#[cfg(test)]
+const DOCTOR_SUPPORTED_CLAWPAL_COMMANDS: &[&str] = &[
+    "instance list",
+    "instance remove <id>",
+    "health check [<id>] [--all]",
+    "ssh list",
+    "ssh connect <host_id>",
+    "ssh disconnect <host_id>",
+    "profile list",
+    "profile add --provider <provider> --model <model> [--name <name>] [--api-key <key>]",
+    "profile remove <id>",
+    "profile test <id>",
+    "connect docker --home <path> [--label <name>]",
+    "connect ssh --host <host> [--port <port>] [--user <user>] [--id <id>] [--label <label>] [--key-path <path>]",
+    "install local",
+    "install docker [--home <path>] [--label <label>] [--dry-run] [pull|configure|up]",
+    "doctor probe-openclaw",
+    "doctor fix-openclaw-path",
+    "doctor config-read [<json.path>]",
+    "doctor config-upsert <json.path> <json.value>",
+    "doctor config-delete <json.path>",
+    "doctor sessions-read [<json.path>]",
+    "doctor sessions-upsert <json.path> <json.value>",
+    "doctor sessions-delete <json.path>",
+];
+
 async fn run_clawpal_tool(
     pool: &SshConnectionPool,
     args: &Value,
@@ -516,6 +961,68 @@ async fn run_clawpal_tool(
     if token_refs.as_slice() == ["doctor", "fix-openclaw-path"] {
         let fixed = fix_openclaw_path_on_target(pool, target).await?;
         return tool_stdout_json(fixed);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("config-read")
+    {
+        let path = token_refs.get(2).copied();
+        let out = doctor_config_read(pool, target, path).await?;
+        return tool_stdout_json(out);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("config-upsert")
+    {
+        let key_path = token_refs
+            .get(2)
+            .copied()
+            .ok_or_else(|| "clawpal doctor config-upsert requires <json.path> <json.value>".to_string())?;
+        let value_json = token_refs
+            .get(3)
+            .copied()
+            .ok_or_else(|| "clawpal doctor config-upsert requires <json.path> <json.value>".to_string())?;
+        let out = doctor_config_upsert(pool, target, key_path, value_json).await?;
+        return tool_stdout_json(out);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("config-delete")
+    {
+        let key_path = token_refs
+            .get(2)
+            .copied()
+            .ok_or_else(|| "clawpal doctor config-delete requires <json.path>".to_string())?;
+        let out = doctor_config_delete(pool, target, key_path).await?;
+        return tool_stdout_json(out);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("sessions-read")
+    {
+        let path = token_refs.get(2).copied();
+        let out = doctor_sessions_read(pool, target, path).await?;
+        return tool_stdout_json(out);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("sessions-upsert")
+    {
+        let key_path = token_refs
+            .get(2)
+            .copied()
+            .ok_or_else(|| "clawpal doctor sessions-upsert requires <json.path> <json.value>".to_string())?;
+        let value_json = token_refs
+            .get(3)
+            .copied()
+            .ok_or_else(|| "clawpal doctor sessions-upsert requires <json.path> <json.value>".to_string())?;
+        let out = doctor_sessions_upsert(pool, target, key_path, value_json).await?;
+        return tool_stdout_json(out);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("sessions-delete")
+    {
+        let key_path = token_refs
+            .get(2)
+            .copied()
+            .ok_or_else(|| "clawpal doctor sessions-delete requires <json.path>".to_string())?;
+        let out = doctor_sessions_delete(pool, target, key_path).await?;
+        return tool_stdout_json(out);
     }
 
     match (token_refs.first().copied(), token_refs.get(1).copied()) {
@@ -809,6 +1316,7 @@ async fn run_openclaw_tool(
         return Err("openclaw: missing args".to_string());
     }
     let tokens = parse_tool_tokens(raw)?;
+    validate_openclaw_tokens(&tokens)?;
     let parts: Vec<&str> = tokens.iter().map(String::as_str).collect();
     let output = if target_is_remote_instance(target) {
         crate::cli_runner::run_openclaw_remote(pool, target, &parts).await?
@@ -824,9 +1332,64 @@ async fn run_openclaw_tool(
     }))
 }
 
+fn validate_openclaw_tokens(tokens: &[String]) -> Result<(), String> {
+    let first = tokens
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| "openclaw: missing args".to_string())?;
+    let allowed = matches!(
+        first,
+        "--version"
+            | "doctor"
+            | "gateway"
+            | "health"
+            | "config"
+            | "agents"
+            | "models"
+            | "auth"
+            | "memory"
+            | "security"
+            | "channels"
+            | "directory"
+            | "cron"
+            | "devices"
+    );
+    if !allowed {
+        return Err(format!(
+            "unsupported openclaw args: {} (allowed top-level commands: --version, doctor, gateway, health, config, agents, models, auth, memory, security, channels, directory, cron, devices)",
+            tokens.join(" ")
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    fn prompt_supported_clawpal_commands() -> BTreeSet<String> {
+        let prompt = crate::prompt_templates::doctor_domain_system();
+        let mut in_section = false;
+        let mut commands = BTreeSet::new();
+        for line in prompt.lines() {
+            let trimmed = line.trim();
+            if trimmed == "For tool=\"clawpal\", you MUST use only these supported commands:" {
+                in_section = true;
+                continue;
+            }
+            if in_section {
+                if let Some(cmd) = trimmed.strip_prefix("- ") {
+                    commands.insert(cmd.to_string());
+                    continue;
+                }
+                if !trimmed.is_empty() {
+                    break;
+                }
+            }
+        }
+        commands
+    }
 
     #[test]
     fn parse_tool_tokens_keeps_quoted_values() {
@@ -864,6 +1427,74 @@ mod tests {
         assert_eq!(
             parsed.options.get("label").and_then(|v| v.as_deref()),
             Some("Docker Local")
+        );
+    }
+
+    #[test]
+    fn describe_invoke_appends_args_when_present() {
+        let args = json!({
+            "args": "doctor --fix",
+            "instance": "c7c90e52-bbc7-44be-bfe7-a07302646435"
+        });
+        assert_eq!(
+            describe_invoke("openclaw", &args),
+            "openclaw doctor --fix"
+        );
+    }
+
+    #[test]
+    fn validate_openclaw_tokens_rejects_unknown_command() {
+        let err = validate_openclaw_tokens(&["foobar".to_string()]).unwrap_err();
+        assert!(err.contains("unsupported openclaw args"));
+    }
+
+    #[test]
+    fn validate_openclaw_tokens_accepts_doctor_fix() {
+        let ok = validate_openclaw_tokens(&["doctor".to_string(), "--fix".to_string()]);
+        assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn delete_json_path_removes_nested_field() {
+        let mut doc = json!({
+            "commands": {
+                "ownerDisplay": "raw",
+                "other": 1
+            }
+        });
+        assert!(delete_json_path(&mut doc, "commands.ownerDisplay"));
+        assert!(doc["commands"].get("ownerDisplay").is_none());
+        assert_eq!(doc["commands"]["other"], 1);
+    }
+
+    #[test]
+    fn upsert_json_path_sets_nested_field() {
+        let mut doc = json!({
+            "commands": {
+                "other": 1
+            }
+        });
+        upsert_json_path(&mut doc, "commands.ownerDisplay", json!("raw")).expect("upsert");
+        assert_eq!(doc["commands"]["ownerDisplay"], "raw");
+        assert_eq!(doc["commands"]["other"], 1);
+    }
+
+    #[test]
+    fn doctor_prompt_supported_commands_match_backend_list() {
+        let prompt_commands = prompt_supported_clawpal_commands();
+        let backend_commands = DOCTOR_SUPPORTED_CLAWPAL_COMMANDS
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(prompt_commands, backend_commands);
+    }
+
+    #[test]
+    fn doctor_prompt_rejects_legacy_fix_config_command() {
+        let prompt = crate::prompt_templates::doctor_domain_system();
+        assert!(
+            prompt.contains("NEVER invent non-existent clawpal commands (for example: doctor fix-config)."),
+            "prompt should explicitly forbid legacy doctor fix-config command"
         );
     }
 }
