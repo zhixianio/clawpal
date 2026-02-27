@@ -69,12 +69,27 @@ pub fn install_target_decider() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{doctor_domain_system, render_template};
+    use super::{doctor_domain_system, install_domain_system, install_history_preamble, render_template};
 
     #[test]
     fn extracts_prompt_block() {
         let prompt = doctor_domain_system();
         assert!(prompt.contains("DOCTOR DOMAIN ONLY."));
+    }
+
+    #[test]
+    fn install_prompt_contains_command_guardrails() {
+        let prompt = install_domain_system();
+        assert!(prompt.contains("INSTALL DOMAIN ONLY."));
+        assert!(prompt.contains("For tool=\"clawpal\", you MUST use only these supported commands:"));
+        assert!(prompt.contains("NEVER invent non-existent clawpal commands"));
+    }
+
+    #[test]
+    fn install_history_preamble_contains_execution_guardrails() {
+        let prompt = install_history_preamble();
+        assert!(prompt.contains("output only the allowed tool JSON format"));
+        assert!(prompt.contains("Never invent unsupported clawpal commands"));
     }
 
     #[test]
