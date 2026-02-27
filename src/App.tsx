@@ -504,11 +504,13 @@ export function App() {
 
 
   const openTab = useCallback((id: string) => {
-    setOpenTabIds((prev) => prev.includes(id) ? prev : [...prev, id]);
-    setActiveInstance(id);
-    setInStart(false);
-    // Entering instance mode from Start should prefer a fast route.
-    navigateRoute("home");
+    startTransition(() => {
+      setOpenTabIds((prev) => prev.includes(id) ? prev : [...prev, id]);
+      setActiveInstance(id);
+      setInStart(false);
+      // Entering instance mode from Start should prefer a fast route.
+      navigateRoute("home");
+    });
   }, [navigateRoute]);
 
   const closeTab = useCallback((id: string) => {
@@ -530,12 +532,14 @@ export function App() {
     if (id === activeInstance && !inStart) {
       return;
     }
-    setActiveInstance(id);
-    setOpenTabIds((prev) => prev.includes(id) ? prev : [...prev, id]);
-    setInStart(false);
-    // Always land on Home when switching instance to avoid route-specific
-    // heavy reloads (e.g., Channels) on the critical interaction path.
-    navigateRoute("home");
+    startTransition(() => {
+      setActiveInstance(id);
+      setOpenTabIds((prev) => prev.includes(id) ? prev : [...prev, id]);
+      setInStart(false);
+      // Always land on Home when switching instance to avoid route-specific
+      // heavy reloads (e.g., Channels) on the critical interaction path.
+      navigateRoute("home");
+    });
     const transport = resolveInstanceTransport(id);
     if (transport !== "remote_ssh") return;
     // Check if backend still has a live connection before reconnecting.
@@ -738,7 +742,8 @@ export function App() {
         }
       }).catch(() => setHasEscalatedCron(false));
     };
-    const initial = setTimeout(check, 500);
+    const initialDelayMs = isRemote ? 5000 : 500;
+    const initial = setTimeout(check, initialDelayMs);
     const interval = setInterval(check, 30000);
     return () => {
       clearTimeout(initial);
