@@ -25,7 +25,7 @@ pub struct SftpEntry {
 struct ConnectedHost {
     config: SshHostConfig,
     home_dir: String,
-    session: std::sync::Arc<clawpal_core::ssh::SshSession>,
+    session: std::sync::Arc<Mutex<std::sync::Arc<clawpal_core::ssh::SshSession>>>,
     op_limiter: std::sync::Arc<Semaphore>,
 }
 
@@ -53,8 +53,8 @@ impl SshConnectionPool {
     ) -> Result<(), String> {
         let session = std::sync::Arc::new(
             clawpal_core::ssh::SshSession::connect(config)
-            .await
-            .map_err(|e| e.to_string())?,
+                .await
+                .map_err(|e| e.to_string())?,
         );
         let home = session
             .exec("echo $HOME")
@@ -69,7 +69,7 @@ impl SshConnectionPool {
             ConnectedHost {
                 config: config.clone(),
                 home_dir: home,
-                session,
+                session: std::sync::Arc::new(Mutex::new(session)),
                 op_limiter: std::sync::Arc::new(Semaphore::new(SSH_OP_MAX_CONCURRENCY_PER_HOST)),
             },
         );
@@ -78,7 +78,8 @@ impl SshConnectionPool {
 
     pub async fn disconnect(&self, id: &str) -> Result<(), String> {
         if let Some(host) = self.connections.lock().await.remove(id) {
-            host.session.close().await;
+            let session = host.session.lock().await.clone();
+            session.close().await;
         }
         Ok(())
     }
@@ -127,7 +128,18 @@ impl SshConnectionPool {
             .acquire_owned()
             .await
             .map_err(|e| format!("ssh limiter acquire failed: {e}"))?;
-        let result = conn.session.exec(command).await.map_err(|e| e.to_string())?;
+        let mut result = {
+            let session = conn.session.lock().await.clone();
+            session.exec(command).await
+        };
+        if let Err(err) = &result {
+            if is_retryable_session_error(&err.to_string()) {
+                self.refresh_session(&conn).await?;
+                let session = conn.session.lock().await.clone();
+                result = session.exec(command).await;
+            }
+        }
+        let result = result.map_err(|e| e.to_string())?;
         Ok(SshExecResult {
             stdout: result.stdout,
             stderr: result.stderr,
@@ -159,11 +171,18 @@ esac",
             .acquire_owned()
             .await
             .map_err(|e| format!("ssh limiter acquire failed: {e}"))?;
-        let bytes = conn
-            .session
-            .sftp_read(&resolved)
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut bytes = {
+            let session = conn.session.lock().await.clone();
+            session.sftp_read(&resolved).await
+        };
+        if let Err(err) = &bytes {
+            if is_retryable_session_error(&err.to_string()) {
+                self.refresh_session(&conn).await?;
+                let session = conn.session.lock().await.clone();
+                bytes = session.sftp_read(&resolved).await;
+            }
+        }
+        let bytes = bytes.map_err(|e| e.to_string())?;
         Ok(String::from_utf8_lossy(&bytes).to_string())
     }
 
@@ -176,10 +195,18 @@ esac",
             .acquire_owned()
             .await
             .map_err(|e| format!("ssh limiter acquire failed: {e}"))?;
-        conn.session
-            .sftp_write(&resolved, content.as_bytes())
-            .await
-            .map_err(|e| e.to_string())
+        let mut write_res = {
+            let session = conn.session.lock().await.clone();
+            session.sftp_write(&resolved, content.as_bytes()).await
+        };
+        if let Err(err) = &write_res {
+            if is_retryable_session_error(&err.to_string()) {
+                self.refresh_session(&conn).await?;
+                let session = conn.session.lock().await.clone();
+                write_res = session.sftp_write(&resolved, content.as_bytes()).await;
+            }
+        }
+        write_res.map_err(|e| e.to_string())
     }
 
     pub async fn sftp_list(&self, id: &str, path: &str) -> Result<Vec<SftpEntry>, String> {
@@ -224,6 +251,18 @@ esac",
             .ok_or_else(|| format!("No connection for id: {id}"))?;
         Ok(conn.clone())
     }
+
+    async fn refresh_session(&self, conn: &ConnectedHost) -> Result<(), String> {
+        let new_session = std::sync::Arc::new(
+            clawpal_core::ssh::SshSession::connect(&conn.config)
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        let mut guard = conn.session.lock().await;
+        let old = std::mem::replace(&mut *guard, new_session);
+        old.close().await;
+        Ok(())
+    }
 }
 
 impl Default for SshConnectionPool {
@@ -234,6 +273,14 @@ impl Default for SshConnectionPool {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn is_retryable_session_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("ssh open channel failed")
+        || lowered.contains("connection reset")
+        || lowered.contains("broken pipe")
+        || lowered.contains("connection closed")
 }
 
 #[cfg(test)]
