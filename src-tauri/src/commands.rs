@@ -2907,25 +2907,16 @@ fn build_rescue_bot_command_plan(
 }
 
 fn command_failure_message(command: &[String], output: &OpenclawCommandOutput) -> String {
-    let details = if !output.stderr.trim().is_empty() {
-        output.stderr.trim()
-    } else if !output.stdout.trim().is_empty() {
-        output.stdout.trim()
-    } else {
-        "no output"
-    };
-    format!(
-        "openclaw {} failed (exit {}): {}",
-        command.join(" "),
+    clawpal_core::doctor::command_failure_message(
+        command,
         output.exit_code,
-        details
+        &output.stderr,
+        &output.stdout,
     )
 }
 
 fn is_gateway_restart_command(command: &[String]) -> bool {
-    command.len() >= 2
-        && command[command.len() - 2] == "gateway"
-        && command[command.len() - 1] == "restart"
+    clawpal_core::doctor::is_gateway_restart_command(command)
 }
 
 fn is_gateway_restart_timeout(output: &OpenclawCommandOutput) -> bool {

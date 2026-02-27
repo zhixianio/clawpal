@@ -542,6 +542,33 @@ pub fn build_rescue_bot_command_plan(
     commands
 }
 
+pub fn command_failure_message(
+    command: &[String],
+    exit_code: i32,
+    stderr: &str,
+    stdout: &str,
+) -> String {
+    let details = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim()
+    } else {
+        "no output"
+    };
+    format!(
+        "openclaw {} failed (exit {}): {}",
+        command.join(" "),
+        exit_code,
+        details
+    )
+}
+
+pub fn is_gateway_restart_command(command: &[String]) -> bool {
+    command.len() >= 2
+        && command[command.len() - 2] == "gateway"
+        && command[command.len() - 1] == "restart"
+}
+
 pub fn apply_issue_fixes(config: &mut Value, ids: &[String]) -> Result<Vec<String>, String> {
     let mut applied = Vec::new();
     for id in ids {
@@ -1140,6 +1167,27 @@ mod tests {
             .map(|items| items.into_iter().map(String::from).collect::<Vec<_>>())
             .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn command_failure_message_prefers_stderr_then_stdout() {
+        let command = vec!["gateway".to_string(), "restart".to_string()];
+        let msg = command_failure_message(&command, 1, "boom", "");
+        assert!(msg.contains("openclaw gateway restart failed (exit 1): boom"));
+    }
+
+    #[test]
+    fn is_gateway_restart_command_matches_tail_tokens() {
+        assert!(is_gateway_restart_command(&[
+            "--profile".to_string(),
+            "main".to_string(),
+            "gateway".to_string(),
+            "restart".to_string()
+        ]));
+        assert!(!is_gateway_restart_command(&[
+            "gateway".to_string(),
+            "status".to_string()
+        ]));
     }
 
     #[test]
