@@ -2285,21 +2285,6 @@ fn command_detail(output: &OpenclawCommandOutput) -> String {
     clawpal_core::doctor::command_output_detail(&output.stderr, &output.stdout)
 }
 
-fn parse_doctor_issues(report: &Value, source: &str) -> Vec<RescuePrimaryIssue> {
-    clawpal_core::doctor::parse_doctor_issues(report, source)
-        .into_iter()
-        .map(|issue| RescuePrimaryIssue {
-            id: issue.id,
-            code: issue.code,
-            severity: issue.severity,
-            message: issue.message,
-            auto_fixable: issue.auto_fixable,
-            fix_hint: issue.fix_hint,
-            source: issue.source,
-        })
-        .collect()
-}
-
 fn gateway_output_ok(output: &OpenclawCommandOutput) -> bool {
     clawpal_core::doctor::gateway_output_ok(output.exit_code, &output.stdout, &output.stderr)
 }
@@ -2319,7 +2304,7 @@ fn build_rescue_primary_diagnosis(
     primary_gateway_status: &OpenclawCommandOutput,
 ) -> RescuePrimaryDiagnosisResult {
     let mut checks = Vec::new();
-    let mut issues = Vec::new();
+    let mut issues: Vec<clawpal_core::doctor::DoctorIssue> = Vec::new();
 
     checks.push(RescuePrimaryCheckItem {
         id: "rescue.profile.configured".into(),
@@ -2335,7 +2320,7 @@ fn build_rescue_primary_diagnosis(
     });
 
     if !rescue_configured {
-        issues.push(RescuePrimaryIssue {
+        issues.push(clawpal_core::doctor::DoctorIssue {
             id: "rescue.profile.missing".into(),
             code: "rescue.profile.missing".into(),
             severity: "error".into(),
@@ -2355,7 +2340,7 @@ fn build_rescue_primary_diagnosis(
             detail: gateway_output_detail(output),
         });
         if !ok {
-            issues.push(RescuePrimaryIssue {
+            issues.push(clawpal_core::doctor::DoctorIssue {
                 id: "rescue.gateway.unhealthy".into(),
                 code: "rescue.gateway.unhealthy".into(),
                 severity: "warn".into(),
@@ -2371,7 +2356,7 @@ fn build_rescue_primary_diagnosis(
         .or_else(|| clawpal_core::doctor::parse_json_loose(&primary_doctor_output.stderr));
     let doctor_issues = doctor_report
         .as_ref()
-        .map(|report| parse_doctor_issues(report, "primary"))
+        .map(|report| clawpal_core::doctor::parse_doctor_issues(report, "primary"))
         .unwrap_or_default();
     let doctor_issue_count = doctor_issues.len();
     let doctor_score = doctor_report
@@ -2399,7 +2384,7 @@ fn build_rescue_primary_diagnosis(
     });
 
     if doctor_report.is_none() && primary_doctor_output.exit_code != 0 {
-        issues.push(RescuePrimaryIssue {
+        issues.push(clawpal_core::doctor::DoctorIssue {
             id: "primary.doctor.failed".into(),
             code: "primary.doctor.failed".into(),
             severity: "error".into(),
@@ -2421,7 +2406,7 @@ fn build_rescue_primary_diagnosis(
         detail: gateway_output_detail(primary_gateway_status),
     });
     if !primary_gateway_ok {
-        issues.push(RescuePrimaryIssue {
+        issues.push(clawpal_core::doctor::DoctorIssue {
             id: "primary.gateway.unhealthy".into(),
             code: "primary.gateway.unhealthy".into(),
             severity: "error".into(),
@@ -2432,21 +2417,9 @@ fn build_rescue_primary_diagnosis(
         });
     }
 
-    let mut core_issues: Vec<clawpal_core::doctor::DoctorIssue> = issues
-        .iter()
-        .map(|issue| clawpal_core::doctor::DoctorIssue {
-            id: issue.id.clone(),
-            code: issue.code.clone(),
-            severity: issue.severity.clone(),
-            message: issue.message.clone(),
-            auto_fixable: issue.auto_fixable,
-            fix_hint: issue.fix_hint.clone(),
-            source: issue.source.clone(),
-        })
-        .collect();
-    clawpal_core::doctor::dedupe_doctor_issues(&mut core_issues);
-    let status = clawpal_core::doctor::classify_doctor_issue_status(&core_issues);
-    let issues: Vec<RescuePrimaryIssue> = core_issues
+    clawpal_core::doctor::dedupe_doctor_issues(&mut issues);
+    let status = clawpal_core::doctor::classify_doctor_issue_status(&issues);
+    let issues: Vec<RescuePrimaryIssue> = issues
         .into_iter()
         .map(|issue| RescuePrimaryIssue {
             id: issue.id,
@@ -5440,7 +5413,7 @@ mod rescue_bot_tests {
                 }
             ]
         });
-        let issues = parse_doctor_issues(&report, "primary");
+        let issues = clawpal_core::doctor::parse_doctor_issues(&report, "primary");
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].id, "primary.test");
         assert_eq!(issues[0].severity, "warn");
