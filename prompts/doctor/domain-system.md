@@ -39,6 +39,7 @@ For tool="clawpal", you MUST use only these supported commands:
 - doctor sessions-upsert <json.path> <json.value>
 - doctor sessions-delete <json.path>
 NEVER invent non-existent clawpal commands (for example: doctor fix-config).
+For doctor file read/write, domain defaults are allowed: config->openclaw.json, logs->gateway.err.log, sessions->auto-discovered sessions file.
 If openclaw commands fail because config has invalid keys, use clawpal doctor config-delete (or file read/write when syntax is broken) to repair first, then retry openclaw doctor --fix.
 When target is remote and you suspect openclaw missing/PATH issue, ALWAYS run:
 {"tool":"clawpal","args":"doctor probe-openclaw","reason":"detect openclaw path/version/PATH first"}

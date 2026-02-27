@@ -1059,8 +1059,21 @@ fn doctor_domain_local_root(domain: &str) -> Result<std::path::PathBuf, String> 
 fn doctor_domain_default_relpath(domain: &str) -> Option<&'static str> {
     match domain {
         "config" => Some("openclaw.json"),
+        "logs" => Some("gateway.err.log"),
         _ => None,
     }
+}
+
+fn relpath_from_local_abs(root: &std::path::Path, abs: &std::path::Path) -> Option<String> {
+    abs.strip_prefix(root)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+fn relpath_from_remote_abs(root: &str, abs: &str) -> Option<String> {
+    let root = root.trim_end_matches('/');
+    let prefix = format!("{root}/");
+    abs.strip_prefix(&prefix).map(str::to_string)
 }
 
 async fn doctor_domain_remote_root(session: &SshSession, domain: &str) -> Result<String, String> {
@@ -1083,14 +1096,28 @@ async fn doctor_file_read(
     domain: &str,
     path: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let rel = path
-        .or_else(|| doctor_domain_default_relpath(domain))
-        .ok_or_else(|| "doctor file read requires --path for this domain".to_string())?;
-    validate_doctor_relative_path(rel)?;
     match target {
         DoctorTarget::Local => {
             let root = doctor_domain_local_root(domain)?;
-            let full = root.join(rel);
+            let rel = match path {
+                Some(p) => p.to_string(),
+                None => match domain {
+                    "sessions" => {
+                        let abs = resolve_local_sessions_path();
+                        relpath_from_local_abs(&root, &abs).ok_or_else(|| {
+                            format!(
+                                "failed to resolve sessions path under domain root: {}",
+                                root.display()
+                            )
+                        })?
+                    }
+                    _ => doctor_domain_default_relpath(domain)
+                        .ok_or_else(|| "doctor file read requires --path for this domain".to_string())?
+                        .to_string(),
+                },
+            };
+            validate_doctor_relative_path(&rel)?;
+            let full = root.join(&rel);
             let content = std::fs::read_to_string(&full)
                 .map_err(|e| format!("failed to read file: {e}"))?;
             Ok(json!({
@@ -1106,6 +1133,21 @@ async fn doctor_file_read(
         DoctorTarget::Remote { id, host } => {
             let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
             let root = doctor_domain_remote_root(&session, domain).await?;
+            let rel = match path {
+                Some(p) => p.to_string(),
+                None => match domain {
+                    "sessions" => {
+                        let abs = resolve_remote_sessions_path(&session).await?;
+                        relpath_from_remote_abs(&root, &abs).ok_or_else(|| {
+                            format!("failed to resolve sessions path under domain root: {root}")
+                        })?
+                    }
+                    _ => doctor_domain_default_relpath(domain)
+                        .ok_or_else(|| "doctor file read requires --path for this domain".to_string())?
+                        .to_string(),
+                },
+            };
+            validate_doctor_relative_path(&rel)?;
             let full = format!("{}/{}", root.trim_end_matches('/'), rel);
             let content = session.sftp_read(&full).await.map_err(|e| e.to_string())?;
             Ok(json!({
@@ -1128,14 +1170,28 @@ async fn doctor_file_write(
     content: &str,
     backup: bool,
 ) -> Result<serde_json::Value, String> {
-    let rel = path
-        .or_else(|| doctor_domain_default_relpath(domain))
-        .ok_or_else(|| "doctor file write requires --path for this domain".to_string())?;
-    validate_doctor_relative_path(rel)?;
     match target {
         DoctorTarget::Local => {
             let root = doctor_domain_local_root(domain)?;
-            let full = root.join(rel);
+            let rel = match path {
+                Some(p) => p.to_string(),
+                None => match domain {
+                    "sessions" => {
+                        let abs = resolve_local_sessions_path();
+                        relpath_from_local_abs(&root, &abs).ok_or_else(|| {
+                            format!(
+                                "failed to resolve sessions path under domain root: {}",
+                                root.display()
+                            )
+                        })?
+                    }
+                    _ => doctor_domain_default_relpath(domain)
+                        .ok_or_else(|| "doctor file write requires --path for this domain".to_string())?
+                        .to_string(),
+                },
+            };
+            validate_doctor_relative_path(&rel)?;
+            let full = root.join(&rel);
             if let Some(parent) = full.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("failed to create parent dir: {e}"))?;
@@ -1176,6 +1232,21 @@ async fn doctor_file_write(
         DoctorTarget::Remote { id, host } => {
             let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
             let root = doctor_domain_remote_root(&session, domain).await?;
+            let rel = match path {
+                Some(p) => p.to_string(),
+                None => match domain {
+                    "sessions" => {
+                        let abs = resolve_remote_sessions_path(&session).await?;
+                        relpath_from_remote_abs(&root, &abs).ok_or_else(|| {
+                            format!("failed to resolve sessions path under domain root: {root}")
+                        })?
+                    }
+                    _ => doctor_domain_default_relpath(domain)
+                        .ok_or_else(|| "doctor file write requires --path for this domain".to_string())?
+                        .to_string(),
+                },
+            };
+            validate_doctor_relative_path(&rel)?;
             let full = format!("{}/{}", root.trim_end_matches('/'), rel);
             let mkdir_cmd = format!("sh -lc 'mkdir -p \"$(dirname {})\"'", sh_quote(&full));
             let mkdir_out = session.exec(&mkdir_cmd).await.map_err(|e| e.to_string())?;
