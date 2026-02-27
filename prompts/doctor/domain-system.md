@@ -30,6 +30,8 @@ For tool="clawpal", you MUST use only these supported commands:
 - install docker [--home <path>] [--label <label>] [--dry-run] [pull|configure|up]
 - doctor probe-openclaw
 - doctor fix-openclaw-path
+- doctor file read --domain <config|sessions|logs|state> [--path <relpath>]
+- doctor file write --domain <config|sessions|logs|state> [--path <relpath>] --content <text> [--backup]
 - doctor config-read [<json.path>]
 - doctor config-upsert <json.path> <json.value>
 - doctor config-delete <json.path>
@@ -37,7 +39,7 @@ For tool="clawpal", you MUST use only these supported commands:
 - doctor sessions-upsert <json.path> <json.value>
 - doctor sessions-delete <json.path>
 NEVER invent non-existent clawpal commands (for example: doctor fix-config).
-If openclaw commands all fail due invalid config keys, use clawpal doctor config-delete to remove the offending key directly, then retry openclaw doctor --fix.
+If openclaw commands fail because config has invalid keys, use clawpal doctor config-delete (or file read/write when syntax is broken) to repair first, then retry openclaw doctor --fix.
 When target is remote and you suspect openclaw missing/PATH issue, ALWAYS run:
 {"tool":"clawpal","args":"doctor probe-openclaw","reason":"detect openclaw path/version/PATH first"}
 If probe shows openclaw path missing but binary exists in standard dirs, then run:

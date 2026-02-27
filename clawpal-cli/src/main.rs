@@ -182,6 +182,34 @@ enum DoctorCommands {
         #[arg(long)]
         instance: Option<String>,
     },
+    File {
+        #[command(subcommand)]
+        command: DoctorFileCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DoctorFileCommands {
+    Read {
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    Write {
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        content: String,
+        #[arg(long)]
+        backup: bool,
+        #[arg(long)]
+        instance: Option<String>,
+    },
 }
 
 fn main() {
@@ -514,6 +542,32 @@ fn run_doctor_command(command: DoctorCommands) -> Result<serde_json::Value, Stri
             runtime
                 .block_on(async { doctor_sessions_delete(target, &path).await })
                 .map(|v| json!(v))
+        }
+        DoctorCommands::File { command } => match command {
+            DoctorFileCommands::Read {
+                domain,
+                path,
+                instance,
+            } => {
+                let target = resolve_doctor_target(instance)?;
+                runtime
+                    .block_on(async { doctor_file_read(target, &domain, path.as_deref()).await })
+                    .map(|v| json!(v))
+            }
+            DoctorFileCommands::Write {
+                domain,
+                path,
+                content,
+                backup,
+                instance,
+            } => {
+                let target = resolve_doctor_target(instance)?;
+                runtime
+                    .block_on(async {
+                        doctor_file_write(target, &domain, path.as_deref(), &content, backup).await
+                    })
+                    .map(|v| json!(v))
+            }
         }
     }
 }
@@ -964,6 +1018,212 @@ async fn doctor_sessions_delete(
             }))
         }
     }
+}
+
+fn validate_doctor_relative_path(path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("doctor file path cannot be empty".to_string());
+    }
+    if trimmed.starts_with('/') || trimmed.starts_with('~') {
+        return Err("doctor file path must be relative to domain root".to_string());
+    }
+    if trimmed
+        .split('/')
+        .any(|seg| seg == ".." || seg.contains('\0') || seg.is_empty() && trimmed.contains("//"))
+    {
+        return Err("doctor file path contains forbidden traversal segment".to_string());
+    }
+    Ok(())
+}
+
+fn doctor_domain_local_root(domain: &str) -> Result<std::path::PathBuf, String> {
+    let openclaw_dir = std::env::var("OPENCLAW_HOME").unwrap_or_else(|_| {
+        format!(
+            "{}/.openclaw",
+            dirs::home_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        )
+    });
+    let root = std::path::PathBuf::from(openclaw_dir);
+    match domain {
+        "config" => Ok(root),
+        "sessions" => Ok(root.join("agents")),
+        "logs" => Ok(root.join("logs")),
+        "state" => Ok(root),
+        _ => Err(format!("unsupported doctor file domain: {domain}")),
+    }
+}
+
+fn doctor_domain_default_relpath(domain: &str) -> Option<&'static str> {
+    match domain {
+        "config" => Some("openclaw.json"),
+        _ => None,
+    }
+}
+
+async fn doctor_domain_remote_root(session: &SshSession, domain: &str) -> Result<String, String> {
+    let out = session
+        .exec("sh -lc 'printf %s \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}\"'")
+        .await
+        .map_err(|e| e.to_string())?;
+    let base = out.stdout.trim().to_string();
+    match domain {
+        "config" => Ok(base),
+        "sessions" => Ok(format!("{base}/agents")),
+        "logs" => Ok(format!("{base}/logs")),
+        "state" => Ok(base),
+        _ => Err(format!("unsupported doctor file domain: {domain}")),
+    }
+}
+
+async fn doctor_file_read(
+    target: DoctorTarget,
+    domain: &str,
+    path: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let rel = path
+        .or_else(|| doctor_domain_default_relpath(domain))
+        .ok_or_else(|| "doctor file read requires --path for this domain".to_string())?;
+    validate_doctor_relative_path(rel)?;
+    match target {
+        DoctorTarget::Local => {
+            let root = doctor_domain_local_root(domain)?;
+            let full = root.join(rel);
+            let content = std::fs::read_to_string(&full)
+                .map_err(|e| format!("failed to read file: {e}"))?;
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "domain": domain,
+                "root": root.to_string_lossy(),
+                "path": rel,
+                "fullPath": full.to_string_lossy(),
+                "content": content,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let root = doctor_domain_remote_root(&session, domain).await?;
+            let full = format!("{}/{}", root.trim_end_matches('/'), rel);
+            let content = session.sftp_read(&full).await.map_err(|e| e.to_string())?;
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "domain": domain,
+                "root": root,
+                "path": rel,
+                "fullPath": full,
+                "content": String::from_utf8_lossy(&content).to_string(),
+            }))
+        }
+    }
+}
+
+async fn doctor_file_write(
+    target: DoctorTarget,
+    domain: &str,
+    path: Option<&str>,
+    content: &str,
+    backup: bool,
+) -> Result<serde_json::Value, String> {
+    let rel = path
+        .or_else(|| doctor_domain_default_relpath(domain))
+        .ok_or_else(|| "doctor file write requires --path for this domain".to_string())?;
+    validate_doctor_relative_path(rel)?;
+    match target {
+        DoctorTarget::Local => {
+            let root = doctor_domain_local_root(domain)?;
+            let full = root.join(rel);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create parent dir: {e}"))?;
+            }
+            if backup && full.exists() {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let backup_path = full.with_extension(format!(
+                    "{}bak.{ts}",
+                    full.extension()
+                        .map(|ext| format!("{}.", ext.to_string_lossy()))
+                        .unwrap_or_default(),
+                ));
+                std::fs::copy(&full, backup_path)
+                    .map_err(|e| format!("failed to create backup file: {e}"))?;
+            }
+            std::fs::write(&full, content).map_err(|e| format!("failed to write file: {e}"))?;
+            let verify = std::fs::read_to_string(&full)
+                .map_err(|e| format!("failed to verify written file: {e}"))?;
+            if verify != content {
+                return Err(
+                    "doctor file write verification failed: local content mismatch".to_string(),
+                );
+            }
+            Ok(json!({
+                "target": "local",
+                "remote": false,
+                "domain": domain,
+                "root": root.to_string_lossy(),
+                "path": rel,
+                "fullPath": full.to_string_lossy(),
+                "written": true,
+                "backup": backup,
+            }))
+        }
+        DoctorTarget::Remote { id, host } => {
+            let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
+            let root = doctor_domain_remote_root(&session, domain).await?;
+            let full = format!("{}/{}", root.trim_end_matches('/'), rel);
+            let mkdir_cmd = format!("sh -lc 'mkdir -p \"$(dirname {})\"'", sh_quote(&full));
+            let mkdir_out = session.exec(&mkdir_cmd).await.map_err(|e| e.to_string())?;
+            if mkdir_out.exit_code != 0 {
+                return Err(format!(
+                    "doctor file write mkdir failed (exit {}): {}",
+                    mkdir_out.exit_code, mkdir_out.stderr
+                ));
+            }
+            if backup {
+                let backup_cmd = format!(
+                    "sh -lc 'if [ -f {f} ]; then cp {f} {f}.bak.$(date +%Y%m%d%H%M%S); fi'",
+                    f = sh_quote(&full)
+                );
+                let backup_out = session.exec(&backup_cmd).await.map_err(|e| e.to_string())?;
+                if backup_out.exit_code != 0 {
+                    return Err(format!(
+                        "doctor file write backup failed (exit {}): {}",
+                        backup_out.exit_code, backup_out.stderr
+                    ));
+                }
+            }
+            session
+                .sftp_write(&full, content.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            let verify = session.sftp_read(&full).await.map_err(|e| e.to_string())?;
+            if String::from_utf8_lossy(&verify) != content {
+                return Err(
+                    "doctor file write verification failed: remote content mismatch".to_string(),
+                );
+            }
+            Ok(json!({
+                "target": id,
+                "remote": true,
+                "domain": domain,
+                "root": root,
+                "path": rel,
+                "fullPath": full,
+                "written": true,
+                "backup": backup,
+            }))
+        }
+    }
+}
+
+fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn delete_json_path(value: &mut serde_json::Value, dotted_path: &str) -> bool {

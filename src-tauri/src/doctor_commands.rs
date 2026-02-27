@@ -584,6 +584,209 @@ fn json_path_get<'a>(value: &'a Value, dotted_path: &str) -> Option<&'a Value> {
     Some(cursor)
 }
 
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn validate_doctor_relative_path(path: &str) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("doctor file path cannot be empty".to_string());
+    }
+    if trimmed.starts_with('/') || trimmed.starts_with('~') {
+        return Err("doctor file path must be relative to domain root".to_string());
+    }
+    if trimmed
+        .split('/')
+        .any(|seg| seg == ".." || seg.contains('\0') || seg.is_empty() && trimmed.contains("//"))
+    {
+        return Err("doctor file path contains forbidden traversal segment".to_string());
+    }
+    Ok(())
+}
+
+fn doctor_domain_local_root(domain: &str) -> Result<std::path::PathBuf, String> {
+    let paths = resolve_paths();
+    let openclaw_root = paths
+        .config_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "failed to resolve local openclaw root".to_string())?;
+    match domain {
+        "config" => Ok(openclaw_root),
+        "sessions" => Ok(openclaw_root.join("agents")),
+        "logs" => Ok(openclaw_root.join("logs")),
+        "state" => Ok(openclaw_root),
+        _ => Err(format!("unsupported doctor file domain: {domain}")),
+    }
+}
+
+async fn doctor_domain_remote_root(
+    pool: &SshConnectionPool,
+    target: &str,
+    domain: &str,
+) -> Result<String, String> {
+    let base = pool
+        .exec_login(
+            target,
+            "printf '%s' \"${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}\"",
+        )
+        .await?
+        .stdout
+        .trim()
+        .to_string();
+    match domain {
+        "config" => Ok(base),
+        "sessions" => Ok(format!("{base}/agents")),
+        "logs" => Ok(format!("{base}/logs")),
+        "state" => Ok(base),
+        _ => Err(format!("unsupported doctor file domain: {domain}")),
+    }
+}
+
+fn doctor_domain_default_relpath(domain: &str) -> Option<&'static str> {
+    match domain {
+        "config" => Some("openclaw.json"),
+        _ => None,
+    }
+}
+
+async fn doctor_file_read(
+    pool: &SshConnectionPool,
+    target: &str,
+    domain: &str,
+    path: Option<&str>,
+) -> Result<Value, String> {
+    let rel = path
+        .or_else(|| doctor_domain_default_relpath(domain))
+        .ok_or_else(|| "doctor file read requires --path for this domain".to_string())?;
+    validate_doctor_relative_path(rel)?;
+    if target_is_remote_instance(target) {
+        let root = doctor_domain_remote_root(pool, target, domain).await?;
+        let full_path = format!("{}/{}", root.trim_end_matches('/'), rel);
+        validate_not_sensitive(&full_path)?;
+        let content = pool.sftp_read(target, &full_path).await?;
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "domain": domain,
+            "root": root,
+            "path": rel,
+            "fullPath": full_path,
+            "content": content,
+        }));
+    }
+    let root = doctor_domain_local_root(domain)?;
+    let full_path = root.join(rel);
+    validate_not_sensitive(&full_path.to_string_lossy())?;
+    let content =
+        std::fs::read_to_string(&full_path).map_err(|e| format!("failed to read file: {e}"))?;
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "domain": domain,
+        "root": root.to_string_lossy(),
+        "path": rel,
+        "fullPath": full_path.to_string_lossy(),
+        "content": content,
+    }))
+}
+
+async fn doctor_file_write(
+    pool: &SshConnectionPool,
+    target: &str,
+    domain: &str,
+    path: Option<&str>,
+    content: &str,
+    backup: bool,
+) -> Result<Value, String> {
+    let rel = path
+        .or_else(|| doctor_domain_default_relpath(domain))
+        .ok_or_else(|| "doctor file write requires --path for this domain".to_string())?;
+    validate_doctor_relative_path(rel)?;
+    if target_is_remote_instance(target) {
+        let root = doctor_domain_remote_root(pool, target, domain).await?;
+        let full_path = format!("{}/{}", root.trim_end_matches('/'), rel);
+        validate_not_sensitive(&full_path)?;
+        let dirname_cmd = format!(
+            "mkdir -p \"$(dirname {})\"",
+            sh_single_quote(&full_path)
+        );
+        let mkdir_out = pool.exec_login(target, &dirname_cmd).await?;
+        if mkdir_out.exit_code != 0 {
+            return Err(format!(
+                "doctor file write mkdir failed (exit {}): {}",
+                mkdir_out.exit_code, mkdir_out.stderr
+            ));
+        }
+        if backup {
+            let backup_cmd = format!(
+                "if [ -f {f} ]; then cp {f} {f}.bak.$(date +%Y%m%d%H%M%S); fi",
+                f = sh_single_quote(&full_path)
+            );
+            let backup_out = pool.exec_login(target, &backup_cmd).await?;
+            if backup_out.exit_code != 0 {
+                return Err(format!(
+                    "doctor file write backup failed (exit {}): {}",
+                    backup_out.exit_code, backup_out.stderr
+                ));
+            }
+        }
+        pool.sftp_write(target, &full_path, content).await?;
+        let verify = pool.sftp_read(target, &full_path).await?;
+        if verify != content {
+            return Err("doctor file write verification failed: remote content mismatch".to_string());
+        }
+        return Ok(json!({
+            "target": target,
+            "remote": true,
+            "domain": domain,
+            "root": root,
+            "path": rel,
+            "fullPath": full_path,
+            "written": true,
+            "backup": backup,
+        }));
+    }
+    let root = doctor_domain_local_root(domain)?;
+    let full_path = root.join(rel);
+    validate_not_sensitive(&full_path.to_string_lossy())?;
+    if let Some(parent) = full_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create parent dir: {e}"))?;
+    }
+    if backup && full_path.exists() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup_path = full_path.with_extension(format!(
+            "{}bak.{ts}",
+            full_path
+                .extension()
+                .map(|ext| format!("{}.", ext.to_string_lossy()))
+                .unwrap_or_default(),
+        ));
+        std::fs::copy(&full_path, backup_path)
+            .map_err(|e| format!("failed to create backup file: {e}"))?;
+    }
+    std::fs::write(&full_path, content).map_err(|e| format!("failed to write file: {e}"))?;
+    let verify = std::fs::read_to_string(&full_path)
+        .map_err(|e| format!("failed to verify written file: {e}"))?;
+    if verify != content {
+        return Err("doctor file write verification failed: local content mismatch".to_string());
+    }
+    Ok(json!({
+        "target": target,
+        "remote": false,
+        "domain": domain,
+        "root": root.to_string_lossy(),
+        "path": rel,
+        "fullPath": full_path.to_string_lossy(),
+        "written": true,
+        "backup": backup,
+    }))
+}
+
 async fn doctor_config_delete(
     pool: &SshConnectionPool,
     target: &str,
@@ -927,6 +1130,8 @@ const DOCTOR_SUPPORTED_CLAWPAL_COMMANDS: &[&str] = &[
     "install docker [--home <path>] [--label <label>] [--dry-run] [pull|configure|up]",
     "doctor probe-openclaw",
     "doctor fix-openclaw-path",
+    "doctor file read --domain <config|sessions|logs|state> [--path <relpath>]",
+    "doctor file write --domain <config|sessions|logs|state> [--path <relpath>] --content <text> [--backup]",
     "doctor config-read [<json.path>]",
     "doctor config-upsert <json.path> <json.value>",
     "doctor config-delete <json.path>",
@@ -961,6 +1166,40 @@ async fn run_clawpal_tool(
     if token_refs.as_slice() == ["doctor", "fix-openclaw-path"] {
         let fixed = fix_openclaw_path_on_target(pool, target).await?;
         return tool_stdout_json(fixed);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("file")
+        && token_refs.get(2).copied() == Some("read")
+    {
+        let parsed = parse_cli_args(&token_refs[3..]);
+        let domain = parsed
+            .options
+            .get("domain")
+            .and_then(|v| v.as_deref())
+            .ok_or_else(|| "clawpal doctor file read requires --domain".to_string())?;
+        let path = parsed.options.get("path").and_then(|v| v.as_deref());
+        let out = doctor_file_read(pool, target, domain, path).await?;
+        return tool_stdout_json(out);
+    }
+    if token_refs.first().copied() == Some("doctor")
+        && token_refs.get(1).copied() == Some("file")
+        && token_refs.get(2).copied() == Some("write")
+    {
+        let parsed = parse_cli_args(&token_refs[3..]);
+        let domain = parsed
+            .options
+            .get("domain")
+            .and_then(|v| v.as_deref())
+            .ok_or_else(|| "clawpal doctor file write requires --domain".to_string())?;
+        let path = parsed.options.get("path").and_then(|v| v.as_deref());
+        let content = parsed
+            .options
+            .get("content")
+            .and_then(|v| v.as_deref())
+            .ok_or_else(|| "clawpal doctor file write requires --content".to_string())?;
+        let backup = parsed.options.contains_key("backup");
+        let out = doctor_file_write(pool, target, domain, path, content, backup).await?;
+        return tool_stdout_json(out);
     }
     if token_refs.first().copied() == Some("doctor")
         && token_refs.get(1).copied() == Some("config-read")

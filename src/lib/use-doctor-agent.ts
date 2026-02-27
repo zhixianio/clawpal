@@ -33,6 +33,8 @@ function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "instal
     return hasAnyPrefix(args, [
       "doctor probe-openclaw",
       "doctor fix-openclaw-path",
+      "doctor file read",
+      "doctor file write",
       "doctor config-read",
       "doctor config-upsert",
       "doctor config-delete",
