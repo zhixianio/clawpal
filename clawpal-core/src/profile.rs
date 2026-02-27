@@ -139,6 +139,53 @@ pub fn test_profile(openclaw: &OpenclawCli, id: &str) -> Result<TestResult> {
     })
 }
 
+pub fn list_profiles_from_storage_json(content: &str) -> Vec<ModelProfile> {
+    parse_storage_lenient(content).profiles
+}
+
+pub fn find_profile_in_storage_json(content: &str, profile_id: &str) -> Result<Option<ModelProfile>> {
+    let storage = parse_storage_lenient(content);
+    Ok(storage
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == profile_id))
+}
+
+pub fn upsert_profile_in_storage_json(
+    content: &str,
+    mut profile: ModelProfile,
+) -> Result<(ModelProfile, String)> {
+    if profile.provider.trim().is_empty() || profile.model.trim().is_empty() {
+        return Err(ProfileError::InvalidProfile);
+    }
+    if profile.name.trim().is_empty() {
+        profile.name = format!("{}/{}", profile.provider, profile.model);
+    }
+
+    let mut storage = parse_storage_lenient(content);
+    fill_profile_auth_from_existing_or_provider_donor(&mut profile, &storage.profiles);
+    if profile
+        .api_key
+        .as_ref()
+        .is_some_and(|key| !key.trim().is_empty())
+        && profile.auth_ref.trim().is_empty()
+    {
+        profile.auth_ref = format!("{}:default", profile.provider.trim());
+    }
+    profile = upsert_profile_in_storage(&mut storage.profiles, profile);
+    let text = serialize_storage(&storage)?;
+    Ok((profile, text))
+}
+
+pub fn delete_profile_from_storage_json(content: &str, profile_id: &str) -> Result<(bool, String)> {
+    let mut storage = parse_storage_lenient(content);
+    let before = storage.profiles.len();
+    storage.profiles.retain(|profile| profile.id != profile_id);
+    let removed = storage.profiles.len() != before;
+    let text = serialize_storage(&storage)?;
+    Ok((removed, text))
+}
+
 fn model_is_listed(raw: &str, provider: &str, model: &str) -> bool {
     let Ok(json) = serde_json::from_str::<Value>(raw) else {
         return raw.contains(model);
@@ -213,6 +260,109 @@ fn save_profiles(profiles: &[ModelProfile]) -> Result<()> {
     let json = serde_json::to_string_pretty(profiles)?;
     fs::write(&path, json).map_err(|source| ProfileError::WriteFile { path, source })?;
     Ok(())
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum ProfileStorage {
+    Wrapped(ProfileStorageWrapped),
+    Plain(Vec<ModelProfile>),
+}
+
+#[derive(Deserialize, Serialize)]
+struct ProfileStorageWrapped {
+    #[serde(default)]
+    profiles: Vec<ModelProfile>,
+    #[serde(default = "default_storage_version")]
+    version: u8,
+}
+
+fn parse_storage_lenient(content: &str) -> ProfileStorageWrapped {
+    match serde_json::from_str::<ProfileStorage>(content) {
+        Ok(ProfileStorage::Wrapped(storage)) => storage,
+        Ok(ProfileStorage::Plain(profiles)) => ProfileStorageWrapped {
+            profiles,
+            version: default_storage_version(),
+        },
+        Err(_) => ProfileStorageWrapped {
+            profiles: Vec::new(),
+            version: default_storage_version(),
+        },
+    }
+}
+
+fn serialize_storage(storage: &ProfileStorageWrapped) -> Result<String> {
+    serde_json::to_string_pretty(storage).map_err(ProfileError::Serialize)
+}
+
+fn default_storage_version() -> u8 {
+    1
+}
+
+fn fill_profile_auth_from_existing_or_provider_donor(
+    profile: &mut ModelProfile,
+    profiles: &[ModelProfile],
+) {
+    if !profile.id.trim().is_empty() {
+        if let Some(existing) = profiles
+            .iter()
+            .find(|candidate| candidate.id == profile.id)
+        {
+            if profile
+                .api_key
+                .as_ref()
+                .map_or(true, |key| key.trim().is_empty())
+            {
+                profile.api_key = existing.api_key.clone();
+            }
+            if profile.auth_ref.trim().is_empty() {
+                profile.auth_ref = existing.auth_ref.clone();
+            }
+            return;
+        }
+    }
+
+    let provider = profile.provider.trim();
+    if provider.is_empty() {
+        return;
+    }
+
+    if profile
+        .api_key
+        .as_ref()
+        .map_or(true, |key| key.trim().is_empty())
+    {
+        if let Some(donor) = profiles.iter().find(|candidate| {
+            candidate.provider.eq_ignore_ascii_case(provider)
+                && candidate
+                    .api_key
+                    .as_ref()
+                    .is_some_and(|key| !key.trim().is_empty())
+        }) {
+            profile.api_key = donor.api_key.clone();
+        }
+    }
+
+    if profile.auth_ref.trim().is_empty() {
+        if let Some(donor) = profiles.iter().find(|candidate| {
+            candidate.provider.eq_ignore_ascii_case(provider) && !candidate.auth_ref.trim().is_empty()
+        }) {
+            profile.auth_ref = donor.auth_ref.clone();
+        }
+    }
+}
+
+fn upsert_profile_in_storage(profiles: &mut Vec<ModelProfile>, mut profile: ModelProfile) -> ModelProfile {
+    if profile.id.trim().is_empty() {
+        profile.id = Uuid::new_v4().to_string();
+    }
+    let id = profile.id.clone();
+    if let Some(existing) = profiles.iter_mut().find(|candidate| candidate.id == id) {
+        *existing = profile.clone();
+    } else {
+        profiles.push(profile.clone());
+    }
+    profile
 }
 
 fn profiles_path() -> PathBuf {
@@ -386,5 +536,59 @@ mod tests {
         ));
         let result = test_profile(&cli, "p6").expect("test");
         assert!(!result.ok);
+    }
+
+    #[test]
+    fn list_profiles_from_storage_json_supports_plain_array() {
+        let content = serde_json::to_string(&vec![profile("p-json-1")]).expect("serialize");
+        let listed = list_profiles_from_storage_json(&content);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "p-json-1");
+    }
+
+    #[test]
+    fn upsert_profile_in_storage_json_preserves_provider_donor_auth() {
+        let mut donor = profile("donor");
+        donor.provider = "openai".to_string();
+        donor.auth_ref = "OPENAI_API_KEY".to_string();
+        donor.api_key = Some("sk-donor".to_string());
+        let incoming = ModelProfile {
+            id: "".to_string(),
+            name: "".to_string(),
+            provider: "openai".to_string(),
+            model: "gpt-4.1-mini".to_string(),
+            auth_ref: "".to_string(),
+            api_key: None,
+            base_url: None,
+            description: None,
+            enabled: true,
+        };
+        let content = serde_json::json!({ "profiles": [donor], "version": 1 }).to_string();
+        let (saved, next_json) =
+            upsert_profile_in_storage_json(&content, incoming).expect("upsert json");
+        assert!(!saved.id.trim().is_empty());
+        assert_eq!(saved.name, "openai/gpt-4.1-mini");
+        assert_eq!(saved.auth_ref, "OPENAI_API_KEY");
+        assert_eq!(saved.api_key.as_deref(), Some("sk-donor"));
+        assert!(next_json.contains("\"version\": 1"));
+    }
+
+    #[test]
+    fn delete_profile_from_storage_json_returns_true_when_removed() {
+        let content = serde_json::json!({ "profiles": [profile("p-del")], "version": 1 }).to_string();
+        let (removed, next_json) =
+            delete_profile_from_storage_json(&content, "p-del").expect("delete json");
+        assert!(removed);
+        let listed = list_profiles_from_storage_json(&next_json);
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn find_profile_in_storage_json_returns_profile_when_present() {
+        let content = serde_json::json!({ "profiles": [profile("p-find")], "version": 1 }).to_string();
+        let found = find_profile_in_storage_json(&content, "p-find")
+            .expect("find profile")
+            .expect("profile present");
+        assert_eq!(found.id, "p-find");
     }
 }

@@ -4952,72 +4952,6 @@ fn load_model_profiles(paths: &crate::models::OpenClawPaths) -> Vec<ModelProfile
     }
 }
 
-fn fill_profile_auth_from_existing_or_provider_donor(
-    profile: &mut ModelProfile,
-    profiles: &[ModelProfile],
-) {
-    if !profile.id.trim().is_empty() {
-        if let Some(existing) = profiles.iter().find(|candidate| candidate.id == profile.id) {
-            if profile
-                .api_key
-                .as_ref()
-                .map_or(true, |key| key.trim().is_empty())
-            {
-                profile.api_key = existing.api_key.clone();
-            }
-            if profile.auth_ref.trim().is_empty() {
-                profile.auth_ref = existing.auth_ref.clone();
-            }
-            return;
-        }
-    }
-
-    let provider = profile.provider.trim();
-    if provider.is_empty() {
-        return;
-    }
-
-    if profile
-        .api_key
-        .as_ref()
-        .map_or(true, |key| key.trim().is_empty())
-    {
-        if let Some(donor) = profiles.iter().find(|candidate| {
-            candidate.provider.eq_ignore_ascii_case(provider)
-                && candidate
-                    .api_key
-                    .as_ref()
-                    .is_some_and(|key| !key.trim().is_empty())
-        }) {
-            profile.api_key = donor.api_key.clone();
-        }
-    }
-    if profile.auth_ref.trim().is_empty() {
-        if let Some(donor) = profiles.iter().find(|candidate| {
-            candidate.provider.eq_ignore_ascii_case(provider)
-                && !candidate.auth_ref.trim().is_empty()
-        }) {
-            profile.auth_ref = donor.auth_ref.clone();
-        }
-    }
-}
-
-fn upsert_profile_in_storage(
-    profiles: &mut Vec<ModelProfile>,
-    mut profile: ModelProfile,
-) -> ModelProfile {
-    if profile.id.trim().is_empty() {
-        profile.id = uuid::Uuid::new_v4().to_string();
-    }
-    let id = profile.id.clone();
-    if let Some(existing) = profiles.iter_mut().find(|candidate| candidate.id == id) {
-        *existing = profile.clone();
-    } else {
-        profiles.push(profile.clone());
-    }
-    profile
-}
-
 fn save_model_profiles(
     paths: &crate::models::OpenClawPaths,
     profiles: &[ModelProfile],
@@ -8746,66 +8680,26 @@ pub async fn remote_list_model_profiles(
         .sftp_read(&host_id, "~/.clawpal/model-profiles.json")
         .await
         .unwrap_or_else(|_| r#"{"profiles":[]}"#.to_string());
-    #[derive(serde::Deserialize)]
-    struct Storage {
-        #[serde(default)]
-        profiles: Vec<ModelProfile>,
-    }
-    let parsed: Storage = serde_json::from_str(&content).unwrap_or(Storage {
-        profiles: Vec::new(),
-    });
-    Ok(parsed.profiles)
+    Ok(clawpal_core::profile::list_profiles_from_storage_json(&content))
 }
 
 #[tauri::command]
 pub async fn remote_upsert_model_profile(
     pool: State<'_, SshConnectionPool>,
     host_id: String,
-    mut profile: ModelProfile,
+    profile: ModelProfile,
 ) -> Result<ModelProfile, String> {
-    if profile.provider.trim().is_empty() || profile.model.trim().is_empty() {
-        return Err("provider and model are required".into());
-    }
-    if profile.name.trim().is_empty() {
-        profile.name = format!("{}/{}", profile.provider, profile.model);
-    }
-
-    // Load existing profiles
     let content = pool
         .sftp_read(&host_id, "~/.clawpal/model-profiles.json")
         .await
         .unwrap_or_else(|_| r#"{"profiles":[]}"#.to_string());
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct Storage {
-        #[serde(default)]
-        profiles: Vec<ModelProfile>,
-        #[serde(default = "default_version")]
-        version: u8,
-    }
-    fn default_version() -> u8 {
-        1
-    }
-    let mut storage: Storage = serde_json::from_str(&content).unwrap_or(Storage {
-        profiles: Vec::new(),
-        version: 1,
-    });
-    fill_profile_auth_from_existing_or_provider_donor(&mut profile, &storage.profiles);
-    if profile
-        .api_key
-        .as_ref()
-        .is_some_and(|key| !key.trim().is_empty())
-        && profile.auth_ref.trim().is_empty()
-    {
-        profile.auth_ref = format!("{}:default", profile.provider.trim());
-    }
-    profile = upsert_profile_in_storage(&mut storage.profiles, profile);
+    let (saved, next_json) = clawpal_core::profile::upsert_profile_in_storage_json(&content, profile)
+        .map_err(|e| e.to_string())?;
 
-    // Ensure .clawpal dir exists
     let _ = pool.exec(&host_id, "mkdir -p ~/.clawpal").await;
-    let text = serde_json::to_string_pretty(&storage).map_err(|e| e.to_string())?;
-    pool.sftp_write(&host_id, "~/.clawpal/model-profiles.json", &text)
+    pool.sftp_write(&host_id, "~/.clawpal/model-profiles.json", &next_json)
         .await?;
-    Ok(profile)
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -8818,27 +8712,13 @@ pub async fn remote_delete_model_profile(
         .sftp_read(&host_id, "~/.clawpal/model-profiles.json")
         .await
         .unwrap_or_else(|_| r#"{"profiles":[]}"#.to_string());
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct Storage {
-        #[serde(default)]
-        profiles: Vec<ModelProfile>,
-        #[serde(default = "default_version")]
-        version: u8,
-    }
-    fn default_version() -> u8 {
-        1
-    }
-    let mut storage: Storage = serde_json::from_str(&content).unwrap_or(Storage {
-        profiles: Vec::new(),
-        version: 1,
-    });
-    let before = storage.profiles.len();
-    storage.profiles.retain(|p| p.id != profile_id);
-    if storage.profiles.len() == before {
+    let (removed, next_json) =
+        clawpal_core::profile::delete_profile_from_storage_json(&content, &profile_id)
+            .map_err(|e| e.to_string())?;
+    if !removed {
         return Ok(false);
     }
-    let text = serde_json::to_string_pretty(&storage).map_err(|e| e.to_string())?;
-    pool.sftp_write(&host_id, "~/.clawpal/model-profiles.json", &text)
+    pool.sftp_write(&host_id, "~/.clawpal/model-profiles.json", &next_json)
         .await?;
     Ok(true)
 }
@@ -9057,17 +8937,8 @@ pub async fn remote_test_model_profile(
         Err(e) if is_remote_missing_path_error(&e) => r#"{"profiles":[]}"#.to_string(),
         Err(e) => return Err(format!("Failed to read remote model profiles: {e}")),
     };
-    #[derive(serde::Deserialize)]
-    struct Storage {
-        #[serde(default)]
-        profiles: Vec<ModelProfile>,
-    }
-    let storage: Storage = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse remote model profiles: {e}"))?;
-    let profile = storage
-        .profiles
-        .into_iter()
-        .find(|p| p.id == profile_id)
+    let profile = clawpal_core::profile::find_profile_in_storage_json(&content, &profile_id)
+        .map_err(|e| format!("Failed to parse remote model profiles: {e}"))?
         .ok_or_else(|| format!("Profile not found: {profile_id}"))?;
 
     if !profile.enabled {
