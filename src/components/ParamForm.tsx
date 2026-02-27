@@ -58,7 +58,7 @@ export function ParamForm({
 }) {
   const { t } = useTranslation();
   const ua = useApi();
-  const { discordGuildChannels } = ua;
+  const discordGuildChannels = ua.discordGuildChannels ?? [];
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [agents, setAgents] = useState<AgentOverview[]>([]);

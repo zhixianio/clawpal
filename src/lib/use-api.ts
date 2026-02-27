@@ -117,7 +117,23 @@ function normalizeErrorSignature(raw: string): string {
     .slice(0, 220);
 }
 
+function isSshCooldownProtectionError(errorText: string): boolean {
+  const text = errorText.toLowerCase();
+  return (
+    text.includes("cooling down after repeated timeouts")
+    || text.includes("are cooling down")
+    || text.includes("retry in")
+    || text.includes("冷却期")
+    || text.includes("多次超时")
+  );
+}
+
 function shouldEmitAgentGuidance(instanceId: string, operation: string, errorText: string): boolean {
+  // Timeout cooldown is a protective throttle, not an actionable root-cause signal.
+  // Surfacing it as agent guidance creates noisy false alarms.
+  if (isSshCooldownProtectionError(errorText)) {
+    return false;
+  }
   const signature = `${instanceId}::${operation}::${normalizeErrorSignature(errorText)}`;
   const now = Date.now();
   const lastAt = AGENT_GUIDANCE_THROTTLE.get(signature) || 0;
@@ -142,7 +158,19 @@ function shouldEmitAgentGuidance(instanceId: string, operation: string, errorTex
  * inject hostId and check connection state.
  */
 export function useApi() {
-  const { instanceId, instanceToken, isRemote, isDocker, isConnected, discordGuildChannels } = useInstance();
+  const {
+    instanceId,
+    instanceToken,
+    isRemote,
+    isDocker,
+    isConnected,
+    channelNodes,
+    discordGuildChannels,
+    channelsLoading,
+    discordChannelsLoading,
+    refreshChannelNodesCache,
+    refreshDiscordChannelsCache,
+  } = useInstance();
   const instanceCacheKey = `${instanceId}#${instanceToken}`;
   const globalCacheKey = "__global__";
   const transport: "local" | "docker_local" | "remote_ssh" = isRemote
@@ -152,6 +180,10 @@ export function useApi() {
   const explainAndWrapError = useCallback(
     async (method: string | undefined, rawError: unknown) => {
       const original = String(rawError);
+      // Keep cooldown/throttle errors quiet: return as-is and skip guidance explanation.
+      if (isSshCooldownProtectionError(original)) {
+        return new Error(original);
+      }
       try {
         const explained = await api.explainOperationError(
           instanceId,
@@ -311,7 +343,12 @@ export function useApi() {
       isRemote,
       isDocker,
       isConnected,
+      channelNodes,
       discordGuildChannels,
+      channelsLoading,
+      discordChannelsLoading,
+      refreshChannelNodesCache,
+      refreshDiscordChannelsCache,
 
       // Status
       getInstanceStatus: dispatch(
@@ -621,6 +658,23 @@ export function useApi() {
       // Remote-only
       remoteWriteRawConfig: withInvalidation(api.remoteWriteRawConfig),
     }),
-    [dispatch, dispatchCached, localCached, localGlobalCached, withInvalidation, withGlobalInvalidation, instanceId, isRemote, isDocker, isConnected, discordGuildChannels],
+    [
+      dispatch,
+      dispatchCached,
+      localCached,
+      localGlobalCached,
+      withInvalidation,
+      withGlobalInvalidation,
+      instanceId,
+      isRemote,
+      isDocker,
+      isConnected,
+      channelNodes,
+      discordGuildChannels,
+      channelsLoading,
+      discordChannelsLoading,
+      refreshChannelNodesCache,
+      refreshDiscordChannelsCache,
+    ],
   );
 }

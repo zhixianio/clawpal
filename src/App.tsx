@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { check } from "@tauri-apps/plugin-updater";
 import { getVersion } from "@tauri-apps/api/app";
@@ -14,19 +14,8 @@ import {
   MessageCircleIcon,
   XIcon,
 } from "lucide-react";
-import { Home } from "./pages/Home";
 import { StartPage } from "./pages/StartPage";
-import { Recipes } from "./pages/Recipes";
-import { Cook } from "./pages/Cook";
-import { History } from "./pages/History";
-import { Settings } from "./pages/Settings";
-import { Doctor } from "./pages/Doctor";
-import { Channels } from "./pages/Channels";
-import { Cron } from "./pages/Cron";
-import { Orchestrator } from "./pages/Orchestrator";
-import { Chat } from "./components/Chat";
 import logoUrl from "./assets/logo.png";
-import { PendingChangesBar } from "./components/PendingChangesBar";
 import { InstanceTabBar } from "./components/InstanceTabBar";
 import { InstanceContext } from "./lib/instance-context";
 import { api } from "./lib/api";
@@ -36,7 +25,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { Toaster } from "sonner";
-import type { DiscordGuildChannel, DockerInstance, InstallSession, RegisteredInstance, SshHost } from "./lib/types";
+import type { ChannelNode, DiscordGuildChannel, DockerInstance, InstallSession, RegisteredInstance, SshHost } from "./lib/types";
+
+const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
+const Recipes = lazy(() => import("./pages/Recipes").then((m) => ({ default: m.Recipes })));
+const Cook = lazy(() => import("./pages/Cook").then((m) => ({ default: m.Cook })));
+const History = lazy(() => import("./pages/History").then((m) => ({ default: m.History })));
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
+const Doctor = lazy(() => import("./pages/Doctor").then((m) => ({ default: m.Doctor })));
+const Channels = lazy(() => import("./pages/Channels").then((m) => ({ default: m.Channels })));
+const Cron = lazy(() => import("./pages/Cron").then((m) => ({ default: m.Cron })));
+const Orchestrator = lazy(() => import("./pages/Orchestrator").then((m) => ({ default: m.Orchestrator })));
+const Chat = lazy(() => import("./components/Chat").then((m) => ({ default: m.Chat })));
+const PendingChangesBar = lazy(() => import("./components/PendingChangesBar").then((m) => ({ default: m.PendingChangesBar })));
 
 const PING_URL = "https://api.clawpal.zhixian.io/ping";
 const LEGACY_DOCKER_INSTANCES_KEY = "clawpal_docker_instances";
@@ -47,6 +48,7 @@ const DEFAULT_DOCKER_INSTANCE_ID = "docker:local";
 type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "doctor" | "orchestrator";
 const INSTANCE_ROUTES: Route[] = ["home", "channels", "recipes", "cron", "doctor", "history"];
 const OPEN_TABS_STORAGE_KEY = "clawpal_open_tabs";
+const WATCHDOG_LATE_GRACE_MS = 5 * 60 * 1000;
 
 interface ToastItem {
   id: number;
@@ -142,6 +144,16 @@ function hashInstanceToken(raw: string): number {
   return hash >>> 0;
 }
 
+function watchdogJobLikelyLate(job: { lastScheduledAt?: string; lastRunAt?: string | null } | undefined): boolean {
+  if (!job?.lastScheduledAt) return false;
+  const scheduledAt = Date.parse(job.lastScheduledAt);
+  if (!Number.isFinite(scheduledAt)) return false;
+  const runAt = job.lastRunAt ? Date.parse(job.lastRunAt) : Number.NaN;
+  const missedThisSchedule = !Number.isFinite(runAt) || runAt + 1000 < scheduledAt;
+  const overdue = Date.now() - scheduledAt > WATCHDOG_LATE_GRACE_MS;
+  return missedThisSchedule && overdue;
+}
+
 function normalizeDockerInstance(instance: DockerInstance): DockerInstance {
   const fallback = deriveDockerPaths(instance.id);
   return {
@@ -157,7 +169,10 @@ export function App() {
   const [route, setRoute] = useState<Route>("home");
   const [recipeId, setRecipeId] = useState<string | null>(null);
   const [recipeSource, setRecipeSource] = useState<string | undefined>(undefined);
-  const [discordGuildChannels, setDiscordGuildChannels] = useState<DiscordGuildChannel[]>([]);
+  const [channelNodes, setChannelNodes] = useState<ChannelNode[] | null>(null);
+  const [discordGuildChannels, setDiscordGuildChannels] = useState<DiscordGuildChannel[] | null>(null);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [discordChannelsLoading, setDiscordChannelsLoading] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [lastInstanceRoute, setLastInstanceRoute] = useState<Route>("home");
   const [startSection, setStartSection] = useState<"overview" | "profiles" | "settings">("overview");
@@ -281,6 +296,7 @@ export function App() {
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [agentGuidanceByInstance, setAgentGuidanceByInstance] = useState<Record<string, AgentGuidanceItem>>({});
+  const [doctorLaunchByInstance, setDoctorLaunchByInstance] = useState<Record<string, AgentGuidanceItem | null>>({});
   const [agentGuidanceOpen, setAgentGuidanceOpen] = useState(false);
   const sshHealthFailStreakRef = useRef<Record<string, number>>({});
   const legacyMigrationDoneRef = useRef(false);
@@ -543,6 +559,7 @@ export function App() {
   const isConnected = !isRemote || connectionStatus[activeInstance] === "connected";
 
   useEffect(() => {
+    let cancelled = false;
     let nextHome: string | null = null;
     let nextDataDir: string | null = null;
     if (activeInstance === "local" || isRemote) {
@@ -555,7 +572,6 @@ export function App() {
       nextDataDir = instance?.clawpalDataDir || fallback.clawpalDataDir;
     }
     const tokenSeed = `${activeInstance}|${nextHome || ""}|${nextDataDir || ""}`;
-    setInstanceToken(hashInstanceToken(tokenSeed));
 
     const applyOverrides = async () => {
       if (nextHome === null && nextDataDir === null) {
@@ -569,12 +585,16 @@ export function App() {
           api.setActiveClawpalDataDir(nextDataDir).catch(() => {}),
         ]);
       }
+      if (!cancelled) {
+        // Token bumps only after overrides are applied, so data panels can
+        // safely refetch with the correct per-instance OPENCLAW_HOME.
+        setInstanceToken(hashInstanceToken(tokenSeed));
+      }
     };
-    // Defer bridge calls so tab switch paint is not on the same critical frame.
-    const timer = setTimeout(() => {
-      void applyOverrides();
-    }, 120);
-    return () => clearTimeout(timer);
+    void applyOverrides();
+    return () => {
+      cancelled = true;
+    };
   }, [activeInstance, isDocker, isRemote, dockerInstances]);
 
   // Keep active remote instance self-healed: detect dropped SSH and reconnect.
@@ -632,27 +652,55 @@ export function App() {
     };
   }, [activeInstance, isRemote]);
 
-  // Clear cached Discord channels only when switching instance.
+  // Clear cached channel data only when switching instance.
   // Avoid clearing on transient connection-status changes, which causes
-  // Channels page to flicker between "no cache" and loaded data.
+  // Channels page to flicker between "loading" and loaded data.
   useEffect(() => {
-    setDiscordGuildChannels([]);
+    setChannelNodes(null);
+    setDiscordGuildChannels(null);
   }, [activeInstance]);
 
-  // Load Discord channel cache lazily when Channels tab is active.
+  const refreshChannelNodesCache = useCallback(async () => {
+    setChannelsLoading(true);
+    try {
+      const nodes = isRemote
+        ? await api.remoteListChannelsMinimal(activeInstance)
+        : await api.listChannelsMinimal();
+      setChannelNodes(nodes);
+      return nodes;
+    } finally {
+      setChannelsLoading(false);
+    }
+  }, [activeInstance, isRemote]);
+
+  const refreshDiscordChannelsCache = useCallback(async () => {
+    setDiscordChannelsLoading(true);
+    try {
+      const channels = isRemote
+        ? await api.remoteListDiscordGuildChannels(activeInstance)
+        : await api.listDiscordGuildChannels();
+      setDiscordGuildChannels(channels);
+      return channels;
+    } finally {
+      setDiscordChannelsLoading(false);
+    }
+  }, [activeInstance, isRemote]);
+
+  // Load unified channel cache lazily when Channels tab is active.
   useEffect(() => {
     if (route !== "channels") return;
-    if (activeInstance === "local" || isDocker) {
-      api.listDiscordGuildChannels()
-        .then(setDiscordGuildChannels)
-        .catch((e) => console.error("Failed to load Discord channels:", e));
-      return;
-    }
-    if (!isConnected) return;
-    api.remoteListDiscordGuildChannels(activeInstance)
-      .then(setDiscordGuildChannels)
-      .catch((e) => console.error("Failed to load remote Discord channels:", e));
-  }, [route, activeInstance, isConnected, isDocker]);
+    if (isRemote && !isConnected) return;
+    void Promise.allSettled([
+      refreshChannelNodesCache(),
+      refreshDiscordChannelsCache(),
+    ]);
+  }, [
+    route,
+    isRemote,
+    isConnected,
+    refreshChannelNodesCache,
+    refreshDiscordChannelsCache,
+  ]);
 
   // Poll watchdog status for escalated cron jobs (red dot badge)
   useEffect(() => {
@@ -662,8 +710,8 @@ export function App() {
         : api.getWatchdogStatus();
       p.then((status: any) => {
         if (status?.jobs) {
-          const escalated = Object.values(status.jobs).some((j: any) => j.status === "escalated");
-          setHasEscalatedCron(escalated);
+          const hasLikelyLateJob = Object.values(status.jobs).some((j: any) => watchdogJobLikelyLate(j));
+          setHasEscalatedCron(hasLikelyLateJob);
         } else {
           setHasEscalatedCron(false);
         }
@@ -821,7 +869,19 @@ export function App() {
         onSelect={handleInstanceSelect}
         onClose={closeTab}
       />
-      <InstanceContext.Provider value={{ instanceId: activeInstance, instanceToken, isRemote, isDocker, isConnected, discordGuildChannels }}>
+      <InstanceContext.Provider value={{
+        instanceId: activeInstance,
+        instanceToken,
+        isRemote,
+        isDocker,
+        isConnected,
+        channelNodes,
+        discordGuildChannels,
+        channelsLoading,
+        discordChannelsLoading,
+        refreshChannelNodesCache,
+        refreshDiscordChannelsCache,
+      }}>
       <div className="flex flex-1 overflow-hidden">
 
       {/* ── Sidebar ── */}
@@ -875,10 +935,12 @@ export function App() {
         </div>
 
         {!inStart && (
-          <PendingChangesBar
-            showToast={showToast}
-            onApplied={bumpConfigVersion}
-          />
+          <Suspense fallback={null}>
+            <PendingChangesBar
+              showToast={showToast}
+              onApplied={bumpConfigVersion}
+            />
+          </Suspense>
         )}
       </aside>
       )}
@@ -897,6 +959,7 @@ export function App() {
         )}
 
         <div className="animate-warm-enter">
+          <Suspense fallback={<p className="text-sm text-muted-foreground animate-pulse">Loading…</p>}>
           {/* ── Start mode content ── */}
           {inStart && startSection === "overview" && (
             <StartPage
@@ -974,12 +1037,21 @@ export function App() {
           )}
           {!inStart && route === "cron" && <Cron />}
           {!inStart && route === "history" && <History key={`history-${configVersion}`} />}
-          {!inStart && (
-            <div className={route === "doctor" ? undefined : "hidden"}>
-              <Doctor key={activeInstance} />
-            </div>
+          {!inStart && route === "doctor" && (
+            <Doctor
+              key={activeInstance}
+              active
+              launchGuidance={doctorLaunchByInstance[activeInstance] || null}
+              onLaunchGuidanceConsumed={(instanceId) => {
+                setDoctorLaunchByInstance((prev) => ({
+                  ...prev,
+                  [instanceId]: null,
+                }));
+              }}
+            />
           )}
           {!inStart && route === "orchestrator" && <Orchestrator />}
+          </Suspense>
         </div>
       </main>
 
@@ -997,7 +1069,9 @@ export function App() {
             </Button>
           </div>
           <div className="flex-1 overflow-hidden px-5 pb-5">
-            <Chat />
+            <Suspense fallback={<p className="text-sm text-muted-foreground animate-pulse">Loading…</p>}>
+              <Chat />
+            </Suspense>
           </div>
         </aside>
       )}
@@ -1063,6 +1137,10 @@ export function App() {
                 size="sm"
                 onClick={() => {
                   setAgentGuidanceOpen(false);
+                  setDoctorLaunchByInstance((prev) => ({
+                    ...prev,
+                    [agentGuidance.instanceId]: agentGuidance,
+                  }));
                   setInStart(false);
                   setRoute("doctor");
                 }}

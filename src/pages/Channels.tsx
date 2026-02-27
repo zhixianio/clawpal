@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentOverview, Binding, ChannelNode, DiscordGuildChannel, ModelProfile } from "../lib/types";
 import { useApi } from "@/lib/use-api";
@@ -62,10 +62,9 @@ export function Channels({
   const [agents, setAgents] = useState<AgentOverview[]>([]);
   const [bindings, setBindings] = useState<Binding[]>([]);
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
-  const [channelNodes, setChannelNodes] = useState<ChannelNode[]>([]);
-  const [discordChannels, setDiscordChannels] = useState<DiscordGuildChannel[] | null>(ua.discordGuildChannels || null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  const initializedKeyRef = useRef<string>("");
 
   // Create agent dialog
   const [showCreateAgent, setShowCreateAgent] = useState(false);
@@ -83,28 +82,24 @@ export function Channels({
     ua.listBindings().then((b) => setBindings(b)).catch((e) => console.error("Failed to load bindings:", e));
   }, [ua]);
 
-  const refreshChannelNodes = useCallback(() => {
-    ua.listChannels().then(setChannelNodes).catch((e) => console.error("Failed to load channel nodes:", e));
-  }, [ua]);
-
   useEffect(() => {
+    const initKey = `${ua.instanceId}#${ua.instanceToken}`;
+    if (initializedKeyRef.current === initKey) return;
+    initializedKeyRef.current = initKey;
     refreshAgents();
     refreshBindings();
     ua.listModelProfiles().then((p) => setModelProfiles(p.filter((m) => m.enabled))).catch((e) => console.error("Failed to load model profiles:", e));
-    refreshChannelNodes();
-  }, [ua, refreshAgents, refreshBindings, refreshChannelNodes]);
+    void ua.refreshChannelNodesCache().catch((e) => console.error("Failed to load channel nodes:", e));
+    void ua.refreshDiscordChannelsCache().catch((e) => console.error("Failed to load discord channels:", e));
+  }, [ua, refreshAgents, refreshBindings]);
 
-  // Reuse app-level cached Discord channels to avoid duplicate heavy remote fetches
-  // when entering the Channels tab (especially expensive on Windows remote SSH).
-  useEffect(() => {
-    setDiscordChannels(ua.discordGuildChannels || []);
-  }, [ua.discordGuildChannels]);
+  const channelNodes = ua.channelNodes || [];
+  const discordChannels = ua.discordGuildChannels;
 
   const handleRefreshDiscord = () => {
     setRefreshing("discord");
-    ua.refreshDiscordGuildChannels()
-      .then((channels) => {
-        setDiscordChannels(channels);
+    ua.refreshDiscordChannelsCache()
+      .then(() => {
         showToast?.(t('channels.discordRefreshed'), "success");
       })
       .catch((e) => showToast?.(String(e), "error"))
@@ -113,9 +108,8 @@ export function Channels({
 
   const handleRefreshPlatform = (platform: string) => {
     setRefreshing(platform);
-    ua.listChannels()
-      .then((nodes) => {
-        setChannelNodes(nodes);
+    ua.refreshChannelNodesCache()
+      .then(() => {
         showToast?.(t('channels.platformRefreshed', { platform: PLATFORM_LABELS[platform] || platform }), "success");
       })
       .catch((e) => showToast?.(String(e), "error"))
@@ -250,6 +244,8 @@ export function Channels({
     );
   };
 
+  const discordLoaded = discordChannels !== null;
+  const channelsLoaded = ua.channelNodes !== null;
   const hasDiscord = (discordChannels || []).length > 0;
   const hasOther = otherPlatforms.length > 0;
 
@@ -257,7 +253,7 @@ export function Channels({
     <section>
       <h2 className="text-2xl font-bold mb-4">{t('channels.title')}</h2>
 
-      {!hasDiscord && !hasOther && (
+      {discordLoaded && channelsLoaded && !hasDiscord && !hasOther && (
         <p className="text-muted-foreground">
           {t('channels.noChannels')}
         </p>
@@ -274,13 +270,13 @@ export function Channels({
                 size="sm"
                 className="ml-auto"
                 onClick={handleRefreshDiscord}
-                disabled={refreshing === "discord"}
+                disabled={refreshing === "discord" || ua.discordChannelsLoading}
               >
-                {refreshing === "discord" ? t('channels.refreshing') : t('channels.refresh')}
+                {refreshing === "discord" || ua.discordChannelsLoading ? t('channels.refreshing') : t('channels.refresh')}
               </Button>
             </div>
 
-            {discordChannels === null ? (
+            {discordChannels === null || ua.discordChannelsLoading ? (
               <p className="text-sm text-muted-foreground animate-pulse">{t('channels.loadingDiscord')}</p>
             ) : discordGuilds.length === 0 ? (
               <p className="text-sm text-muted-foreground">
