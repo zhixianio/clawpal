@@ -94,7 +94,7 @@ fn run_bash(
     step: &str,
 ) -> Result<StepResult> {
     let mut cmd = std::process::Command::new("bash");
-    cmd.args(["-lc", command]);
+    cmd.args(["-ilc", command]);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }

@@ -164,7 +164,7 @@ pub fn run_step(
                 "mkdir -p \"{}\" && if [ -d \"{}/.git\" ]; then echo \"Using existing OpenClaw repository checkout at {}\"; else git clone https://github.com/openclaw/openclaw.git \"{}\"; fi",
                 repo_str, repo_str, repo_str, repo_str
             );
-            let clone = run_command("bash", &["-lc", &cmd])?;
+            let clone = run_command("bash", &["-ilc", &cmd])?;
             Ok(RunnerOutput {
                 summary: "docker install completed".to_string(),
                 details: "Prepared official OpenClaw repository for Docker setup".to_string(),
@@ -177,12 +177,12 @@ pub fn run_step(
                 "mkdir -p \"{state}\" \"{state}/workspace\" && [ -f \"{state}/openclaw.json\" ] || printf '{{}}' > \"{state}/openclaw.json\"",
                 state = openclaw_state_dir
             );
-            let prep = run_command("bash", &["-lc", &prep_cmd])?;
+            let prep = run_command("bash", &["-ilc", &prep_cmd])?;
             let build_cmd = format!(
                 "cd \"{}\" && docker build -t openclaw:local -f Dockerfile .",
                 repo_str
             );
-            let build = run_command("bash", &["-lc", &build_cmd])?;
+            let build = run_command("bash", &["-ilc", &build_cmd])?;
             Ok(RunnerOutput {
                 summary: "docker init completed".to_string(),
                 details: if build.stderr.is_empty() {
@@ -196,7 +196,7 @@ pub fn run_step(
         }
         InstallStep::Verify => {
             let compose_check = docker_verify_compose_command(&repo_str, &openclaw_state_dir);
-            let compose = run_command("bash", &["-lc", &compose_check])?;
+            let compose = run_command("bash", &["-ilc", &compose_check])?;
             let inspect = run_command("docker", &["image", "inspect", "openclaw:local"])?;
             Ok(RunnerOutput {
                 summary: "docker verify completed".to_string(),

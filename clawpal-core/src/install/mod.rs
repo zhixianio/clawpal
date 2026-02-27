@@ -94,7 +94,7 @@ pub fn install_local(options: LocalInstallOptions) -> Result<InstallResult> {
         });
     } else {
         let output = std::process::Command::new("bash")
-            .args(["-lc", "command -v openclaw >/dev/null 2>&1 || true"])
+            .args(["-ilc", "command -v openclaw >/dev/null 2>&1 || true"])
             .output()
             .map_err(|e| InstallError::Step(e.to_string()))?;
         steps.push(StepResult {

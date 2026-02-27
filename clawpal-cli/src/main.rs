@@ -584,7 +584,7 @@ async fn doctor_probe_openclaw(target: DoctorTarget) -> Result<serde_json::Value
             let probe_cmd =
                 wrap_login_shell_eval(clawpal_core::doctor::openclaw_which_probe_script());
             let path_out = Command::new("sh")
-                .args(["-lc", &probe_cmd])
+                .args(["-c", &probe_cmd])
                 .output()
                 .map_err(|e| format!("failed to probe openclaw path: {e}"))?;
             let openclaw_path = String::from_utf8_lossy(&path_out.stdout).trim().to_string();

@@ -158,7 +158,7 @@ fn wrap_remote_health_command(command: &str) -> String {
     let login_wrapped = crate::shell::wrap_login_shell_eval(command);
     let escaped = shell_escape(&login_wrapped);
     format!(
-        "if command -v timeout >/dev/null 2>&1; then timeout {HEALTH_REMOTE_COMMAND_TIMEOUT_SECS}s sh -lc {escaped}; else sh -lc {escaped}; fi"
+        "if command -v timeout >/dev/null 2>&1; then timeout {HEALTH_REMOTE_COMMAND_TIMEOUT_SECS}s sh -c {escaped}; else sh -c {escaped}; fi"
     )
 }
 

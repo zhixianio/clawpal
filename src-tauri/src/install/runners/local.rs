@@ -76,7 +76,7 @@ pub fn run_step(
             }
 
             let script = "mkdir -p ~/.clawpal/install/cache && INSTALLER=~/.clawpal/install/cache/openclaw-install.sh && ( [ -s \"$INSTALLER\" ] || curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh -o \"$INSTALLER\" ) && bash \"$INSTALLER\" --no-prompt --no-onboard";
-            let install = run_command("bash", &["-lc", script])?;
+            let install = run_command("bash", &["-ilc", script])?;
             Ok(RunnerOutput {
                 summary: "local install completed".to_string(),
                 details: if install.stderr.is_empty() {

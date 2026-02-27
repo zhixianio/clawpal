@@ -417,7 +417,7 @@ async fn probe_openclaw_on_target(pool: &SshConnectionPool, target: &str) -> Res
         clawpal_core::doctor::openclaw_which_probe_script(),
     );
     let which = std::process::Command::new("sh")
-        .arg("-lc")
+        .arg("-c")
         .arg(&probe_cmd)
         .output()
         .map_err(|e| format!("probe which failed: {e}"))?;
