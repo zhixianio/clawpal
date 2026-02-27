@@ -129,10 +129,21 @@ function isSshCooldownProtectionError(errorText: string): boolean {
   );
 }
 
+function isTransientSshChannelError(errorText: string): boolean {
+  const text = errorText.toLowerCase();
+  return (
+    text.includes("ssh open channel failed")
+    || text.includes("connection reset")
+    || text.includes("broken pipe")
+    || text.includes("connection closed")
+    || text.includes("failed to open channel")
+  );
+}
+
 function shouldEmitAgentGuidance(instanceId: string, operation: string, errorText: string): boolean {
   // Timeout cooldown is a protective throttle, not an actionable root-cause signal.
   // Surfacing it as agent guidance creates noisy false alarms.
-  if (isSshCooldownProtectionError(errorText)) {
+  if (isSshCooldownProtectionError(errorText) || isTransientSshChannelError(errorText)) {
     return false;
   }
   const signature = `${instanceId}::${operation}::${normalizeErrorSignature(errorText)}`;
@@ -182,7 +193,7 @@ export function useApi() {
     async (method: string | undefined, rawError: unknown) => {
       const original = String(rawError);
       // Keep cooldown/throttle errors quiet: return as-is and skip guidance explanation.
-      if (isSshCooldownProtectionError(original)) {
+      if (isSshCooldownProtectionError(original) || isTransientSshChannelError(original)) {
         return new Error(original);
       }
       try {
