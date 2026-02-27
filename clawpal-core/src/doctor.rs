@@ -80,6 +80,40 @@ pub fn resolve_gateway_port_from_config(value: &Value) -> u16 {
         .unwrap_or(18789)
 }
 
+pub fn apply_issue_fixes(config: &mut Value, ids: &[String]) -> Result<Vec<String>, String> {
+    let mut applied = Vec::new();
+    for id in ids {
+        match id.as_str() {
+            "field.agents" if json_path_get(config, "agents").is_none() => {
+                upsert_json_path(
+                    config,
+                    "agents",
+                    serde_json::json!({
+                        "defaults": {
+                            "model": "anthropic/claude-sonnet-4-5"
+                        }
+                    }),
+                )?;
+                applied.push(id.clone());
+            }
+            "json.syntax" => {
+                // Caller already chose a parse strategy; treat as handled once document is available.
+                applied.push(id.clone());
+            }
+            "field.port" => {
+                upsert_json_path(
+                    config,
+                    "gateway.port",
+                    Value::Number(serde_json::Number::from(18789_u64)),
+                )?;
+                applied.push(id.clone());
+            }
+            _ => {}
+        }
+    }
+    Ok(applied)
+}
+
 pub fn validate_doctor_relative_path(path: &str) -> Result<(), String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -485,5 +519,29 @@ mod tests {
     fn render_json_document_pretty_prints() {
         let text = render_json_document(&json!({"a":1}), "config").expect("render");
         assert!(text.contains('\n'));
+    }
+
+    #[test]
+    fn apply_issue_fixes_updates_expected_paths() {
+        let mut doc = json!({});
+        let ids = vec![
+            "field.agents".to_string(),
+            "field.port".to_string(),
+            "unknown.issue".to_string(),
+        ];
+        let applied = apply_issue_fixes(&mut doc, &ids).expect("apply fixes");
+        assert_eq!(applied, vec!["field.agents".to_string(), "field.port".to_string()]);
+        assert_eq!(
+            json_path_get(&doc, "agents.defaults.model")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "anthropic/claude-sonnet-4-5"
+        );
+        assert_eq!(
+            json_path_get(&doc, "gateway.port")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            18789
+        );
     }
 }

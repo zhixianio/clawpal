@@ -2226,37 +2226,7 @@ pub async fn remote_fix_issues(
         .sftp_read(&host_id, "~/.openclaw/openclaw.json")
         .await?;
     let mut cfg = clawpal_core::doctor::parse_json5_document_or_default(&raw);
-    let mut applied = Vec::new();
-
-    for id in &ids {
-        match id.as_str() {
-            "field.agents" if clawpal_core::doctor::json_path_get(&cfg, "agents").is_none() => {
-                clawpal_core::doctor::upsert_json_path(
-                    &mut cfg,
-                    "agents",
-                    serde_json::json!({
-                        "defaults": {
-                            "model": "anthropic/claude-sonnet-4-5"
-                        }
-                    }),
-                )?;
-                applied.push(id.clone());
-            }
-            "json.syntax" => {
-                // If we got here, json5 already parsed it or fell back to empty object
-                applied.push(id.clone());
-            }
-            "field.port" => {
-                clawpal_core::doctor::upsert_json_path(
-                    &mut cfg,
-                    "gateway.port",
-                    Value::Number(serde_json::Number::from(18789_u64)),
-                )?;
-                applied.push(id.clone());
-            }
-            _ => {}
-        }
-    }
+    let applied = clawpal_core::doctor::apply_issue_fixes(&mut cfg, &ids)?;
 
     if !applied.is_empty() {
         remote_write_config_with_snapshot(&pool, &host_id, &raw, &cfg, "doctor-fix").await?;
