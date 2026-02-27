@@ -761,8 +761,8 @@ async fn doctor_config_upsert(
     if dotted_path.trim().is_empty() {
         return Err("doctor config-upsert requires <json.path>".to_string());
     }
-    let parsed: serde_json::Value = serde_json::from_str(value_json)
-        .map_err(|e| format!("doctor config-upsert requires valid JSON value: {e}"))?;
+    let parsed =
+        clawpal_core::doctor::parse_json_value_arg(value_json, "doctor config-upsert")?;
     match target {
         DoctorTarget::Local => {
             let config_path = clawpal_core::doctor::local_openclaw_config_path_from_env();
@@ -880,8 +880,8 @@ async fn doctor_sessions_upsert(
     if dotted_path.trim().is_empty() {
         return Err("doctor sessions-upsert requires <json.path>".to_string());
     }
-    let parsed: serde_json::Value = serde_json::from_str(value_json)
-        .map_err(|e| format!("doctor sessions-upsert requires valid JSON value: {e}"))?;
+    let parsed =
+        clawpal_core::doctor::parse_json_value_arg(value_json, "doctor sessions-upsert")?;
     match target {
         DoctorTarget::Local => {
             let sessions_path = clawpal_core::doctor::resolve_local_sessions_path(

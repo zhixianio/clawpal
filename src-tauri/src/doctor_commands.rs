@@ -847,8 +847,8 @@ async fn doctor_config_upsert(
     if dotted_path.trim().is_empty() {
         return Err("doctor config-upsert requires <json.path>".to_string());
     }
-    let next_value: Value = serde_json::from_str(value_json)
-        .map_err(|e| format!("doctor config-upsert requires valid JSON value: {e}"))?;
+    let next_value =
+        clawpal_core::doctor::parse_json_value_arg(value_json, "doctor config-upsert")?;
     if target_is_remote_instance(target) {
         let config_path = resolve_remote_config_path(pool, target).await?;
         let raw = pool.sftp_read(target, &config_path).await?;
@@ -943,8 +943,8 @@ async fn doctor_sessions_upsert(
     if dotted_path.trim().is_empty() {
         return Err("doctor sessions-upsert requires <json.path>".to_string());
     }
-    let next_value: Value = serde_json::from_str(value_json)
-        .map_err(|e| format!("doctor sessions-upsert requires valid JSON value: {e}"))?;
+    let next_value =
+        clawpal_core::doctor::parse_json_value_arg(value_json, "doctor sessions-upsert")?;
     if target_is_remote_instance(target) {
         let sessions_path = resolve_remote_sessions_path(pool, target).await?;
         let raw = pool.sftp_read(target, &sessions_path).await?;

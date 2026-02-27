@@ -102,6 +102,11 @@ pub fn select_json_value_from_str(
         .unwrap_or(json))
 }
 
+pub fn parse_json_value_arg(raw: &str, operation_name: &str) -> Result<Value, String> {
+    serde_json::from_str(raw)
+        .map_err(|e| format!("{operation_name} requires valid JSON value: {e}"))
+}
+
 pub fn delete_json_path_in_str(
     raw: &str,
     dotted_path: &str,
@@ -344,5 +349,11 @@ mod tests {
         .expect("upsert");
         let parsed: Value = serde_json::from_str(&rendered).expect("parse rendered");
         assert_eq!(parsed["commands"]["ownerDisplay"], "raw");
+    }
+
+    #[test]
+    fn parse_json_value_arg_returns_error_for_invalid_json() {
+        let err = parse_json_value_arg("{oops", "doctor config-upsert").expect_err("must fail");
+        assert!(err.contains("requires valid JSON value"));
     }
 }
