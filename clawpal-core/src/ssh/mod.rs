@@ -9,6 +9,7 @@ use russh_keys::key;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 use crate::instance::SshHostConfig;
 
@@ -42,6 +43,13 @@ pub enum SshError {
 }
 
 pub type Result<T> = std::result::Result<T, SshError>;
+const LEGACY_SSH_CONNECT_TIMEOUT_SECS: u64 = 12;
+const LEGACY_SSH_SERVER_ALIVE_INTERVAL_SECS: u64 = 15;
+const LEGACY_SSH_SERVER_ALIVE_COUNT_MAX: u64 = 2;
+const RUSSH_CONNECT_TIMEOUT_SECS: u64 = 10;
+const RUSSH_DISCONNECT_TIMEOUT_SECS: u64 = 3;
+const RUSSH_EXEC_TIMEOUT_SECS: u64 = 25;
+const RUSSH_SFTP_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Clone)]
 struct SshHandler;
@@ -96,27 +104,37 @@ impl SshSession {
             .await
             .map_err(|e| SshError::CommandFailed(e.to_string()))?;
 
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let mut exit_code = -1;
-        while let Some(msg) = channel.wait().await {
-            match msg {
-                russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-                russh::ChannelMsg::ExtendedData { data, ext } => {
-                    if ext == 1 {
-                        stderr.extend_from_slice(&data);
+        let wait_result = timeout(Duration::from_secs(RUSSH_EXEC_TIMEOUT_SECS), async {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut exit_code = -1;
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, ext } => {
+                        if ext == 1 {
+                            stderr.extend_from_slice(&data);
+                        }
                     }
+                    russh::ChannelMsg::ExitStatus { exit_status } => {
+                        exit_code = exit_status as i32;
+                    }
+                    _ => {}
                 }
-                russh::ChannelMsg::ExitStatus { exit_status } => {
-                    exit_code = exit_status as i32;
-                }
-                _ => {}
             }
-        }
+            (stdout, stderr, exit_code)
+        })
+        .await;
 
-        let _ = handle
-            .disconnect(russh::Disconnect::ByApplication, "", "en")
-            .await;
+        let _ = timeout(
+            Duration::from_secs(RUSSH_DISCONNECT_TIMEOUT_SECS),
+            handle.disconnect(russh::Disconnect::ByApplication, "", "en"),
+        )
+        .await;
+
+        let (stdout, stderr, exit_code) = wait_result.map_err(|_| {
+            SshError::CommandFailed(format!("russh exec timed out after {RUSSH_EXEC_TIMEOUT_SECS}s"))
+        })?;
 
         Ok(ExecResult {
             stdout: String::from_utf8_lossy(&stdout).trim_end().to_string(),
@@ -139,20 +157,31 @@ impl SshSession {
             .map_err(|e| SshError::Sftp(e.to_string()))?;
 
         let resolved = resolve_remote_path(&self.config, path).await?;
-        let mut file = sftp
-            .open(resolved.as_str())
-            .await
-            .map_err(|e| SshError::Sftp(format!("open {resolved}: {e}")))?;
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
-            .await
-            .map_err(|e| SshError::Sftp(e.to_string()))?;
+        let read_result = timeout(Duration::from_secs(RUSSH_SFTP_TIMEOUT_SECS), async {
+            let mut file = sftp
+                .open(resolved.as_str())
+                .await
+                .map_err(|e| SshError::Sftp(format!("open {resolved}: {e}")))?;
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)
+                .await
+                .map_err(|e| SshError::Sftp(e.to_string()))?;
+            Ok::<Vec<u8>, SshError>(buf)
+        })
+        .await;
 
-        let _ = handle
-            .disconnect(russh::Disconnect::ByApplication, "", "en")
-            .await;
-        Ok(buf)
+        let _ = timeout(
+            Duration::from_secs(RUSSH_DISCONNECT_TIMEOUT_SECS),
+            handle.disconnect(russh::Disconnect::ByApplication, "", "en"),
+        )
+        .await;
+        match read_result {
+            Ok(v) => v,
+            Err(_) => Err(SshError::Sftp(format!(
+                "russh sftp_read timed out after {RUSSH_SFTP_TIMEOUT_SECS}s"
+            ))),
+        }
     }
 
     pub async fn sftp_write(&self, path: &str, content: &[u8]) -> Result<()> {
@@ -174,30 +203,69 @@ impl SshSession {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
 
-        // Ensure parent dir exists before SFTP create.
+        // Ensure parent dir exists before SFTP create on the same SSH connection.
         let mkdir_cmd = format!("mkdir -p {}", shell_escape(&parent));
-        let mkdir_result = self.exec(&mkdir_cmd).await?;
-        if mkdir_result.exit_code != 0 {
-            return Err(SshError::Sftp(format!(
-                "mkdir parent failed for {resolved}: {}",
-                mkdir_result.stderr
-            )));
+        {
+            let mut mkdir_ch = handle
+                .channel_open_session()
+                .await
+                .map_err(|e| SshError::Sftp(format!("open mkdir channel: {e}")))?;
+            mkdir_ch
+                .exec(true, mkdir_cmd.as_str())
+                .await
+                .map_err(|e| SshError::Sftp(format!("mkdir exec: {e}")))?;
+            let mkdir_wait = timeout(Duration::from_secs(5), async {
+                let mut stderr = Vec::new();
+                let mut exit_code = -1;
+                while let Some(msg) = mkdir_ch.wait().await {
+                    match msg {
+                        russh::ChannelMsg::ExtendedData { data, ext } if ext == 1 => {
+                            stderr.extend_from_slice(&data);
+                        }
+                        russh::ChannelMsg::ExitStatus { exit_status } => {
+                            exit_code = exit_status as i32;
+                        }
+                        _ => {}
+                    }
+                }
+                (exit_code, stderr)
+            })
+            .await;
+            let (exit_code, stderr) = mkdir_wait
+                .map_err(|_| SshError::Sftp("mkdir wait timed out after 5s".to_string()))?;
+            if exit_code != 0 {
+                return Err(SshError::Sftp(format!(
+                    "mkdir parent failed for {resolved}: {}",
+                    String::from_utf8_lossy(&stderr).trim_end()
+                )));
+            }
         }
 
-        use tokio::io::AsyncWriteExt;
-        let mut file = sftp
-            .create(resolved.as_str())
-            .await
-            .map_err(|e| SshError::Sftp(format!("create {resolved}: {e}")))?;
-        file.write_all(content)
-            .await
-            .map_err(|e| SshError::Sftp(e.to_string()))?;
-        file.flush().await.map_err(|e| SshError::Sftp(e.to_string()))?;
+        let write_result = timeout(Duration::from_secs(RUSSH_SFTP_TIMEOUT_SECS), async {
+            use tokio::io::AsyncWriteExt;
+            let mut file = sftp
+                .create(resolved.as_str())
+                .await
+                .map_err(|e| SshError::Sftp(format!("create {resolved}: {e}")))?;
+            file.write_all(content)
+                .await
+                .map_err(|e| SshError::Sftp(e.to_string()))?;
+            file.flush().await.map_err(|e| SshError::Sftp(e.to_string()))?;
+            Ok::<(), SshError>(())
+        })
+        .await;
 
-        let _ = handle
-            .disconnect(russh::Disconnect::ByApplication, "", "en")
-            .await;
-        Ok(())
+        let _ = timeout(
+            Duration::from_secs(RUSSH_DISCONNECT_TIMEOUT_SECS),
+            handle.disconnect(russh::Disconnect::ByApplication, "", "en"),
+        )
+        .await;
+        match write_result {
+            Ok(v) => v,
+            Err(_) => Err(SshError::Sftp(format!(
+                "russh sftp_write timed out after {RUSSH_SFTP_TIMEOUT_SECS}s"
+            ))),
+        }
     }
 
     async fn exec_legacy(&self, cmd: &str) -> Result<ExecResult> {
@@ -236,6 +304,7 @@ impl SshSession {
             .args(self.legacy_common_ssh_args())
             .arg(destination)
             .arg(command)
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -270,7 +339,18 @@ impl SshSession {
     }
 
     fn legacy_common_ssh_args(&self) -> Vec<String> {
-        let mut args = vec!["-p".to_string(), self.config.port.to_string()];
+        let mut args = vec![
+            "-p".to_string(),
+            self.config.port.to_string(),
+            "-o".to_string(),
+            format!("ConnectTimeout={LEGACY_SSH_CONNECT_TIMEOUT_SECS}"),
+            "-o".to_string(),
+            "BatchMode=yes".to_string(),
+            "-o".to_string(),
+            format!("ServerAliveInterval={LEGACY_SSH_SERVER_ALIVE_INTERVAL_SECS}"),
+            "-o".to_string(),
+            format!("ServerAliveCountMax={LEGACY_SSH_SERVER_ALIVE_COUNT_MAX}"),
+        ];
         if let Some(key_path) = &self.config.key_path {
             if !key_path.trim().is_empty() {
                 args.push("-i".to_string());
@@ -287,9 +367,19 @@ impl SshSession {
         for arg in remote_args {
             cmd.arg(arg);
         }
-        cmd.output()
-            .await
-            .map_err(|e| SshError::Connect(e.to_string()))
+        // Ensure cancellation does not leak child ssh processes when outer futures time out.
+        cmd.kill_on_drop(true);
+        timeout(
+            Duration::from_secs(
+                LEGACY_SSH_CONNECT_TIMEOUT_SECS
+                    + LEGACY_SSH_SERVER_ALIVE_INTERVAL_SECS * LEGACY_SSH_SERVER_ALIVE_COUNT_MAX
+                    + 8,
+            ),
+            cmd.output(),
+        )
+        .await
+        .map_err(|_| SshError::Connect("legacy ssh timed out".to_string()))?
+        .map_err(|e| SshError::Connect(e.to_string()))
     }
 }
 
@@ -297,9 +387,17 @@ async fn connect_and_auth(config: &SshHostConfig) -> Result<(client::Handle<SshH
     let resolved = resolve_target(config)?;
     let addr = format!("{}:{}", resolved.host, resolved.port);
     let ssh_config = Arc::new(client::Config::default());
-    let mut handle = client::connect(ssh_config, addr, SshHandler)
-        .await
-        .map_err(|e| SshError::Connect(e.to_string()))?;
+    let mut handle = timeout(
+        Duration::from_secs(RUSSH_CONNECT_TIMEOUT_SECS),
+        client::connect(ssh_config, addr.clone(), SshHandler),
+    )
+    .await
+    .map_err(|_| {
+        SshError::Connect(format!(
+            "russh TCP connect to {addr} timed out after {RUSSH_CONNECT_TIMEOUT_SECS}s"
+        ))
+    })?
+    .map_err(|e| SshError::Connect(e.to_string()))?;
 
     for key_path in candidate_key_paths(&resolved) {
         let expanded = shellexpand::tilde(&key_path).to_string();
@@ -440,5 +538,26 @@ mod tests {
         assert_eq!(resolved.port, 2022);
         assert_eq!(resolved.username, "alice");
         assert_eq!(resolved.key_path.as_deref(), Some("~/.ssh/id_test"));
+    }
+
+    #[test]
+    fn legacy_args_include_timeout_and_keepalive() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+        };
+        let session = SshSession { config: cfg };
+        let args = session.legacy_common_ssh_args();
+        let joined = args.join(" ");
+        assert!(joined.contains("ConnectTimeout="));
+        assert!(joined.contains("BatchMode=yes"));
+        assert!(joined.contains("ServerAliveInterval="));
+        assert!(joined.contains("ServerAliveCountMax="));
     }
 }

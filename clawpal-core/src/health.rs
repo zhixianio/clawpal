@@ -8,6 +8,11 @@ use thiserror::Error;
 use crate::instance::{Instance, InstanceType};
 use crate::openclaw::{parse_json_output, CliOutput, OpenclawCli};
 
+const HEALTH_SSH_CONNECT_TIMEOUT_SECS: u64 = 10;
+const HEALTH_SSH_SERVER_ALIVE_INTERVAL_SECS: u64 = 10;
+const HEALTH_SSH_SERVER_ALIVE_COUNT_MAX: u64 = 2;
+const HEALTH_REMOTE_COMMAND_TIMEOUT_SECS: u64 = 20;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthStatus {
@@ -81,7 +86,22 @@ fn check_remote_ssh(instance: &Instance) -> Result<HealthStatus> {
         format!("{}@{}", ssh.username, ssh.host)
     };
 
-    let mut base_args = vec!["-p".to_string(), ssh.port.to_string()];
+    let mut base_args = vec![
+        "-p".to_string(),
+        ssh.port.to_string(),
+        "-o".to_string(),
+        format!("ConnectTimeout={HEALTH_SSH_CONNECT_TIMEOUT_SECS}"),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        format!(
+            "ServerAliveInterval={HEALTH_SSH_SERVER_ALIVE_INTERVAL_SECS}"
+        ),
+        "-o".to_string(),
+        format!(
+            "ServerAliveCountMax={HEALTH_SSH_SERVER_ALIVE_COUNT_MAX}"
+        ),
+    ];
     if let Some(key_path) = ssh.key_path.clone() {
         if !key_path.trim().is_empty() {
             base_args.push("-i".to_string());
@@ -96,7 +116,7 @@ fn check_remote_ssh(instance: &Instance) -> Result<HealthStatus> {
         "openclaw agents list --json".to_string()
     };
     let mut agents_args = base_args.clone();
-    agents_args.push(agents_command);
+    agents_args.push(wrap_remote_health_command(&agents_command));
     let agents_output = run_ssh_command(&agents_args)?;
     let active_agents = parse_active_agents(&agents_output)?;
 
@@ -106,7 +126,7 @@ fn check_remote_ssh(instance: &Instance) -> Result<HealthStatus> {
         "openclaw --version".to_string()
     };
     let mut version_args = base_args;
-    version_args.push(version_command);
+    version_args.push(wrap_remote_health_command(&version_command));
     let version_output = run_ssh_command(&version_args)?;
     let version = if version_output.exit_code == 0 {
         Some(version_output.stdout.trim().to_string())
@@ -132,6 +152,17 @@ fn run_ssh_command(args: &[String]) -> Result<CliOutput> {
             .to_string(),
         exit_code: output.status.code().unwrap_or(-1),
     })
+}
+
+fn wrap_remote_health_command(command: &str) -> String {
+    let escaped = shell_escape(command);
+    format!(
+        "if command -v timeout >/dev/null 2>&1; then timeout {HEALTH_REMOTE_COMMAND_TIMEOUT_SECS}s sh -lc {escaped}; else sh -lc {escaped}; fi"
+    )
+}
+
+fn shell_escape(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn parse_active_agents(output: &CliOutput) -> Result<u32> {
