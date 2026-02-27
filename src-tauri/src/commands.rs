@@ -2306,67 +2306,19 @@ fn command_detail(output: &OpenclawCommandOutput) -> String {
     "no output".into()
 }
 
-fn normalize_issue_severity(raw: &str) -> String {
-    let value = raw.trim().to_ascii_lowercase();
-    if value.contains("error") {
-        return "error".into();
-    }
-    if value.contains("warn") {
-        return "warn".into();
-    }
-    "info".into()
-}
-
 fn parse_doctor_issues(report: &Value, source: &str) -> Vec<RescuePrimaryIssue> {
-    let mut items = Vec::new();
-    let Some(issues) = report.get("issues").and_then(Value::as_array) else {
-        return items;
-    };
-    for (index, issue) in issues.iter().enumerate() {
-        let Some(obj) = issue.as_object() else {
-            continue;
-        };
-        let id = obj
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{source}.doctor.issue.{index}"));
-        let code = obj
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or("doctor.issue")
-            .to_string();
-        let severity = normalize_issue_severity(
-            obj.get("severity")
-                .and_then(Value::as_str)
-                .unwrap_or("warn"),
-        );
-        let message = obj
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("Doctor reported an issue")
-            .to_string();
-        let auto_fixable = obj
-            .get("autoFixable")
-            .and_then(Value::as_bool)
-            .or_else(|| obj.get("auto_fixable").and_then(Value::as_bool))
-            .unwrap_or(false);
-        let fix_hint = obj
-            .get("fixHint")
-            .and_then(Value::as_str)
-            .or_else(|| obj.get("fix_hint").and_then(Value::as_str))
-            .map(str::to_string);
-        items.push(RescuePrimaryIssue {
-            id,
-            code,
-            severity,
-            message,
-            auto_fixable,
-            fix_hint,
-            source: source.to_string(),
-        });
-    }
-    items
+    clawpal_core::doctor::parse_doctor_issues(report, source)
+        .into_iter()
+        .map(|issue| RescuePrimaryIssue {
+            id: issue.id,
+            code: issue.code,
+            severity: issue.severity,
+            message: issue.message,
+            auto_fixable: issue.auto_fixable,
+            fix_hint: issue.fix_hint,
+            source: issue.source,
+        })
+        .collect()
 }
 
 fn dedupe_rescue_primary_issues(issues: &mut Vec<RescuePrimaryIssue>) {

@@ -1,6 +1,17 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoctorIssue {
+    pub id: String,
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+    pub auto_fixable: bool,
+    pub fix_hint: Option<String>,
+    pub source: String,
+}
+
 pub fn delete_json_path(value: &mut Value, dotted_path: &str) -> bool {
     let parts: Vec<&str> = dotted_path
         .split('.')
@@ -115,6 +126,69 @@ pub fn doctor_json_option_unsupported(stderr: &str, stdout: &str) -> bool {
         || details.contains("unexpected argument")
         || details.contains("no such option"))
         && details.contains("--json")
+}
+
+pub fn normalize_issue_severity(raw: &str) -> String {
+    let value = raw.trim().to_ascii_lowercase();
+    if value.contains("error") {
+        return "error".into();
+    }
+    if value.contains("warn") {
+        return "warn".into();
+    }
+    "info".into()
+}
+
+pub fn parse_doctor_issues(report: &Value, source: &str) -> Vec<DoctorIssue> {
+    let mut items = Vec::new();
+    let Some(issues) = report.get("issues").and_then(Value::as_array) else {
+        return items;
+    };
+    for (index, issue) in issues.iter().enumerate() {
+        let Some(obj) = issue.as_object() else {
+            continue;
+        };
+        let id = obj
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{source}.doctor.issue.{index}"));
+        let code = obj
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("doctor.issue")
+            .to_string();
+        let severity = normalize_issue_severity(
+            obj.get("severity")
+                .and_then(Value::as_str)
+                .unwrap_or("warn"),
+        );
+        let message = obj
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Doctor reported an issue")
+            .to_string();
+        let auto_fixable = obj
+            .get("autoFixable")
+            .and_then(Value::as_bool)
+            .or_else(|| obj.get("auto_fixable").and_then(Value::as_bool))
+            .unwrap_or(false);
+        let fix_hint = obj
+            .get("fixHint")
+            .and_then(Value::as_str)
+            .or_else(|| obj.get("fix_hint").and_then(Value::as_str))
+            .map(str::to_string);
+        items.push(DoctorIssue {
+            id,
+            code,
+            severity,
+            message,
+            auto_fixable,
+            fix_hint,
+            source: source.to_string(),
+        });
+    }
+    items
 }
 
 pub fn apply_issue_fixes(config: &mut Value, ids: &[String]) -> Result<Vec<String>, String> {
@@ -505,6 +579,35 @@ mod tests {
             "error: unknown option '--json'",
             ""
         ));
+    }
+
+    #[test]
+    fn parse_doctor_issues_reads_camel_case_fields() {
+        let report = json!({
+            "issues": [
+                {
+                    "id": "primary.test",
+                    "code": "primary.test",
+                    "severity": "warn",
+                    "message": "test issue",
+                    "autoFixable": true,
+                    "fixHint": "do thing"
+                }
+            ]
+        });
+        let issues = parse_doctor_issues(&report, "primary");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "primary.test");
+        assert_eq!(issues[0].severity, "warn");
+        assert!(issues[0].auto_fixable);
+        assert_eq!(issues[0].fix_hint.as_deref(), Some("do thing"));
+    }
+
+    #[test]
+    fn normalize_issue_severity_maps_known_levels() {
+        assert_eq!(normalize_issue_severity("ERROR"), "error");
+        assert_eq!(normalize_issue_severity("warn"), "warn");
+        assert_eq!(normalize_issue_severity("notice"), "info");
     }
 
     #[test]
