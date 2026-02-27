@@ -7851,9 +7851,11 @@ pub async fn remote_apply_config_patch(
     let raw = pool
         .sftp_read(&host_id, "~/.openclaw/openclaw.json")
         .await?;
-    let current: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse remote config: {e}"))?;
-    let current_text = serde_json::to_string_pretty(&current).map_err(|e| e.to_string())?;
+    let current = clawpal_core::doctor::parse_json_document(&raw, "remote config")
+        .map_err(|e| format!("Failed to parse remote config: {e}"))?;
+    let current_text =
+        clawpal_core::doctor::render_json_document(&current, "remote config")
+            .map_err(|e| e.to_string())?;
     let (candidate, _changes) =
         build_candidate_config_from_template(&current, &patch_template, &params)?;
     remote_write_config_with_snapshot(&pool, &host_id, &current_text, &candidate, "config-patch")
@@ -7942,17 +7944,19 @@ pub async fn remote_preview_rollback(
 ) -> Result<PreviewResult, String> {
     let snapshot_path = format!("~/.clawpal/snapshots/{snapshot_id}");
     let snapshot_text = pool.sftp_read(&host_id, &snapshot_path).await?;
-    let target: Value = serde_json::from_str(&snapshot_text)
+    let target = clawpal_core::doctor::parse_json_document(&snapshot_text, "snapshot")
         .map_err(|e| format!("Failed to parse snapshot: {e}"))?;
 
     let current_text = pool
         .sftp_read(&host_id, "~/.openclaw/openclaw.json")
         .await?;
-    let current: Value =
-        serde_json::from_str(&current_text).map_err(|e| format!("Failed to parse config: {e}"))?;
+    let current = clawpal_core::doctor::parse_json_document(&current_text, "config")
+        .map_err(|e| format!("Failed to parse config: {e}"))?;
 
-    let before = serde_json::to_string_pretty(&current).unwrap_or_else(|_| "{}".into());
-    let after = serde_json::to_string_pretty(&target).unwrap_or_else(|_| "{}".into());
+    let before = clawpal_core::doctor::render_json_document(&current, "config")
+        .unwrap_or_else(|_| "{}".into());
+    let after = clawpal_core::doctor::render_json_document(&target, "snapshot")
+        .unwrap_or_else(|_| "{}".into());
     Ok(PreviewResult {
         recipe_id: "rollback".into(),
         diff: format_diff(&current, &target),
@@ -7974,8 +7978,8 @@ pub async fn remote_rollback(
 ) -> Result<ApplyResult, String> {
     let snapshot_path = format!("~/.clawpal/snapshots/{snapshot_id}");
     let target_text = pool.sftp_read(&host_id, &snapshot_path).await?;
-    let target: Value =
-        serde_json::from_str(&target_text).map_err(|e| format!("Failed to parse snapshot: {e}"))?;
+    let target = clawpal_core::doctor::parse_json_document(&target_text, "snapshot")
+        .map_err(|e| format!("Failed to parse snapshot: {e}"))?;
 
     let current_text = pool
         .sftp_read(&host_id, "~/.openclaw/openclaw.json")
@@ -8303,7 +8307,8 @@ pub async fn remote_write_raw_config(
     content: String,
 ) -> Result<bool, String> {
     // Validate it's valid JSON
-    let next: Value = serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let next = clawpal_core::doctor::parse_json_document(&content, "config")
+        .map_err(|e| format!("Invalid JSON: {e}"))?;
     // Read current for snapshot
     let current = pool
         .sftp_read(&host_id, "~/.openclaw/openclaw.json")

@@ -102,16 +102,23 @@ pub fn select_json_value_from_str(
     dotted_path: Option<&str>,
     invalid_context: &str,
 ) -> Result<Value, String> {
-    let json: Value =
-        serde_json::from_str(raw).map_err(|e| format!("invalid {invalid_context} json: {e}"))?;
+    let json = parse_json_document(raw, invalid_context)?;
     Ok(dotted_path
         .and_then(|p| json_path_get(&json, p).cloned())
         .unwrap_or(json))
 }
 
+pub fn parse_json_document(raw: &str, invalid_context: &str) -> Result<Value, String> {
+    serde_json::from_str(raw).map_err(|e| format!("invalid {invalid_context} json: {e}"))
+}
+
 pub fn parse_json_value_arg(raw: &str, operation_name: &str) -> Result<Value, String> {
     serde_json::from_str(raw)
         .map_err(|e| format!("{operation_name} requires valid JSON value: {e}"))
+}
+
+pub fn render_json_document(value: &Value, serialize_context: &str) -> Result<String, String> {
+    serde_json::to_string_pretty(value).map_err(|e| format!("serialize {serialize_context}: {e}"))
 }
 
 pub fn delete_json_path_in_str(
@@ -120,11 +127,9 @@ pub fn delete_json_path_in_str(
     invalid_context: &str,
     serialize_context: &str,
 ) -> Result<(String, bool), String> {
-    let mut json: Value =
-        serde_json::from_str(raw).map_err(|e| format!("invalid {invalid_context} json: {e}"))?;
+    let mut json = parse_json_document(raw, invalid_context)?;
     let deleted = delete_json_path(&mut json, dotted_path);
-    let rendered =
-        serde_json::to_string_pretty(&json).map_err(|e| format!("serialize {serialize_context}: {e}"))?;
+    let rendered = render_json_document(&json, serialize_context)?;
     Ok((rendered, deleted))
 }
 
@@ -135,10 +140,9 @@ pub fn upsert_json_path_in_str(
     invalid_context: &str,
     serialize_context: &str,
 ) -> Result<String, String> {
-    let mut json: Value =
-        serde_json::from_str(raw).map_err(|e| format!("invalid {invalid_context} json: {e}"))?;
+    let mut json = parse_json_document(raw, invalid_context)?;
     upsert_json_path(&mut json, dotted_path, next_value)?;
-    serde_json::to_string_pretty(&json).map_err(|e| format!("serialize {serialize_context}: {e}"))
+    render_json_document(&json, serialize_context)
 }
 
 pub fn local_openclaw_root_from_env() -> PathBuf {
@@ -455,5 +459,17 @@ mod tests {
     fn parse_json_value_arg_returns_error_for_invalid_json() {
         let err = parse_json_value_arg("{oops", "doctor config-upsert").expect_err("must fail");
         assert!(err.contains("requires valid JSON value"));
+    }
+
+    #[test]
+    fn parse_json_document_returns_contextual_error() {
+        let err = parse_json_document("{oops", "config").expect_err("must fail");
+        assert!(err.contains("invalid config json"));
+    }
+
+    #[test]
+    fn render_json_document_pretty_prints() {
+        let text = render_json_document(&json!({"a":1}), "config").expect("render");
+        assert!(text.contains('\n'));
     }
 }
