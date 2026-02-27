@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import i18n from "../i18n";
 import { useInstance } from "./instance-context";
 import { api } from "./api";
 
@@ -157,7 +158,7 @@ export function useApi() {
           method || "unknown",
           transport,
           original,
-          typeof navigator !== "undefined" ? navigator.language : "en",
+          i18n.language || (typeof navigator !== "undefined" ? navigator.language : "en"),
         );
         if (typeof window !== "undefined" && shouldEmitAgentGuidance(instanceId, method || "unknown", original)) {
           window.dispatchEvent(new CustomEvent("clawpal:agent-guidance", {

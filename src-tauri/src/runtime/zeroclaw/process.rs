@@ -50,8 +50,8 @@ fn sanitize_instance_namespace(raw: &str) -> String {
     format!("{base}-{suffix:016x}")
 }
 
-fn doctor_sidecar_config_dir(instance_id: &str) -> Result<PathBuf, String> {
-    let bucket = sanitize_instance_namespace(instance_id);
+fn doctor_sidecar_config_dir(instance_id: &str, session_scope: &str) -> Result<PathBuf, String> {
+    let bucket = sanitize_instance_namespace(&format!("{instance_id}::{session_scope}"));
     let dir = resolve_paths()
         .clawpal_dir
         .join("zeroclaw-sidecar")
@@ -202,10 +202,14 @@ fn candidate_models_for_provider(provider: &str) -> Vec<String> {
     out
 }
 
-pub fn run_zeroclaw_message(message: &str, instance_id: &str) -> Result<String, String> {
+pub fn run_zeroclaw_message(
+    message: &str,
+    instance_id: &str,
+    session_scope: &str,
+) -> Result<String, String> {
     let cmd = resolve_zeroclaw_command_path()
         .ok_or_else(|| "zeroclaw binary not found in bundled resources".to_string())?;
-    let cfg = doctor_sidecar_config_dir(instance_id)?;
+    let cfg = doctor_sidecar_config_dir(instance_id, session_scope)?;
     let env_pairs = zeroclaw_env_pairs_from_clawpal();
     if env_pairs.is_empty() {
         return Err("No compatible API key found in ClawPal model profiles for zeroclaw.".to_string());
@@ -288,5 +292,12 @@ mod tests {
         assert_ne!(local, docker);
         assert!(!docker.contains(':'));
         assert!(!docker.contains('/'));
+    }
+
+    #[test]
+    fn instance_namespace_is_isolated_across_sessions() {
+        let a = sanitize_instance_namespace("vm1::session-a");
+        let b = sanitize_instance_namespace("vm1::session-b");
+        assert_ne!(a, b);
     }
 }

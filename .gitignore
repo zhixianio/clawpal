@@ -6,3 +6,5 @@ src-tauri/target/
 bun.lockb
 bun.lock
 bun.dlock
+.claude/
+.tmp/
