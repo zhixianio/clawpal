@@ -1495,8 +1495,8 @@ pub async fn remote_setup_agent_identity(
     let raw = pool
         .sftp_read(&host_id, "~/.openclaw/openclaw.json")
         .await?;
-    let cfg: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse config: {e}"))?;
+    let cfg = clawpal_core::doctor::parse_json_document(&raw, "config")
+        .map_err(|e| format!("Failed to parse config: {e}"))?;
 
     let agents_list = clawpal_core::doctor::json_path_get(&cfg, "agents.list")
         .and_then(Value::as_array)
@@ -7620,7 +7620,8 @@ async fn remote_write_config_with_snapshot(
     pool.sftp_write(host_id, &snapshot_path, current_text)
         .await?;
     // Write new config
-    let new_text = serde_json::to_string_pretty(next).map_err(|e| e.to_string())?;
+    let new_text =
+        clawpal_core::doctor::render_json_document(next, "remote config").map_err(|e| e.to_string())?;
     pool.sftp_write(host_id, "~/.openclaw/openclaw.json", &new_text)
         .await?;
     Ok(())
@@ -7657,12 +7658,7 @@ pub async fn remote_manage_rescue_bot(
         .await
         .ok()
         .map(|raw| clawpal_core::doctor::parse_json5_document_or_default(&raw))
-        .map(|cfg| {
-            clawpal_core::doctor::json_path_get(&cfg, "gateway.port")
-                .and_then(Value::as_u64)
-                .and_then(|value| u16::try_from(value).ok())
-                .unwrap_or_else(|| clawpal_core::doctor::resolve_gateway_port_from_config(&cfg))
-        })
+        .map(|cfg| clawpal_core::doctor::resolve_gateway_port_from_config(&cfg))
         .unwrap_or(18789);
     let (already_configured, existing_port) =
         resolve_remote_rescue_profile_state(&pool, &host_id, &profile).await?;
