@@ -73,6 +73,13 @@ pub fn json_path_get<'a>(value: &'a Value, dotted_path: &str) -> Option<&'a Valu
     Some(cursor)
 }
 
+pub fn resolve_gateway_port_from_config(value: &Value) -> u16 {
+    json_path_get(value, "gateway.port")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .unwrap_or(18789)
+}
+
 pub fn validate_doctor_relative_path(path: &str) -> Result<(), String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -320,6 +327,12 @@ mod tests {
                 .unwrap_or_default(),
             "raw"
         );
+    }
+
+    #[test]
+    fn resolve_gateway_port_from_config_uses_default_when_missing() {
+        let doc = json!({});
+        assert_eq!(resolve_gateway_port_from_config(&doc), 18789);
     }
 
     #[test]

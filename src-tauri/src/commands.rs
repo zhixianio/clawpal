@@ -1994,7 +1994,7 @@ pub async fn manage_rescue_bot(
             .to_string();
 
         let main_port = read_openclaw_config(&resolve_paths())
-            .map(|cfg| resolve_gateway_port_from_config(&cfg))
+            .map(|cfg| clawpal_core::doctor::resolve_gateway_port_from_config(&cfg))
             .unwrap_or(18789);
         let (already_configured, existing_port) = resolve_local_rescue_profile_state(&profile)?;
         let should_configure = !already_configured || action == RescueBotAction::Set;
@@ -3108,13 +3108,6 @@ async fn repair_primary_via_rescue_remote(
         before,
         after,
     })
-}
-
-fn resolve_gateway_port_from_config(cfg: &Value) -> u16 {
-    cfg.pointer("/gateway/port")
-        .and_then(Value::as_u64)
-        .and_then(|port| u16::try_from(port).ok())
-        .unwrap_or(18789)
 }
 
 fn suggest_rescue_port(main_port: u16) -> u16 {
@@ -7670,7 +7663,7 @@ pub async fn remote_manage_rescue_bot(
             clawpal_core::doctor::json_path_get(&cfg, "gateway.port")
                 .and_then(Value::as_u64)
                 .and_then(|value| u16::try_from(value).ok())
-                .unwrap_or_else(|| resolve_gateway_port_from_config(&cfg))
+                .unwrap_or_else(|| clawpal_core::doctor::resolve_gateway_port_from_config(&cfg))
         })
         .unwrap_or(18789);
     let (already_configured, existing_port) =
