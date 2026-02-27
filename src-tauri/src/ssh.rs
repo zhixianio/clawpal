@@ -271,8 +271,8 @@ fn build_login_shell_wrapper(command: &str) -> String {
 LOGIN_SHELL=\"${{SHELL:-/bin/sh}}\"; \
 [ -x \"$LOGIN_SHELL\" ] || LOGIN_SHELL=\"/bin/sh\"; \
 case \"$LOGIN_SHELL\" in \
-  */zsh) \"$LOGIN_SHELL\" -lc '[ -f ~/.zprofile ] && . ~/.zprofile >/dev/null 2>&1 || true; [ -f ~/.zshrc ] && . ~/.zshrc >/dev/null 2>&1 || true; [ -f ~/.profile ] && . ~/.profile >/dev/null 2>&1 || true; eval \"$CLAWPAL_LOGIN_CMD\"' ;; \
-  */bash) \"$LOGIN_SHELL\" -lc '[ -f ~/.bash_profile ] && . ~/.bash_profile >/dev/null 2>&1 || true; [ -f ~/.bash_login ] && . ~/.bash_login >/dev/null 2>&1 || true; [ -f ~/.bashrc ] && . ~/.bashrc >/dev/null 2>&1 || true; [ -f ~/.profile ] && . ~/.profile >/dev/null 2>&1 || true; eval \"$CLAWPAL_LOGIN_CMD\"' ;; \
+  */zsh) \"$LOGIN_SHELL\" -ilc 'eval \"$CLAWPAL_LOGIN_CMD\"' ;; \
+  */bash) \"$LOGIN_SHELL\" -ilc 'eval \"$CLAWPAL_LOGIN_CMD\"' ;; \
   *) \"$LOGIN_SHELL\" -lc '[ -f ~/.profile ] && . ~/.profile >/dev/null 2>&1 || true; eval \"$CLAWPAL_LOGIN_CMD\"' ;; \
 esac",
         cmd = shell_quote(command)
@@ -299,11 +299,8 @@ mod tests {
     #[test]
     fn login_wrapper_sources_common_profile_files() {
         let wrapped = build_login_shell_wrapper("openclaw --version");
-        assert!(wrapped.contains("[ -f ~/.zprofile ]"));
-        assert!(wrapped.contains("[ -f ~/.zshrc ]"));
-        assert!(wrapped.contains("[ -f ~/.bash_profile ]"));
-        assert!(wrapped.contains("[ -f ~/.bash_login ]"));
-        assert!(wrapped.contains("[ -f ~/.bashrc ]"));
+        assert!(wrapped.contains("*/zsh) \"$LOGIN_SHELL\" -ilc"));
+        assert!(wrapped.contains("*/bash) \"$LOGIN_SHELL\" -ilc"));
         assert!(wrapped.contains("[ -f ~/.profile ]"));
     }
 }
