@@ -228,6 +228,14 @@ pub fn remote_openclaw_version_probe_script() -> &'static str {
     "openclaw --version 2>/dev/null || echo unknown"
 }
 
+pub fn openclaw_which_probe_script() -> &'static str {
+    "command -v openclaw 2>/dev/null || true"
+}
+
+pub fn shell_path_probe_script() -> &'static str {
+    "printf '%s' \"$PATH\""
+}
+
 pub fn remote_openclaw_gateway_status_script() -> &'static str {
     "openclaw gateway status 2>&1"
 }
@@ -383,6 +391,8 @@ mod tests {
     #[test]
     fn remote_probe_scripts_cover_status_and_platform() {
         assert!(remote_openclaw_version_probe_script().contains("openclaw --version"));
+        assert!(openclaw_which_probe_script().contains("command -v openclaw"));
+        assert!(shell_path_probe_script().contains("printf '%s'"));
         assert!(remote_openclaw_gateway_status_script().contains("gateway status"));
         assert!(remote_openclaw_gateway_process_probe_script().contains("pgrep -f"));
         assert_eq!(remote_uname_s_script(), "uname -s");

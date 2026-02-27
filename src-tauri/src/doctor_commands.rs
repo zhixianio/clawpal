@@ -388,15 +388,15 @@ fn target_is_remote_instance(target: &str) -> bool {
 async fn probe_openclaw_on_target(pool: &SshConnectionPool, target: &str) -> Result<Value, String> {
     if target_is_remote_instance(target) {
         let which = pool
-            .exec_login(target, "command -v openclaw 2>/dev/null || true")
+            .exec_login(target, clawpal_core::doctor::openclaw_which_probe_script())
             .await
             .map_err(|e| format!("probe which failed: {e}"))?;
         let version = pool
-            .exec_login(target, "openclaw --version 2>/dev/null || true")
+            .exec_login(target, clawpal_core::doctor::remote_openclaw_version_probe_script())
             .await
             .map_err(|e| format!("probe version failed: {e}"))?;
         let path_env = pool
-            .exec_login(target, "printf '%s' \"$PATH\"")
+            .exec_login(target, clawpal_core::doctor::shell_path_probe_script())
             .await
             .map_err(|e| format!("probe PATH failed: {e}"))?;
         let located = which.stdout.trim().to_string();
@@ -412,7 +412,7 @@ async fn probe_openclaw_on_target(pool: &SshConnectionPool, target: &str) -> Res
 
     let which = std::process::Command::new("sh")
         .arg("-lc")
-        .arg("command -v openclaw 2>/dev/null || true")
+        .arg(clawpal_core::doctor::openclaw_which_probe_script())
         .output()
         .map_err(|e| format!("probe which failed: {e}"))?;
     let version = clawpal_core::openclaw::OpenclawCli::new()

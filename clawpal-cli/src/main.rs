@@ -581,7 +581,7 @@ async fn doctor_probe_openclaw(target: DoctorTarget) -> Result<serde_json::Value
                 .map_err(|e| format!("failed to run openclaw --version: {e}"))?;
             let version = String::from_utf8_lossy(&version_out.stdout).trim().to_string();
             let path_out = Command::new("bash")
-                .args(["-lc", "command -v openclaw 2>/dev/null || true"])
+                .args(["-lc", clawpal_core::doctor::openclaw_which_probe_script()])
                 .output()
                 .map_err(|e| format!("failed to probe openclaw path: {e}"))?;
             let openclaw_path = String::from_utf8_lossy(&path_out.stdout).trim().to_string();
@@ -596,21 +596,30 @@ async fn doctor_probe_openclaw(target: DoctorTarget) -> Result<serde_json::Value
         DoctorTarget::Remote { id, host } => {
             let session = SshSession::connect(&host).await.map_err(|e| e.to_string())?;
             let path = session
-                .exec("sh -lc 'command -v openclaw 2>/dev/null || true'")
+                .exec(&format!(
+                    "sh -lc {}",
+                    sh_quote(clawpal_core::doctor::openclaw_which_probe_script())
+                ))
                 .await
                 .map_err(|e| e.to_string())?
                 .stdout
                 .trim()
                 .to_string();
             let version = session
-                .exec("sh -lc 'openclaw --version 2>/dev/null || true'")
+                .exec(&format!(
+                    "sh -lc {}",
+                    sh_quote(clawpal_core::doctor::remote_openclaw_version_probe_script())
+                ))
                 .await
                 .map_err(|e| e.to_string())?
                 .stdout
                 .trim()
                 .to_string();
             let env_path = session
-                .exec("sh -lc 'printf %s \"$PATH\"'")
+                .exec(&format!(
+                    "sh -lc {}",
+                    sh_quote(clawpal_core::doctor::shell_path_probe_script())
+                ))
                 .await
                 .map_err(|e| e.to_string())?
                 .stdout;
