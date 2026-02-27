@@ -224,6 +224,26 @@ command -v openclaw 2>/dev/null || true"
     )
 }
 
+pub fn remote_openclaw_version_probe_script() -> &'static str {
+    "openclaw --version 2>/dev/null || echo unknown"
+}
+
+pub fn remote_openclaw_gateway_status_script() -> &'static str {
+    "openclaw gateway status 2>&1"
+}
+
+pub fn remote_openclaw_gateway_process_probe_script() -> &'static str {
+    "pgrep -f '[o]penclaw-gateway' >/dev/null 2>&1"
+}
+
+pub fn remote_uname_s_script() -> &'static str {
+    "uname -s"
+}
+
+pub fn remote_uname_m_script() -> &'static str {
+    "uname -m"
+}
+
 pub fn doctor_domain_remote_root(base: &str, domain: &str) -> Result<String, String> {
     let base = base.trim().trim_end_matches('/');
     if base.is_empty() {
@@ -358,6 +378,15 @@ mod tests {
         let patch = remote_openclaw_fix_patch_script("/opt/homebrew/bin");
         assert!(patch.contains("export PATH="));
         assert!(patch.contains("command -v openclaw"));
+    }
+
+    #[test]
+    fn remote_probe_scripts_cover_status_and_platform() {
+        assert!(remote_openclaw_version_probe_script().contains("openclaw --version"));
+        assert!(remote_openclaw_gateway_status_script().contains("gateway status"));
+        assert!(remote_openclaw_gateway_process_probe_script().contains("pgrep -f"));
+        assert_eq!(remote_uname_s_script(), "uname -s");
+        assert_eq!(remote_uname_m_script(), "uname -m");
     }
 
     #[test]

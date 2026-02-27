@@ -268,7 +268,7 @@ pub async fn collect_doctor_context_remote(
 ) -> Result<String, String> {
     // Collect openclaw version
     let version_result = pool
-        .exec_login(&host_id, "openclaw --version 2>/dev/null || echo unknown")
+        .exec_login(&host_id, clawpal_core::doctor::remote_openclaw_version_probe_script())
         .await?;
     let version = version_result.stdout.trim().to_string();
 
@@ -283,14 +283,20 @@ pub async fn collect_doctor_context_remote(
     // Use `openclaw gateway status` — always returns useful text even when gateway is stopped.
     // `openclaw health --json` requires a running gateway + auth token and returns empty otherwise.
     let status_result = pool
-        .exec_login(&host_id, "openclaw gateway status 2>&1")
+        .exec_login(
+            &host_id,
+            clawpal_core::doctor::remote_openclaw_gateway_status_script(),
+        )
         .await?;
     let gateway_status = status_result.stdout.trim().to_string();
 
     // Check if gateway process is running (reliable even when health RPC fails)
     // Bracket trick: [o]penclaw-gateway prevents pgrep from matching its own sh -c process
     let pgrep_result = pool
-        .exec(&host_id, "pgrep -f '[o]penclaw-gateway' >/dev/null 2>&1")
+        .exec(
+            &host_id,
+            clawpal_core::doctor::remote_openclaw_gateway_process_probe_script(),
+        )
         .await;
     let gateway_running = matches!(pgrep_result, Ok(r) if r.exit_code == 0);
 
@@ -304,8 +310,12 @@ pub async fn collect_doctor_context_remote(
     let error_log = error_log_result.stdout;
 
     // System info
-    let platform_result = pool.exec(&host_id, "uname -s").await?;
-    let arch_result = pool.exec(&host_id, "uname -m").await?;
+    let platform_result = pool
+        .exec(&host_id, clawpal_core::doctor::remote_uname_s_script())
+        .await?;
+    let arch_result = pool
+        .exec(&host_id, clawpal_core::doctor::remote_uname_m_script())
+        .await?;
 
     let context = json!({
         "openclawVersion": version,
