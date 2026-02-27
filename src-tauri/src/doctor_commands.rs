@@ -547,25 +547,7 @@ async fn doctor_domain_remote_root(
         .stdout
         .trim()
         .to_string();
-    match domain {
-        "config" => Ok(base),
-        "sessions" => Ok(format!("{base}/agents")),
-        "logs" => Ok(format!("{base}/logs")),
-        "state" => Ok(base),
-        _ => Err(format!("unsupported doctor file domain: {domain}")),
-    }
-}
-
-fn relpath_from_local_abs(root: &std::path::Path, abs: &std::path::Path) -> Option<String> {
-    abs.strip_prefix(root)
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-}
-
-fn relpath_from_remote_abs(root: &str, abs: &str) -> Option<String> {
-    let root = root.trim_end_matches('/');
-    let prefix = format!("{root}/");
-    abs.strip_prefix(&prefix).map(str::to_string)
+    clawpal_core::doctor::doctor_domain_remote_root(&base, domain)
 }
 
 async fn doctor_file_read(
@@ -581,7 +563,7 @@ async fn doctor_file_read(
             None => match domain {
                 "sessions" => {
                     let abs = resolve_remote_sessions_path(pool, target).await?;
-                    relpath_from_remote_abs(&root, &abs).ok_or_else(|| {
+                    clawpal_core::doctor::relpath_from_remote_abs(&root, &abs).ok_or_else(|| {
                         format!("failed to resolve sessions path under domain root: {root}")
                     })?
                 }
@@ -611,7 +593,7 @@ async fn doctor_file_read(
         None => match domain {
             "sessions" => {
                 let abs = clawpal_core::doctor::resolve_local_sessions_path(&openclaw_root);
-                relpath_from_local_abs(&root, &abs).ok_or_else(|| {
+                clawpal_core::doctor::relpath_from_local_abs(&root, &abs).ok_or_else(|| {
                     format!(
                         "failed to resolve sessions path under domain root: {}",
                         root.display()
@@ -654,7 +636,7 @@ async fn doctor_file_write(
             None => match domain {
                 "sessions" => {
                     let abs = resolve_remote_sessions_path(pool, target).await?;
-                    relpath_from_remote_abs(&root, &abs).ok_or_else(|| {
+                    clawpal_core::doctor::relpath_from_remote_abs(&root, &abs).ok_or_else(|| {
                         format!("failed to resolve sessions path under domain root: {root}")
                     })?
                 }
@@ -713,7 +695,7 @@ async fn doctor_file_write(
         None => match domain {
             "sessions" => {
                 let abs = clawpal_core::doctor::resolve_local_sessions_path(&openclaw_root);
-                relpath_from_local_abs(&root, &abs).ok_or_else(|| {
+                clawpal_core::doctor::relpath_from_local_abs(&root, &abs).ok_or_else(|| {
                     format!(
                         "failed to resolve sessions path under domain root: {}",
                         root.display()

@@ -135,6 +135,32 @@ pub fn doctor_domain_default_relpath(domain: &str) -> Option<&'static str> {
     }
 }
 
+pub fn doctor_domain_remote_root(base: &str, domain: &str) -> Result<String, String> {
+    let base = base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err("failed to resolve remote openclaw root".to_string());
+    }
+    match domain {
+        "config" => Ok(base.to_string()),
+        "sessions" => Ok(format!("{base}/agents")),
+        "logs" => Ok(format!("{base}/logs")),
+        "state" => Ok(base.to_string()),
+        _ => Err(format!("unsupported doctor file domain: {domain}")),
+    }
+}
+
+pub fn relpath_from_local_abs(root: &Path, abs: &Path) -> Option<String> {
+    abs.strip_prefix(root)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+pub fn relpath_from_remote_abs(root: &str, abs: &str) -> Option<String> {
+    let root = root.trim_end_matches('/');
+    let prefix = format!("{root}/");
+    abs.strip_prefix(&prefix).map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +223,17 @@ mod tests {
         let root = PathBuf::from("/tmp/openclaw");
         let sessions = doctor_domain_local_root(&root, "sessions").expect("sessions root");
         assert_eq!(sessions, PathBuf::from("/tmp/openclaw/agents"));
+    }
+
+    #[test]
+    fn doctor_domain_remote_root_maps_logs_domain() {
+        let logs = doctor_domain_remote_root("/home/a/.openclaw", "logs").expect("logs root");
+        assert_eq!(logs, "/home/a/.openclaw/logs");
+    }
+
+    #[test]
+    fn relpath_from_remote_abs_extracts_relative_path() {
+        let rel = relpath_from_remote_abs("/a/b", "/a/b/c/d").expect("relpath");
+        assert_eq!(rel, "c/d");
     }
 }
