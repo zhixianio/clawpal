@@ -18,18 +18,18 @@ pub async fn run_step(
                 .await
                 .map_err(|e| RunnerFailure {
                     error_code: classify_error_code(&e),
-                    summary: "remote ssh precheck failed".to_string(),
+                    summary: "install.ssh.precheck.failed".to_string(),
                     details: e,
                     commands: vec!["openclaw check on remote".to_string()],
                 })?;
             let openclaw_present = check.exit_code == 0;
             let details = if openclaw_present {
-                "OpenClaw detected on remote host".to_string()
+                "install.ssh.precheck.detailsFound".to_string()
             } else {
-                "OpenClaw not found on remote host; install step will run installer".to_string()
+                "install.ssh.precheck.detailsNotFound".to_string()
             };
             Ok(RunnerOutput {
-                summary: "remote ssh precheck completed".to_string(),
+                summary: "install.ssh.precheck.summary".to_string(),
                 details,
                 commands: vec!["ssh remote command -v openclaw".to_string()],
                 artifacts: HashMap::from([("openclaw_present".to_string(), Value::Bool(openclaw_present))]),
@@ -42,8 +42,8 @@ pub async fn run_step(
                 .unwrap_or(false);
             if already_present {
                 return Ok(RunnerOutput {
-                    summary: "remote ssh install skipped".to_string(),
-                    details: "OpenClaw already present from precheck".to_string(),
+                    summary: "install.ssh.install.skipped".to_string(),
+                    details: "install.ssh.install.skippedDetails".to_string(),
                     commands: vec!["openclaw --version".to_string()],
                     artifacts: HashMap::from([("openclaw_present".to_string(), Value::Bool(true))]),
                 });
@@ -58,7 +58,7 @@ pub async fn run_step(
             if result.exit_code != 0 {
                 return Err(RunnerFailure {
                     error_code: classify_error_code(&result.stderr),
-                    summary: "remote ssh install failed".to_string(),
+                    summary: "install.ssh.install.failed".to_string(),
                     details: if result.stderr.is_empty() {
                         result.stdout
                     } else {
@@ -68,7 +68,7 @@ pub async fn run_step(
                 });
             }
             Ok(RunnerOutput {
-                summary: "remote ssh install completed".to_string(),
+                summary: "install.ssh.install.summary".to_string(),
                 details: result.stdout,
                 commands: vec![script.to_string()],
                 artifacts: HashMap::from([("openclaw_present".to_string(), Value::Bool(true))]),
@@ -78,14 +78,14 @@ pub async fn run_step(
             let init_cmd = "mkdir -p ~/.openclaw && [ -f ~/.openclaw/openclaw.json ] || printf '{}' > ~/.openclaw/openclaw.json";
             let result = pool.exec_login(host_id, init_cmd).await.map_err(|e| RunnerFailure {
                 error_code: classify_error_code(&e),
-                summary: "remote ssh init failed".to_string(),
+                summary: "install.ssh.init.failed".to_string(),
                 details: e,
                 commands: vec![init_cmd.to_string()],
             })?;
             if result.exit_code != 0 {
                 return Err(RunnerFailure {
                     error_code: classify_error_code(&result.stderr),
-                    summary: "remote ssh init failed".to_string(),
+                    summary: "install.ssh.init.failed".to_string(),
                     details: if result.stderr.is_empty() {
                         result.stdout
                     } else {
@@ -95,8 +95,8 @@ pub async fn run_step(
                 });
             }
             Ok(RunnerOutput {
-                summary: "remote ssh init completed".to_string(),
-                details: "Initialized ~/.openclaw on remote host".to_string(),
+                summary: "install.ssh.init.summary".to_string(),
+                details: "install.ssh.init.details".to_string(),
                 commands: vec![init_cmd.to_string()],
                 artifacts: HashMap::new(),
             })
@@ -111,7 +111,7 @@ pub async fn run_step(
             if version.exit_code != 0 {
                 return Err(RunnerFailure {
                     error_code: classify_error_code(&version.stderr),
-                    summary: "remote ssh verify failed".to_string(),
+                    summary: "install.ssh.verify.failed".to_string(),
                     details: if version.stderr.is_empty() {
                         version.stdout
                     } else {
@@ -121,7 +121,7 @@ pub async fn run_step(
                 });
             }
             Ok(RunnerOutput {
-                summary: "remote ssh verify completed".to_string(),
+                summary: "install.ssh.verify.summary".to_string(),
                 details: version.stdout,
                 commands: vec!["openclaw --version".to_string()],
                 artifacts: HashMap::new(),

@@ -69,7 +69,7 @@ export function useDoctorAgent() {
   const [pendingInvokes, setPendingInvokes] = useState<Map<string, DoctorInvoke>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [target, setTarget] = useState("local");
+  const [target, setTargetState] = useState("local");
   const [approvedPatterns, setApprovedPatterns] = useState<Set<string>>(new Set());
   const [fullAuto, setFullAuto] = useState(false);
 
@@ -100,6 +100,12 @@ export function useDoctorAgent() {
   const fullAutoRef = useRef(fullAuto);
   useEffect(() => { fullAutoRef.current = fullAuto; }, [fullAuto]);
   const autoApproveRef = useRef<(invokeId: string) => Promise<void>>(null!);
+
+  const setTarget = useCallback((next: string) => {
+    const resolved = (next || "local").trim() || "local";
+    targetRef.current = resolved;
+    setTargetState(resolved);
+  }, []);
 
 
   useEffect(() => {
@@ -336,8 +342,11 @@ export function useDoctorAgent() {
       domain: "doctor" | "install" = "doctor",
     ) => {
     agentIdRef.current = agentId;
-    targetRef.current = target;
-    instanceScopeRef.current = instanceScope ?? target;
+    const scope = (instanceScope ?? targetRef.current ?? "local").trim() || "local";
+    const executionTarget = instanceTransport === "remote_ssh" ? scope : "local";
+    targetRef.current = executionTarget;
+    instanceScopeRef.current = scope;
+    setTargetState(executionTarget);
     domainRef.current = domain;
     setLoading(true);
     setMessages([]);
@@ -375,7 +384,7 @@ export function useDoctorAgent() {
       setError(`Start diagnosis failed: ${err}`);
       setLoading(false);
     }
-  }, [target]);
+  }, []);
 
   const sendMessage = useCallback(async (message: string) => {
     setLoading(true);

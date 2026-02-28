@@ -134,6 +134,17 @@ const PRESET_TAGS = [
   { key: "digitalocean", labelKey: "installChat.tag.digitalocean" },
 ];
 
+function sanitizeSshIdSegment(raw: string): string {
+  const lowered = raw.toLowerCase().trim();
+  const replaced = lowered.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return replaced || "remote";
+}
+
+function buildDefaultSshHostId(host: SshHost): string {
+  const base = host.host || host.label || "remote";
+  return `ssh:${sanitizeSshIdSegment(base)}`;
+}
+
 function buildInstallPrompt(userIntent: string): string {
   const language = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
   return renderPromptTemplate(installHubFallbackPromptTemplate(), {
@@ -455,7 +466,20 @@ export function InstallHub({
     setConnectSubmitting(true);
     setRunError(null);
     try {
-      const saved = await api.upsertSshHost(host);
+      const existingHosts = await api.listSshHosts().catch(() => [] as SshHost[]);
+      const requestedId = host.id?.trim();
+      const idBase = requestedId || buildDefaultSshHostId(host);
+      const existingIds = new Set(existingHosts.map((item) => item.id));
+      let resolvedId = idBase;
+      let suffix = 2;
+      while (existingIds.has(resolvedId) && resolvedId !== requestedId) {
+        resolvedId = `${idBase}-${suffix}`;
+        suffix += 1;
+      }
+      const saved = await api.upsertSshHost({
+        ...host,
+        id: resolvedId,
+      });
       await api.sshConnect(saved.id);
       try {
         await api.remoteGetInstanceStatus(saved.id);

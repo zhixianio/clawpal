@@ -16,14 +16,22 @@ pub enum ConnectError {
 
 pub type Result<T> = std::result::Result<T, ConnectError>;
 
-pub async fn connect_docker(home: &str, label: Option<&str>) -> Result<Instance> {
+pub async fn connect_docker(
+    home: &str,
+    label: Option<&str>,
+    instance_id: Option<&str>,
+) -> Result<Instance> {
     let expanded = shellexpand::tilde(home).to_string();
     if !std::path::Path::new(&expanded).exists() {
         return Err(ConnectError::DockerHomeMissing(expanded));
     }
 
+    let id = match instance_id {
+        Some(explicit) if !explicit.is_empty() => explicit.to_string(),
+        _ => format!("docker:{}", slug_from_home(&expanded)),
+    };
     let instance = Instance {
-        id: format!("docker:{}", slug_from_home(&expanded)),
+        id,
         instance_type: InstanceType::Docker,
         label: label.unwrap_or("Docker").to_string(),
         openclaw_home: Some(expanded),
@@ -116,6 +124,7 @@ mod tests {
         let instance = connect_docker(
             docker_home.to_str().unwrap_or_default(),
             Some("Docker Test"),
+            None,
         )
         .await
         .expect("connect docker");

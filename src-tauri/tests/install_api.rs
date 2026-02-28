@@ -182,6 +182,9 @@ fn docker_verify_command_sets_safe_env_defaults() {
     let command = docker_verify_compose_command_for_test("/tmp/openclaw");
     assert!(command.contains("OPENCLAW_CONFIG_DIR="));
     assert!(command.contains("OPENCLAW_WORKSPACE_DIR="));
+    assert!(command.contains("COMPOSE_PROJECT_NAME="));
+    assert!(command.contains("OPENCLAW_IMAGE="));
+    assert!(command.contains("OPENCLAW_GATEWAY_PORT="));
     assert!(command.contains(".openclaw"));
     assert!(command.contains("docker compose config"));
 }

@@ -365,7 +365,7 @@ fn run_connect_command(command: ConnectCommands) -> Result<serde_json::Value, St
         .map_err(|e| e.to_string())?;
     match command {
         ConnectCommands::Docker { home, label } => runtime
-            .block_on(connect_docker(&home, label.as_deref()))
+            .block_on(connect_docker(&home, label.as_deref(), None))
             .map_err(|e| e.to_string())
             .map(|instance| json!(instance)),
         ConnectCommands::Ssh {

@@ -63,7 +63,7 @@ async fn connect_docker_registers_instance() {
     let home_dir = temp_dir("clawpal-core-connect-home");
     std::env::set_var("CLAWPAL_DATA_DIR", &data_dir);
 
-    let instance = connect_docker(home_dir.to_string_lossy().as_ref(), Some("Connect Docker"))
+    let instance = connect_docker(home_dir.to_string_lossy().as_ref(), Some("Connect Docker"), None)
         .await
         .expect("connect docker should succeed");
 

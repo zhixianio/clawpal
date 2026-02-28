@@ -204,8 +204,6 @@ export function Doctor({
         : isDocker
           ? instanceId
           : "local";
-      const executionTarget = isRemote ? instanceId : "local";
-      doctor.setTarget(executionTarget);
 
       if (isRemote) {
         const status = await ua.sshStatus(instanceId);

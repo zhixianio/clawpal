@@ -920,41 +920,85 @@ export function App() {
   // Handle install completion — register docker instance and open tab
   const handleInstallReady = useCallback(async (session: InstallSession) => {
     const artifacts = session.artifacts || {};
+    const readArtifactString = (keys: string[]): string => {
+      for (const key of keys) {
+        const value = artifacts[key];
+        if (typeof value === "string" && value.trim()) {
+          return value.trim();
+        }
+      }
+      return "";
+    };
     if (session.method === "docker") {
-      const artifactId = typeof artifacts.docker_instance_id === "string"
-        ? artifacts.docker_instance_id.trim()
-        : "";
+      const artifactId = readArtifactString(["docker_instance_id", "dockerInstanceId"]);
       const id = artifactId || DEFAULT_DOCKER_INSTANCE_ID;
       const fallback = deriveDockerPaths(id);
-      const openclawHome = typeof artifacts.docker_openclaw_home === "string"
-        ? artifacts.docker_openclaw_home
-        : fallback.openclawHome;
-      const clawpalDataDir = typeof artifacts.docker_clawpal_data_dir === "string"
-        ? artifacts.docker_clawpal_data_dir
-        : `${openclawHome}/data`;
-      const label = typeof artifacts.docker_instance_label === "string"
-        ? artifacts.docker_instance_label
-        : deriveDockerLabel(id);
+      const openclawHome = readArtifactString(["docker_openclaw_home", "dockerOpenclawHome"]) || fallback.openclawHome;
+      const clawpalDataDir = readArtifactString(["docker_clawpal_data_dir", "dockerClawpalDataDir"]) || `${openclawHome}/data`;
+      const label = readArtifactString(["docker_instance_label", "dockerInstanceLabel"]) || deriveDockerLabel(id);
       const registered = await upsertDockerInstance({ id, label, openclawHome, clawpalDataDir });
       openTab(registered.id);
     } else if (session.method === "remote_ssh") {
-      const hostId = typeof artifacts.ssh_host_id === "string"
-        ? artifacts.ssh_host_id.trim()
-        : "";
+      let hostId = readArtifactString(["ssh_host_id", "sshHostId", "host_id", "hostId"]);
+      const hostLabel = readArtifactString(["ssh_host_label", "sshHostLabel", "host_label", "hostLabel"]);
+      const hostAddr = readArtifactString(["ssh_host", "sshHost", "host"]);
+      if (!hostId) {
+        const knownHosts = await api.listSshHosts().catch(() => [] as SshHost[]);
+        if (hostLabel) {
+          const byLabel = knownHosts.find((item) => item.label === hostLabel);
+          if (byLabel) hostId = byLabel.id;
+        }
+        if (!hostId && hostAddr) {
+          const byHost = knownHosts.find((item) => item.host === hostAddr);
+          if (byHost) hostId = byHost.id;
+        }
+      }
       if (hostId) {
-        // Register the SSH host as an instance in the registry
-        await api.connectSshInstance(hostId).catch(() => {});
-        refreshHosts();
-        refreshRegisteredInstances();
-        openTab(hostId);
+        const activateRemoteInstance = (instanceId: string, status: "connected" | "error") => {
+          setOpenTabIds((prev) => prev.includes(instanceId) ? prev : [...prev, instanceId]);
+          setActiveInstance(instanceId);
+          setConnectionStatus((prev) => ({ ...prev, [instanceId]: status }));
+          setInStart(false);
+          navigateRoute("home");
+        };
+        try {
+          // Register the SSH host as an instance and update state
+          // synchronously so the tab bar can render it immediately.
+          const instance = await api.connectSshInstance(hostId);
+          setRegisteredInstances((prev) => {
+            const filtered = prev.filter((r) => r.id !== hostId && r.id !== instance.id);
+            return [...filtered, instance];
+          });
+          refreshHosts();
+          refreshRegisteredInstances();
+          activateRemoteInstance(instance.id, "connected");
+          scheduleEnsureAccessForInstance(instance.id, 600);
+        } catch (err) {
+          console.warn("connectSshInstance failed during install-ready:", err);
+          // Never fall back to local tab here: keep the user in the intended
+          // remote context so they can continue fixing connection issues.
+          refreshHosts();
+          refreshRegisteredInstances();
+          activateRemoteInstance(hostId, "error");
+          showToast(friendlySshError(String(err), t), "error");
+        }
       } else {
-        openTab("local");
+        showToast("SSH host id missing after submit. Please reopen Connect and retry.", "error");
       }
     } else {
       // For local/SSH installs, just switch to the instance
       openTab("local");
     }
-  }, [upsertDockerInstance, openTab, refreshHosts, refreshRegisteredInstances]);
+  }, [
+    upsertDockerInstance,
+    openTab,
+    refreshHosts,
+    refreshRegisteredInstances,
+    navigateRoute,
+    scheduleEnsureAccessForInstance,
+    showToast,
+    t,
+  ]);
 
   const navItems: { key: string; active: boolean; icon: React.ReactNode; label: string; badge?: React.ReactNode; onClick: () => void }[] = inStart
     ? [
@@ -1133,15 +1177,12 @@ export function App() {
               onRenameDocker={renameDockerInstance}
               onDeleteDocker={deleteDockerInstance}
               onDeleteSsh={(hostId) => {
-                Promise.all([
-                  withGuidance(
-                    () => api.deleteSshHost(hostId),
-                    "deleteSshHost",
-                    hostId,
-                    "remote_ssh",
-                  ),
-                  api.deleteRegisteredInstance(hostId).catch(() => {}),
-                ]).then(() => {
+                withGuidance(
+                  () => api.deleteSshHost(hostId),
+                  "deleteSshHost",
+                  hostId,
+                  "remote_ssh",
+                ).then(() => {
                   closeTab(hostId);
                   refreshHosts();
                   refreshRegisteredInstances();
@@ -1298,6 +1339,11 @@ export function App() {
                   rawError: context || agentGuidance.rawError,
                 },
               }));
+              // Ensure the correct instance tab is active so Doctor
+              // runs commands against the right target.
+              const gid = agentGuidance.instanceId;
+              setOpenTabIds((prev) => prev.includes(gid) ? prev : [...prev, gid]);
+              setActiveInstance(gid);
               setInStart(false);
               navigateRoute("doctor");
             }}
@@ -1319,6 +1365,9 @@ export function App() {
                       rawError: sa.context || agentGuidance.rawError,
                     },
                   }));
+                  const gid = agentGuidance.instanceId;
+                  setOpenTabIds((prev) => prev.includes(gid) ? prev : [...prev, gid]);
+                  setActiveInstance(gid);
                   setInStart(false);
                   navigateRoute("doctor");
                 }

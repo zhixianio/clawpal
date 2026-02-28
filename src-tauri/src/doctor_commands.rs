@@ -1443,7 +1443,7 @@ async fn run_clawpal_tool(
                 .get("label")
                 .and_then(|v| v.as_ref())
                 .map(String::as_str);
-            let instance = clawpal_core::connect::connect_docker(&home, label)
+            let instance = clawpal_core::connect::connect_docker(&home, label, None)
                 .await
                 .map_err(|e| e.to_string())?;
             tool_stdout_json(json!(instance))

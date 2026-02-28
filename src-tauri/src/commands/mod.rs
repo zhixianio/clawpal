@@ -5168,6 +5168,11 @@ fn migrate_legacy_ssh_file(
         upsert_registry_instance(registry, instance)?;
         count += 1;
     }
+    // Remove legacy file after successful migration so it doesn't
+    // re-add deleted hosts on subsequent page loads.
+    if count > 0 {
+        let _ = fs::remove_file(&legacy_path);
+    }
     Ok(count)
 }
 

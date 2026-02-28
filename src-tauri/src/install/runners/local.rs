@@ -24,7 +24,7 @@ fn detect_openclaw() -> Result<(bool, String), RunnerFailure> {
             } else {
                 Err(RunnerFailure {
                     error_code: classify_error_code(&e.to_string()),
-                    summary: "local precheck failed".to_string(),
+                    summary: "install.local.precheck.failed".to_string(),
                     details: e.to_string(),
                     commands: vec![command_line],
                 })
@@ -50,12 +50,12 @@ pub fn run_step(
                 Value::Bool(openclaw_present),
             );
             let details = if openclaw_present {
-                "OpenClaw detected on local machine".to_string()
+                "install.local.precheck.detailsFound".to_string()
             } else {
-                "OpenClaw not found locally; install step will run installer".to_string()
+                "install.local.precheck.detailsNotFound".to_string()
             };
             Ok(RunnerOutput {
-                summary: "local precheck completed".to_string(),
+                summary: "install.local.precheck.summary".to_string(),
                 details,
                 commands: vec![command_line],
                 artifacts: next_artifacts,
@@ -65,8 +65,8 @@ pub fn run_step(
             let already_present = bool_artifact(artifacts, "openclaw_present");
             if already_present {
                 return Ok(RunnerOutput {
-                    summary: "local install skipped".to_string(),
-                    details: "OpenClaw already present from precheck".to_string(),
+                    summary: "install.local.install.skipped".to_string(),
+                    details: "install.local.install.skippedDetails".to_string(),
                     commands: vec![format!(
                         "{} --version",
                         clawpal_core::openclaw::resolve_openclaw_bin()
@@ -78,7 +78,7 @@ pub fn run_step(
             let script = "mkdir -p ~/.clawpal/install/cache && INSTALLER=~/.clawpal/install/cache/openclaw-install.sh && ( [ -s \"$INSTALLER\" ] || curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh -o \"$INSTALLER\" ) && bash \"$INSTALLER\" --no-prompt --no-onboard";
             let install = run_command("bash", &["-ilc", script])?;
             Ok(RunnerOutput {
-                summary: "local install completed".to_string(),
+                summary: "install.local.install.summary".to_string(),
                 details: if install.stderr.is_empty() {
                     install.stdout
                 } else {
@@ -92,22 +92,22 @@ pub fn run_step(
             let paths = resolve_paths();
             ensure_dirs(&paths).map_err(|e| RunnerFailure {
                 error_code: classify_error_code(&e),
-                summary: "local init failed".to_string(),
+                summary: "install.local.init.failed".to_string(),
                 details: e,
                 commands: vec![format!("mkdir -p {}", paths.base_dir.display())],
             })?;
             if !paths.config_path.exists() {
                 write_text(&paths.config_path, DEFAULT_CONFIG).map_err(|e| RunnerFailure {
                     error_code: classify_error_code(&e),
-                    summary: "local init failed".to_string(),
+                    summary: "install.local.init.failed".to_string(),
                     details: e,
                     commands: vec![format!("write {}", paths.config_path.display())],
                 })?;
             }
             Ok(RunnerOutput {
-                summary: "local init completed".to_string(),
+                summary: "install.local.init.summary".to_string(),
                 details: format!(
-                    "Initialized OpenClaw directory at {}",
+                    "install.local.init.details:{}",
                     paths.base_dir.display()
                 ),
                 commands: vec![format!("mkdir -p {}", paths.base_dir.display())],
@@ -133,7 +133,7 @@ pub fn run_step(
                 &["config", "get", "agents", "--json"],
             )?;
             Ok(RunnerOutput {
-                summary: "local verify completed".to_string(),
+                summary: "install.local.verify.summary".to_string(),
                 details: format!("{}\n{}", version.stdout, status.stdout),
                 commands: vec![version.command_line, status.command_line],
                 artifacts: HashMap::new(),

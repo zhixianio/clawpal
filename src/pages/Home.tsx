@@ -108,6 +108,7 @@ export function Home({
   const remoteErrorShownRef = useRef(false);
   const remoteUnhealthyStreakRef = useRef(0);
   const duplicateInstallGuidanceSigRef = useRef<string>("");
+  const onboardingGuidanceSigRef = useRef<string>("");
 
   const statusInFlightRef = useRef(false);
 
@@ -127,6 +128,7 @@ export function Home({
     remoteUnhealthyStreakRef.current = 0;
     statusInFlightRef.current = false;
     duplicateInstallGuidanceSigRef.current = "";
+    onboardingGuidanceSigRef.current = "";
   }, [ua.instanceToken]);
 
   useEffect(() => {
@@ -154,6 +156,39 @@ export function Home({
       },
     }));
   }, [statusExtra?.duplicateInstalls, t, ua.instanceId, ua.isDocker, ua.isRemote]);
+
+  // Post-install onboarding guidance: when status settles and instance needs setup,
+  // emit guidance so Doctor Claw can walk the user through remaining configuration.
+  useEffect(() => {
+    if (!statusSettled || !status) return;
+    const needsSetup = !status.healthy || modelProfiles.length === 0 || !status.globalDefaultModel;
+    if (!needsSetup) return;
+    const issues: string[] = [];
+    if (!status.healthy) issues.push("unhealthy");
+    if (modelProfiles.length === 0) issues.push("no_profiles");
+    if (!status.globalDefaultModel) issues.push("no_default_model");
+    const signature = `${ua.instanceId}:onboarding:${issues.join(",")}`;
+    if (onboardingGuidanceSigRef.current === signature) return;
+    onboardingGuidanceSigRef.current = signature;
+    const transport = ua.isRemote ? "remote_ssh" : (ua.isDocker ? "docker_local" : "local");
+    const actions: string[] = [];
+    if (!status.healthy) actions.push(t("onboarding.actionCheckDoctor"));
+    if (modelProfiles.length === 0) actions.push(t("onboarding.actionAddProfile"));
+    if (!status.globalDefaultModel && modelProfiles.length > 0) actions.push(t("onboarding.actionSetDefault"));
+    window.dispatchEvent(new CustomEvent("clawpal:agent-guidance", {
+      detail: {
+        message: t("onboarding.summary"),
+        summary: t("onboarding.summary"),
+        actions,
+        source: "onboarding",
+        operation: "post_install.onboarding",
+        instanceId: ua.instanceId,
+        transport,
+        rawError: `Instance needs setup: ${issues.join(", ")}`,
+        createdAt: Date.now(),
+      },
+    }));
+  }, [statusSettled, status, modelProfiles, t, ua.instanceId, ua.isDocker, ua.isRemote]);
 
   const fetchStatus = useCallback(() => {
     if (ua.isRemote && !ua.isConnected) return; // Wait for SSH connection

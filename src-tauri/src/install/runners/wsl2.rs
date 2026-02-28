@@ -19,7 +19,7 @@ pub fn run_step(
         InstallStep::Precheck => {
             let status = run_command(wsl(), &["--status"])?;
             Ok(RunnerOutput {
-                summary: "wsl2 precheck completed".to_string(),
+                summary: "install.wsl2.precheck.summary".to_string(),
                 details: status.stdout,
                 commands: vec![status.command_line],
                 artifacts: HashMap::new(),
@@ -29,7 +29,7 @@ pub fn run_step(
             let script = "export PATH=\"$HOME/.npm-global/bin:$PATH\"; command -v openclaw >/dev/null 2>&1 || (if command -v curl >/dev/null 2>&1; then curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard; elif command -v wget >/dev/null 2>&1; then wget -qO- https://openclaw.ai/install.sh | bash -s -- --no-prompt --no-onboard; else echo 'curl or wget is required to install openclaw' >&2; exit 1; fi)";
             let install = run_command(wsl(), &["bash", "-ilc", script])?;
             Ok(RunnerOutput {
-                summary: "wsl2 install completed".to_string(),
+                summary: "install.wsl2.install.summary".to_string(),
                 details: if install.stderr.is_empty() {
                     install.stdout
                 } else {
@@ -45,9 +45,9 @@ pub fn run_step(
                 &["bash", "-ilc", "mkdir -p ~/.openclaw && [ -f ~/.openclaw/openclaw.json ] || printf '{}' > ~/.openclaw/openclaw.json"],
             )?;
             Ok(RunnerOutput {
-                summary: "wsl2 init completed".to_string(),
+                summary: "install.wsl2.init.summary".to_string(),
                 details: if init.stdout.is_empty() {
-                    "Initialized ~/.openclaw inside WSL".to_string()
+                    "install.wsl2.init.details".to_string()
                 } else {
                     init.stdout
                 },
@@ -65,7 +65,7 @@ pub fn run_step(
                 ],
             )?;
             Ok(RunnerOutput {
-                summary: "wsl2 verify completed".to_string(),
+                summary: "install.wsl2.verify.summary".to_string(),
                 details: verify.stdout,
                 commands: vec![verify.command_line],
                 artifacts: HashMap::new(),
