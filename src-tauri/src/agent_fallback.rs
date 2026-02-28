@@ -7,10 +7,22 @@ use tauri::State;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GuidanceAction {
+    pub label: String,
+    pub action_type: String,
+    pub tool: Option<String>,
+    pub args: Option<String>,
+    pub invoke_type: Option<String>,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorGuidance {
     pub message: String,
     pub summary: String,
     pub actions: Vec<String>,
+    pub structured_actions: Vec<GuidanceAction>,
     pub source: String,
 }
 
@@ -18,6 +30,7 @@ pub struct ErrorGuidance {
 struct GuidanceBody {
     summary: String,
     actions: Vec<String>,
+    structured_actions: Vec<GuidanceAction>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +64,7 @@ fn parse_guidance_json(raw: &str) -> Option<GuidanceBody> {
         return Some(GuidanceBody {
             summary: summary.trim().to_string(),
             actions,
+            structured_actions: vec![],
         });
     }
     None
@@ -76,6 +90,7 @@ fn rules_fallback(
                 "重新进入该实例并等待 1-2 秒后自动刷新。".to_string(),
                 "若仍失败，打开 Doctor 让 Agent继续执行更细粒度修复。".to_string(),
             ],
+            structured_actions: vec![],
         };
     }
     if looks_like_openclaw_binary_missing(error_text) {
@@ -104,6 +119,7 @@ fn rules_fallback(
         return GuidanceBody {
             summary,
             actions,
+            structured_actions: vec![],
         };
     }
     if lower.contains("not connected to remote")
@@ -117,6 +133,7 @@ fn rules_fallback(
                 "执行一次健康检查，确认网关和配置目录可访问。".to_string(),
                 "若仍失败，打开 Doctor 页面执行自动诊断并按建议修复。".to_string(),
             ],
+            structured_actions: vec![],
         };
     }
 
@@ -128,6 +145,7 @@ fn rules_fallback(
             "打开 Doctor 页面运行诊断，获取可执行修复步骤。".to_string(),
             "按诊断结果优先处理阻塞项后，再重试当前操作。".to_string(),
         ],
+        structured_actions: vec![],
     }
 }
 
@@ -239,13 +257,14 @@ pub async fn explain_operation_error(
         message,
         summary: guidance.summary,
         actions: guidance.actions,
+        structured_actions: guidance.structured_actions,
         source,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_guidance_json, rules_fallback, OpenclawProbe};
+    use super::{parse_guidance_json, rules_fallback, GuidanceAction, OpenclawProbe};
 
     #[test]
     fn parse_guidance_json_accepts_embedded_json() {
@@ -253,6 +272,37 @@ mod tests {
         let parsed = parse_guidance_json(raw).expect("should parse");
         assert_eq!(parsed.summary, "远程命令不存在");
         assert_eq!(parsed.actions.len(), 2);
+    }
+
+    #[test]
+    fn guidance_action_serializes_inline_fix() {
+        let action = GuidanceAction {
+            label: "重连 SSH".to_string(),
+            action_type: "inline_fix".to_string(),
+            tool: Some("clawpal".to_string()),
+            args: Some("ssh connect --host test-host".to_string()),
+            invoke_type: Some("read".to_string()),
+            context: None,
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(json["actionType"], "inline_fix");
+        assert_eq!(json["tool"], "clawpal");
+    }
+
+    #[test]
+    fn guidance_action_serializes_doctor_handoff() {
+        let action = GuidanceAction {
+            label: "让小龙虾修复".to_string(),
+            action_type: "doctor_handoff".to_string(),
+            tool: None,
+            args: None,
+            invoke_type: None,
+            context: Some("Container abc not found".to_string()),
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!(json["actionType"], "doctor_handoff");
+        assert!(json["tool"].is_null());
+        assert_eq!(json["context"], "Container abc not found");
     }
 
     #[test]
