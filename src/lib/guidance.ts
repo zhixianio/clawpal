@@ -49,6 +49,22 @@ export function isAlreadyExplainedGuidanceError(errorText: string): boolean {
   );
 }
 
+export function isRegistryCorruptError(errorText: string): boolean {
+  const text = errorText.toLowerCase();
+  return (
+    (text.includes("registry") || text.includes("instances.json"))
+    && (text.includes("parse") || text.includes("corrupt") || text.includes("invalid json"))
+  );
+}
+
+export function isContainerOrphanedError(errorText: string): boolean {
+  const text = errorText.toLowerCase();
+  return (
+    text.includes("no such container")
+    || (text.includes("container") && text.includes("not found"))
+  );
+}
+
 export function shouldEmitAgentGuidance(instanceId: string, operation: string, errorText: string): boolean {
   if (
     isSshCooldownProtectionError(errorText)
