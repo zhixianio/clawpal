@@ -1244,7 +1244,7 @@ export function App() {
                 if (sa.tool === "clawpal" && sa.args?.includes("ssh connect")) {
                   const hostId = agentGuidance.instanceId;
                   showToast(`正在重连 SSH...`, "success");
-                  await api.sshConnect(hostId);
+                  await connectWithPassphraseFallback(hostId);
                   showToast("SSH 重连成功", "success");
                   setAgentGuidanceOpen(false);
                   setUnreadGuidance(false);
