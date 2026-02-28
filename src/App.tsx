@@ -616,7 +616,7 @@ export function App() {
       } else {
         const warnings = issues.filter((i: PrecheckIssue) => i.severity === "warn");
         if (warnings.length > 0) {
-          showToast(warnings[0].message, "warning");
+          showToast(warnings[0].message, "error");
         }
       }
     }).catch(() => { /* ignore */ });
