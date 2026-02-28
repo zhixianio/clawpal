@@ -28,6 +28,32 @@ pub fn parse_engine(input: Option<String>) -> Result<DoctorEngine, String> {
 
 pub fn classify_engine_error(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
+
+    // AUTH_EXPIRED: 401/403, invalid key, quota exceeded
+    if lower.contains("unauthorized")
+        || lower.contains("invalid api key")
+        || lower.contains("invalid_api_key")
+        || (lower.contains("403") && (lower.contains("forbidden") || lower.contains("quota")))
+        || (lower.contains("401") && !lower.contains("model:"))
+    {
+        return "AUTH_EXPIRED";
+    }
+
+    // REGISTRY_CORRUPT: registry parse/json errors
+    if (lower.contains("registry") || lower.contains("instances.json"))
+        && (lower.contains("parse") || lower.contains("invalid json") || lower.contains("deserialize"))
+    {
+        return "REGISTRY_CORRUPT";
+    }
+
+    // INSTANCE_ORPHANED: container not found
+    if lower.contains("no such container")
+        || (lower.contains("container") && lower.contains("not found") && !lower.contains("openclaw"))
+    {
+        return "INSTANCE_ORPHANED";
+    }
+
+    // Existing checks below (unchanged)
     if lower.contains("api key not set")
         || lower.contains("no compatible api key")
         || lower.contains("no auth profiles configured")
@@ -188,5 +214,51 @@ pub fn run_doctor(paths: &OpenClawPaths) -> DoctorReport {
         ok: score >= 80,
         score: score.max(0) as u8,
         issues,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_auth_expired_401() {
+        assert_eq!(classify_engine_error("HTTP 401 unauthorized"), "AUTH_EXPIRED");
+    }
+
+    #[test]
+    fn classify_auth_expired_403() {
+        assert_eq!(classify_engine_error("403 forbidden: quota exceeded"), "AUTH_EXPIRED");
+    }
+
+    #[test]
+    fn classify_auth_expired_invalid_key() {
+        assert_eq!(classify_engine_error("invalid api key provided"), "AUTH_EXPIRED");
+    }
+
+    #[test]
+    fn classify_registry_corrupt() {
+        assert_eq!(classify_engine_error("registry parse error: invalid json at line 5"), "REGISTRY_CORRUPT");
+    }
+
+    #[test]
+    fn classify_instance_orphaned_container() {
+        assert_eq!(classify_engine_error("Error: no such container: abc123"), "INSTANCE_ORPHANED");
+    }
+
+    #[test]
+    fn classify_instance_orphaned_not_found() {
+        assert_eq!(classify_engine_error("container def456 not found"), "INSTANCE_ORPHANED");
+    }
+
+    // Ensure existing patterns still work
+    #[test]
+    fn classify_config_missing_still_works() {
+        assert_eq!(classify_engine_error("api key not set"), "CONFIG_MISSING");
+    }
+
+    #[test]
+    fn classify_model_unavailable_still_works() {
+        assert_eq!(classify_engine_error("not_found_error for resource"), "MODEL_UNAVAILABLE");
     }
 }
