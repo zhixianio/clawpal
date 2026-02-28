@@ -2,6 +2,42 @@ use std::collections::HashSet;
 
 use crate::instance::{Instance, InstanceRegistry, InstanceType, SshHostConfig};
 
+fn sanitize_id_segment(raw: &str) -> String {
+    let lowered = raw.trim().to_ascii_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_dash = false;
+    for ch in lowered.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "remote".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn canonical_ssh_host_id(host: &SshHostConfig) -> String {
+    let explicit = host.id.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    let base = if !host.host.trim().is_empty() {
+        host.host.trim()
+    } else if !host.label.trim().is_empty() {
+        host.label.trim()
+    } else {
+        "remote"
+    };
+    format!("ssh:{}", sanitize_id_segment(base))
+}
+
 pub fn list_ssh_hosts() -> Result<Vec<SshHostConfig>, String> {
     let registry = InstanceRegistry::load().map_err(|e| e.to_string())?;
     let mut seen = HashSet::new();
@@ -24,7 +60,9 @@ pub fn list_ssh_hosts() -> Result<Vec<SshHostConfig>, String> {
 
 pub fn upsert_ssh_host(host: SshHostConfig) -> Result<SshHostConfig, String> {
     let mut registry = InstanceRegistry::load().map_err(|e| e.to_string())?;
-    let id = host.id.clone();
+    let mut host = host;
+    let id = canonical_ssh_host_id(&host);
+    host.id = id.clone();
     let duplicate_ids = registry
         .list()
         .into_iter()
@@ -158,5 +196,19 @@ mod tests {
         let hosts = list_ssh_hosts().expect("list");
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].id, "ssh:test-dup-2");
+    }
+
+    #[test]
+    fn upsert_ssh_host_generates_id_when_missing() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = temp_data_dir();
+        std::env::set_var("CLAWPAL_DATA_DIR", &dir);
+        let mut host = sample_host("");
+        host.id = "".to_string();
+        host.host = "Vm 1".to_string();
+        let saved = upsert_ssh_host(host).expect("upsert");
+        assert_eq!(saved.id, "ssh:vm-1");
     }
 }

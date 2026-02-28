@@ -199,6 +199,9 @@ export function Doctor({
     setStartError(null);
     setDiagnosing(true);
     try {
+      if (isRemote && !instanceId.trim()) {
+        throw new Error(t("doctor.targetUnavailable"));
+      }
       const diagnosisScope = isRemote
         ? instanceId
         : isDocker

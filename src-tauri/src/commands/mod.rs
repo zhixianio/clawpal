@@ -5040,6 +5040,8 @@ fn resolve_model_provider_base_url(cfg: &Value, provider: &str) -> Option<String
 #[tauri::command]
 pub fn list_registered_instances() -> Result<Vec<clawpal_core::instance::Instance>, String> {
     let registry = clawpal_core::instance::InstanceRegistry::load().map_err(|e| e.to_string())?;
+    // Best-effort self-heal: persist normalized instance ids (e.g., legacy empty SSH ids).
+    let _ = registry.save();
     Ok(registry.list())
 }
 

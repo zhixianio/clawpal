@@ -89,6 +89,72 @@ pub enum InstanceRegistryError {
 
 pub type Result<T> = std::result::Result<T, InstanceRegistryError>;
 
+fn sanitize_instance_id_segment(raw: &str) -> String {
+    let lowered = raw.trim().to_ascii_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_dash = false;
+    for ch in lowered.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "remote".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn canonical_remote_instance_id(instance: &Instance) -> String {
+    let current = instance.id.trim();
+    if !current.is_empty() {
+        return current.to_string();
+    }
+    if let Some(cfg) = &instance.ssh_host_config {
+        let cfg_id = cfg.id.trim();
+        if !cfg_id.is_empty() {
+            return cfg_id.to_string();
+        }
+        let base = if !cfg.host.trim().is_empty() {
+            cfg.host.trim()
+        } else if !cfg.label.trim().is_empty() {
+            cfg.label.trim()
+        } else if !instance.label.trim().is_empty() {
+            instance.label.trim()
+        } else {
+            "remote"
+        };
+        return format!("ssh:{}", sanitize_instance_id_segment(base));
+    }
+    "ssh:remote".to_string()
+}
+
+fn normalize_instance(mut instance: Instance) -> Instance {
+    if !matches!(instance.instance_type, InstanceType::RemoteSsh) {
+        return instance;
+    }
+    let canonical_id = canonical_remote_instance_id(&instance);
+    instance.id = canonical_id.clone();
+    if let Some(cfg) = instance.ssh_host_config.as_mut() {
+        if cfg.id.trim().is_empty() {
+            cfg.id = canonical_id;
+        }
+        if instance.label.trim().is_empty() {
+            instance.label = if cfg.label.trim().is_empty() {
+                cfg.host.clone()
+            } else {
+                cfg.label.clone()
+            };
+        }
+    }
+    instance
+}
+
 impl InstanceRegistry {
     pub fn load() -> Result<Self> {
         let path = registry_path();
@@ -102,13 +168,18 @@ impl InstanceRegistry {
         })?;
         let parsed: RegistryFile = serde_json::from_str(&data)
             .map_err(|source| InstanceRegistryError::ParseFile { path, source })?;
+        let normalized_instances = parsed
+            .instances
+            .into_iter()
+            .map(normalize_instance)
+            .collect::<Vec<_>>();
 
         // Deduplicate SSH instances by endpoint (user@host:port).
         // When multiple entries share the same endpoint, keep the last one
         // (later entries override earlier ones).
         let mut ssh_endpoint_winner: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        for inst in &parsed.instances {
+        for inst in &normalized_instances {
             if let (InstanceType::RemoteSsh, Some(cfg)) =
                 (&inst.instance_type, &inst.ssh_host_config)
             {
@@ -116,8 +187,7 @@ impl InstanceRegistry {
             }
         }
 
-        let instances = parsed
-            .instances
+        let instances = normalized_instances
             .into_iter()
             .filter(|inst| {
                 if let (InstanceType::RemoteSsh, Some(cfg)) =
@@ -255,6 +325,54 @@ mod tests {
             .add(sample_instance("docker:dup"))
             .expect_err("duplicate should fail");
         assert!(matches!(err, InstanceRegistryError::DuplicateInstance(_)));
+    }
+
+    #[test]
+    fn load_normalizes_empty_remote_instance_id() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = temp_data_dir();
+        std::env::set_var("CLAWPAL_DATA_DIR", &dir);
+        let path = dir.join("instances.json");
+        fs::write(
+            &path,
+            r#"{
+  "instances": [
+    {
+      "id": "",
+      "instanceType": "remote_ssh",
+      "label": "vm1",
+      "openclawHome": null,
+      "clawpalDataDir": null,
+      "sshHostConfig": {
+        "id": "",
+        "label": "vm1",
+        "host": "vm1",
+        "port": 22,
+        "username": "ubuntu",
+        "authMethod": "ssh_config",
+        "keyPath": null,
+        "password": null
+      }
+    }
+  ]
+}"#,
+        )
+        .expect("write instances");
+
+        let registry = InstanceRegistry::load().expect("load");
+        let list = registry.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "ssh:vm1");
+        assert_eq!(
+            list[0]
+                .ssh_host_config
+                .as_ref()
+                .map(|cfg| cfg.id.as_str())
+                .unwrap_or(""),
+            "ssh:vm1"
+        );
     }
 
     #[test]
