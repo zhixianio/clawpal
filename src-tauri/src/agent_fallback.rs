@@ -1,11 +1,11 @@
 use crate::runtime::zeroclaw::process::run_zeroclaw_message;
 use crate::ssh::SshConnectionPool;
 use crate::json_util::extract_json_objects;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuidanceAction {
     pub label: String,
@@ -61,10 +61,19 @@ fn parse_guidance_json(raw: &str) -> Option<GuidanceBody> {
                     .collect::<Vec<String>>()
             })
             .unwrap_or_default();
+        let structured_actions = v
+            .get("structuredActions")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| serde_json::from_value::<GuidanceAction>(item.clone()).ok())
+                    .collect::<Vec<GuidanceAction>>()
+            })
+            .unwrap_or_default();
         return Some(GuidanceBody {
             summary: summary.trim().to_string(),
             actions,
-            structured_actions: vec![],
+            structured_actions,
         });
     }
     None
@@ -423,6 +432,14 @@ mod tests {
         );
         assert!(result.summary.contains("容器") || result.summary.contains("container"));
         assert!(result.structured_actions.iter().any(|a| a.action_type == "doctor_handoff"));
+    }
+
+    #[test]
+    fn parse_guidance_json_extracts_structured_actions() {
+        let raw = r#"{"summary":"SSH断开","actions":["重连"],"structuredActions":[{"label":"重连","actionType":"inline_fix","tool":"clawpal","args":"ssh connect","invokeType":"write"}]}"#;
+        let parsed = parse_guidance_json(raw).expect("should parse");
+        assert_eq!(parsed.structured_actions.len(), 1);
+        assert_eq!(parsed.structured_actions[0].action_type, "inline_fix");
     }
 
     #[test]
