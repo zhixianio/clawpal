@@ -30,6 +30,7 @@ pub mod discovery;
 pub mod doctor;
 pub mod gateway;
 pub mod logs;
+pub mod precheck;
 pub mod profiles;
 pub mod rescue;
 pub mod sessions;
@@ -51,6 +52,8 @@ pub use doctor::*;
 pub use gateway::*;
 #[allow(unused_imports)]
 pub use logs::*;
+#[allow(unused_imports)]
+pub use precheck::*;
 #[allow(unused_imports)]
 pub use profiles::*;
 #[allow(unused_imports)]
@@ -5055,8 +5058,9 @@ pub fn delete_registered_instance(instance_id: String) -> Result<bool, String> {
 pub async fn connect_docker_instance(
     home: String,
     label: Option<String>,
+    instance_id: Option<String>,
 ) -> Result<clawpal_core::instance::Instance, String> {
-    clawpal_core::connect::connect_docker(&home, label.as_deref())
+    clawpal_core::connect::connect_docker(&home, label.as_deref(), instance_id.as_deref())
         .await
         .map_err(|e| e.to_string())
 }

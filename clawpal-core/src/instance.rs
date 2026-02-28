@@ -172,7 +172,7 @@ impl InstanceRegistry {
     }
 }
 
-fn registry_path() -> PathBuf {
+pub fn registry_path() -> PathBuf {
     if let Ok(dir) = std::env::var("CLAWPAL_DATA_DIR") {
         return PathBuf::from(dir).join("instances.json");
     }
