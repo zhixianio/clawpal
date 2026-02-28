@@ -68,7 +68,7 @@ pub fn precheck_instance_state(instance: &Instance) -> Vec<PrecheckIssue> {
         if !Path::new(home).exists() {
             return vec![PrecheckIssue {
                 code: "INSTANCE_ORPHANED".into(),
-                severity: "warning".into(),
+                severity: "warn".into(),
                 message: format!(
                     "Instance '{}' references missing openclaw_home: {}",
                     instance.id, home

@@ -66,7 +66,14 @@ pub fn classify_engine_error(message: &str) -> &'static str {
         return "MODEL_UNAVAILABLE";
     }
     if lower.contains("no such file")
-        || lower.contains("not found")
+        || (lower.contains("not found")
+            && (lower.contains("file")
+                || lower.contains("directory")
+                || lower.contains("binary")
+                || lower.contains("command")
+                || lower.contains("executable")
+                || lower.contains("zeroclaw")
+                || lower.contains("openclaw")))
         || lower.contains("failed to start")
         || lower.contains("permission denied")
     {
