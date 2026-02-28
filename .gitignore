@@ -8,3 +8,8 @@ bun.lock
 bun.dlock
 .claude/
 .tmp/
+tmp/
+*.db
+*.sqlite
+*.sqlite3
+*.log
