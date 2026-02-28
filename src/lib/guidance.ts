@@ -61,7 +61,7 @@ export function isContainerOrphanedError(errorText: string): boolean {
   const text = errorText.toLowerCase();
   return (
     text.includes("no such container")
-    || (text.includes("container") && text.includes("not found"))
+    || (text.includes("container") && text.includes("not found") && !text.includes("openclaw"))
   );
 }
 

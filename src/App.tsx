@@ -26,7 +26,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { Toaster } from "sonner";
-import type { ChannelNode, DiscordGuildChannel, DockerInstance, GuidanceAction, InstallSession, RegisteredInstance, SshHost } from "./lib/types";
+import type { ChannelNode, DiscordGuildChannel, DockerInstance, GuidanceAction, InstallSession, PrecheckIssue, RegisteredInstance, SshHost } from "./lib/types";
+import { GuidanceCard } from "./components/GuidanceCard";
+import type { AgentGuidanceItem } from "./components/GuidanceCard";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const Recipes = lazy(() => import("./pages/Recipes").then((m) => ({ default: m.Recipes })));
@@ -68,18 +70,7 @@ interface ToastItem {
   type: "success" | "error";
 }
 
-interface AgentGuidanceItem {
-  message: string;
-  summary: string;
-  actions: string[];
-  structuredActions?: GuidanceAction[];
-  source: string;
-  operation: string;
-  instanceId: string;
-  transport: string;
-  rawError: string;
-  createdAt: number;
-}
+// AgentGuidanceItem is imported from ./components/GuidanceCard
 
 let toastIdCounter = 0;
 
@@ -375,9 +366,11 @@ export function App() {
   // Startup precheck: validate registry
   useEffect(() => {
     api.precheckRegistry().then((issues) => {
-      const errors = issues.filter((i: any) => i.severity === "error");
-      if (errors.length > 0) {
+      const errors = issues.filter((i: PrecheckIssue) => i.severity === "error");
+      if (errors.length === 1) {
         showToast(errors[0].message, "error");
+      } else if (errors.length > 1) {
+        showToast(`${errors[0].message}（还有 ${errors.length - 1} 个问题）`, "error");
       }
     }).catch(() => { /* precheck failure should not block app */ });
   }, [showToast]);
@@ -429,9 +422,11 @@ export function App() {
     ).catch((e) => console.warn("ensureAccessProfile:", e));
     // Auth precheck: warn if model profiles are misconfigured
     api.precheckAuth(instanceId).then((issues) => {
-      const errors = issues.filter((i: any) => i.severity === "error");
-      if (errors.length > 0) {
+      const errors = issues.filter((i: PrecheckIssue) => i.severity === "error");
+      if (errors.length === 1) {
         showToast(errors[0].message, "error");
+      } else if (errors.length > 1) {
+        showToast(`${errors[0].message}（还有 ${errors.length - 1} 个问题）`, "error");
       }
     }).catch(() => { /* ignore */ });
   }, [resolveInstanceTransport, showToast]);
@@ -604,18 +599,22 @@ export function App() {
     });
     // Instance switch precheck
     api.precheckInstance(id).then((issues) => {
-      const blocking = issues.filter((i: any) => i.severity === "error");
-      if (blocking.length > 0) {
+      const blocking = issues.filter((i: PrecheckIssue) => i.severity === "error");
+      if (blocking.length === 1) {
         showToast(blocking[0].message, "error");
+      } else if (blocking.length > 1) {
+        showToast(`${blocking[0].message}（还有 ${blocking.length - 1} 个问题）`, "error");
       }
     }).catch(() => { /* ignore */ });
     // Transport layer precheck (SSH / Docker connectivity)
     api.precheckTransport(id).then((issues) => {
-      const blocking = issues.filter((i: any) => i.severity === "error");
-      if (blocking.length > 0) {
+      const blocking = issues.filter((i: PrecheckIssue) => i.severity === "error");
+      if (blocking.length === 1) {
         showToast(blocking[0].message, "error");
+      } else if (blocking.length > 1) {
+        showToast(`${blocking[0].message}（还有 ${blocking.length - 1} 个问题）`, "error");
       } else {
-        const warnings = issues.filter((i: any) => i.severity === "warn");
+        const warnings = issues.filter((i: PrecheckIssue) => i.severity === "warn");
         if (warnings.length > 0) {
           showToast(warnings[0].message, "warning");
         }
@@ -1220,112 +1219,52 @@ export function App() {
     {agentGuidance && (
       <div className="fixed bottom-5 right-5 z-[60] flex flex-col items-end gap-2">
         {agentGuidanceOpen && (
-          <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card shadow-xl p-4 space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold">小龙虾建议</div>
-                <div className="text-xs text-muted-foreground">
-                  {(openTabs.find((tab) => tab.id === agentGuidance.instanceId)?.label
-                    || fallbackInstanceLabel(agentGuidance.instanceId, t))} · {agentGuidance.operation}
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                onClick={() => setAgentGuidanceOpen(false)}
-              >
-                <XIcon className="size-4" />
-              </Button>
-            </div>
-            <p className="text-sm leading-relaxed">{agentGuidance.summary || agentGuidance.message}</p>
-            {agentGuidance.actions.length > 0 && (
-              <ol className="text-sm space-y-1.5 list-decimal pl-5">
-                {agentGuidance.actions.map((action, idx) => (
-                  <li key={`${idx}-${action}`}>{action}</li>
-                ))}
-              </ol>
-            )}
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {(agentGuidance.structuredActions ?? []).map((sa, idx) => (
-                sa.actionType === "inline_fix" ? (
-                  <Button
-                    key={`sa-${idx}`}
-                    size="sm"
-                    variant="outline"
-                    onClick={async () => {
-                      try {
-                        if (sa.tool === "clawpal" && sa.args?.includes("ssh connect")) {
-                          const hostId = agentGuidance.instanceId;
-                          showToast(`正在重连 SSH...`, "success");
-                          await api.sshConnect(hostId);
-                          showToast("SSH 重连成功", "success");
-                          setAgentGuidanceOpen(false);
-                          setUnreadGuidance(false);
-                        } else {
-                          setAgentGuidanceOpen(false);
-                          setDoctorLaunchByInstance((prev) => ({
-                            ...prev,
-                            [agentGuidance.instanceId]: {
-                              ...agentGuidance,
-                              rawError: sa.context || agentGuidance.rawError,
-                            },
-                          }));
-                          setInStart(false);
-                          navigateRoute("doctor");
-                        }
-                      } catch (e) {
-                        showToast(`${sa.label} 失败: ${e}`, "error");
-                      }
-                    }}
-                  >
-                    {sa.label}
-                  </Button>
-                ) : (
-                  <Button
-                    key={`sa-${idx}`}
-                    size="sm"
-                    onClick={() => {
-                      setAgentGuidanceOpen(false);
-                      setDoctorLaunchByInstance((prev) => ({
-                        ...prev,
-                        [agentGuidance.instanceId]: {
-                          ...agentGuidance,
-                          rawError: sa.context || agentGuidance.rawError,
-                        },
-                      }));
-                      setInStart(false);
-                      navigateRoute("doctor");
-                    }}
-                  >
-                    {sa.label}
-                  </Button>
-                )
-              ))}
-              {(!agentGuidance.structuredActions || agentGuidance.structuredActions.length === 0) && (
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setAgentGuidanceOpen(false);
-                    setDoctorLaunchByInstance((prev) => ({
-                      ...prev,
-                      [agentGuidance.instanceId]: agentGuidance,
-                    }));
-                    setInStart(false);
-                    navigateRoute("doctor");
-                  }}
-                >
-                  打开 Doctor
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => { setAgentGuidanceOpen(false); setUnreadGuidance(false); }}
-              >
-                稍后处理
-              </Button>
-            </div>
-          </div>
+          <GuidanceCard
+            guidance={agentGuidance}
+            instanceLabel={
+              openTabs.find((tab) => tab.id === agentGuidance.instanceId)?.label
+              || fallbackInstanceLabel(agentGuidance.instanceId, t)
+            }
+            onClose={() => setAgentGuidanceOpen(false)}
+            onDismiss={() => { setAgentGuidanceOpen(false); setUnreadGuidance(false); }}
+            onDoctorHandoff={(context) => {
+              setAgentGuidanceOpen(false);
+              setDoctorLaunchByInstance((prev) => ({
+                ...prev,
+                [agentGuidance.instanceId]: {
+                  ...agentGuidance,
+                  rawError: context || agentGuidance.rawError,
+                },
+              }));
+              setInStart(false);
+              navigateRoute("doctor");
+            }}
+            onInlineFix={async (sa) => {
+              try {
+                if (sa.tool === "clawpal" && sa.args?.includes("ssh connect")) {
+                  const hostId = agentGuidance.instanceId;
+                  showToast(`正在重连 SSH...`, "success");
+                  await api.sshConnect(hostId);
+                  showToast("SSH 重连成功", "success");
+                  setAgentGuidanceOpen(false);
+                  setUnreadGuidance(false);
+                } else {
+                  setAgentGuidanceOpen(false);
+                  setDoctorLaunchByInstance((prev) => ({
+                    ...prev,
+                    [agentGuidance.instanceId]: {
+                      ...agentGuidance,
+                      rawError: sa.context || agentGuidance.rawError,
+                    },
+                  }));
+                  setInStart(false);
+                  navigateRoute("doctor");
+                }
+              } catch (e) {
+                showToast(`${sa.label} 失败: ${e}`, "error");
+              }
+            }}
+          />
         )}
         <Button
           className="rounded-full shadow-md relative"
