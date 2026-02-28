@@ -170,6 +170,10 @@ impl InstanceRegistry {
     pub fn get(&self, id: &str) -> Option<&Instance> {
         self.instances.get(id)
     }
+
+    pub fn ids(&self) -> Vec<String> {
+        self.instances.keys().cloned().collect()
+    }
 }
 
 pub fn registry_path() -> PathBuf {
