@@ -1,8 +1,8 @@
 pub mod config;
 pub mod registry;
 
+use std::process::Stdio;
 use std::sync::Arc;
-use std::{process::Stdio};
 
 use russh::client;
 use russh_keys::key;
@@ -86,24 +86,47 @@ struct ResolvedTarget {
 
 impl SshSession {
     pub async fn connect(config: &SshHostConfig) -> Result<Self> {
+        Self::connect_with_passphrase(config, None).await
+    }
+
+    pub async fn connect_with_passphrase(
+        config: &SshHostConfig,
+        passphrase: Option<&str>,
+    ) -> Result<Self> {
         if config.host.trim().is_empty() {
             return Err(SshError::InvalidConfig("host is empty".to_string()));
         }
-        if config.auth_method.trim().eq_ignore_ascii_case("password") {
+        if config.auth_method.trim().eq_ignore_ascii_case("password")
+            && config
+                .password
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .is_none()
+        {
             return Err(SshError::InvalidConfig(
-                "password auth is not supported in russh mode".to_string(),
+                "password auth selected but password is empty".to_string(),
             ));
         }
-        let backend = match connect_and_auth(config).await {
+        let backend = match connect_and_auth(config, passphrase).await {
             Ok((handle, _)) => Backend::Russh {
                 handle: Arc::new(handle),
             },
-            Err(_) => Backend::Legacy,
+            Err(err) => {
+                if config.auth_method.trim().eq_ignore_ascii_case("password") {
+                    return Err(err);
+                }
+                Backend::Legacy
+            }
         };
-        Ok(Self {
+        let session = Self {
             config: config.clone(),
             backend,
-        })
+        };
+        if matches!(session.backend, Backend::Legacy) {
+            session.verify_legacy_connectivity().await?;
+        }
+        Ok(session)
     }
 
     pub async fn exec(&self, cmd: &str) -> Result<ExecResult> {
@@ -143,7 +166,9 @@ impl SshSession {
         .await;
 
         let (stdout, stderr, exit_code) = wait_result.map_err(|_| {
-            SshError::CommandFailed(format!("russh exec timed out after {RUSSH_EXEC_TIMEOUT_SECS}s"))
+            SshError::CommandFailed(format!(
+                "russh exec timed out after {RUSSH_EXEC_TIMEOUT_SECS}s"
+            ))
         })?;
 
         Ok(ExecResult {
@@ -254,7 +279,9 @@ impl SshSession {
             file.write_all(content)
                 .await
                 .map_err(|e| SshError::Sftp(e.to_string()))?;
-            file.flush().await.map_err(|e| SshError::Sftp(e.to_string()))?;
+            file.flush()
+                .await
+                .map_err(|e| SshError::Sftp(e.to_string()))?;
             Ok::<(), SshError>(())
         })
         .await;
@@ -380,6 +407,23 @@ impl SshSession {
         .map_err(|e| SshError::Connect(e.to_string()))
     }
 
+    async fn verify_legacy_connectivity(&self) -> Result<()> {
+        let output = self.run_legacy_ssh(&["true"]).await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(SshError::Connect(format!(
+            "legacy ssh connectivity check failed (exit {:?}): {}",
+            output.status.code(),
+            if stderr.is_empty() {
+                "unknown error"
+            } else {
+                stderr.as_str()
+            }
+        )))
+    }
+
     pub async fn close(&self) {
         if let Backend::Russh { handle } = &self.backend {
             let _ = timeout(
@@ -391,7 +435,10 @@ impl SshSession {
     }
 }
 
-async fn connect_and_auth(config: &SshHostConfig) -> Result<(client::Handle<SshHandler>, ResolvedTarget)> {
+async fn connect_and_auth(
+    config: &SshHostConfig,
+    passphrase: Option<&str>,
+) -> Result<(client::Handle<SshHandler>, ResolvedTarget)> {
     let resolved = resolve_target(config)?;
     let addr = format!("{}:{}", resolved.host, resolved.port);
     let ssh_config = Arc::new(client::Config::default());
@@ -407,11 +454,34 @@ async fn connect_and_auth(config: &SshHostConfig) -> Result<(client::Handle<SshH
     })?
     .map_err(|e| SshError::Connect(e.to_string()))?;
 
+    if config.auth_method.trim().eq_ignore_ascii_case("password") {
+        let password = config
+            .password
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                SshError::InvalidConfig("password auth selected but password is empty".to_string())
+            })?;
+        let ok = handle
+            .authenticate_password(&resolved.username, password)
+            .await
+            .map_err(|e| SshError::Auth(e.to_string()))?;
+        if ok {
+            return Ok((handle, resolved));
+        }
+        return Err(SshError::Auth("password authentication failed".to_string()));
+    }
+
     for key_path in candidate_key_paths(&resolved) {
         let expanded = shellexpand::tilde(&key_path).to_string();
-        let key_pair = match russh_keys::load_secret_key(&expanded, None) {
-            Ok(k) => k,
-            Err(_) => continue,
+        let key_pair = passphrase
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .and_then(|phrase| russh_keys::load_secret_key(&expanded, Some(phrase)).ok())
+            .or_else(|| russh_keys::load_secret_key(&expanded, None).ok());
+        let Some(key_pair) = key_pair else {
+            continue;
         };
         let ok = handle
             .authenticate_publickey(&resolved.username, Arc::new(key_pair))
@@ -527,6 +597,26 @@ mod tests {
         };
         let result = SshSession::connect(&cfg).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_password_mode_without_password() {
+        let cfg = SshHostConfig {
+            id: "ssh:badpwd".to_string(),
+            label: "BadPwd".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 22,
+            username: "ubuntu".to_string(),
+            auth_method: "password".to_string(),
+            key_path: None,
+            password: None,
+        };
+        let result = SshSession::connect(&cfg).await;
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .map(|e| e.to_string().contains("password"))
+            .unwrap_or(false));
     }
 
     #[test]

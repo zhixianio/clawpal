@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::models::resolve_paths;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SnapshotMeta {
     pub id: String,
@@ -36,7 +38,9 @@ pub fn list_snapshots(path: &std::path::Path) -> Result<SnapshotIndex, String> {
 }
 
 pub fn write_snapshots(path: &std::path::Path, index: &SnapshotIndex) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| "invalid metadata path".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid metadata path".to_string())?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
     // Atomic write: write to .tmp file, sync, then rename
@@ -65,10 +69,13 @@ pub fn add_snapshot(
     let snapshot_recipe_id = recipe_id.clone().unwrap_or_else(|| "manual".into());
     let id = format!("{}-{}", ts, snapshot_recipe_id);
     // Sanitize for safe filename: replace path separators and other problematic chars
-    let safe_id: String = id.chars().map(|c| match c {
-        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
-        _ => c,
-    }).collect();
+    let safe_id: String = id
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            _ => c,
+        })
+        .collect();
     let snapshot_path = paths.join(format!("{}.json", safe_id));
     fs::write(&snapshot_path, current_config).map_err(|e| e.to_string())?;
 
@@ -103,10 +110,35 @@ pub fn add_snapshot(
 
 pub fn read_snapshot(path: &str) -> Result<String, String> {
     let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
-    let home = dirs::home_dir().ok_or("Cannot determine home directory")?;
-    let allowed_base = home.join(".clawpal").join("history");
+    let allowed_base = resolve_paths().history_dir;
+    let allowed_base = std::fs::canonicalize(&allowed_base).unwrap_or(allowed_base);
     if !canonical.starts_with(&allowed_base) {
         return Err("Path outside allowed directory".into());
     }
     std::fs::read_to_string(&canonical).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_snapshot;
+    use crate::cli_runner::set_active_clawpal_data_override;
+    use std::fs;
+    use uuid::Uuid;
+
+    #[test]
+    fn read_snapshot_allows_files_under_active_history_dir() {
+        let temp_root = std::env::temp_dir().join(format!("clawpal-history-{}", Uuid::new_v4()));
+        let history_dir = temp_root.join("history");
+        fs::create_dir_all(&history_dir).expect("create history dir");
+        let snapshot_path = history_dir.join("ok.json");
+        fs::write(&snapshot_path, "{\"ok\":true}").expect("write snapshot");
+
+        set_active_clawpal_data_override(Some(temp_root.to_string_lossy().to_string()))
+            .expect("set active clawpal data dir");
+        let result = read_snapshot(&snapshot_path.to_string_lossy());
+        set_active_clawpal_data_override(None).expect("clear active clawpal data dir");
+
+        assert_eq!(result.expect("read snapshot"), "{\"ok\":true}");
+        let _ = fs::remove_dir_all(temp_root);
+    }
 }

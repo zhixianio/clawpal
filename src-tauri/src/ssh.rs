@@ -25,6 +25,7 @@ pub struct SftpEntry {
 struct ConnectedHost {
     config: SshHostConfig,
     home_dir: String,
+    passphrase: Option<String>,
     session: std::sync::Arc<Mutex<std::sync::Arc<clawpal_core::ssh::SshSession>>>,
     op_limiter: std::sync::Arc<Semaphore>,
 }
@@ -49,10 +50,17 @@ impl SshConnectionPool {
     pub async fn connect_with_passphrase(
         &self,
         config: &SshHostConfig,
-        _passphrase: Option<&str>,
+        passphrase: Option<&str>,
     ) -> Result<(), String> {
+        let passphrase_owned = passphrase
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
         let session = std::sync::Arc::new(
-            clawpal_core::ssh::SshSession::connect(config)
+            clawpal_core::ssh::SshSession::connect_with_passphrase(
+                config,
+                passphrase_owned.as_deref(),
+            )
                 .await
                 .map_err(|e| e.to_string())?,
         );
@@ -69,6 +77,7 @@ impl SshConnectionPool {
             ConnectedHost {
                 config: config.clone(),
                 home_dir: home,
+                passphrase: passphrase_owned,
                 session: std::sync::Arc::new(Mutex::new(session)),
                 op_limiter: std::sync::Arc::new(Semaphore::new(SSH_OP_MAX_CONCURRENCY_PER_HOST)),
             },
@@ -85,14 +94,15 @@ impl SshConnectionPool {
     }
 
     pub async fn reconnect(&self, id: &str) -> Result<(), String> {
-        let config = {
+        let (config, passphrase) = {
             let guard = self.connections.lock().await;
-            guard
+            let host = guard
                 .get(id)
-                .map(|c| c.config.clone())
-                .ok_or_else(|| format!("No connection for id: {id}"))?
+                .ok_or_else(|| format!("No connection for id: {id}"))?;
+            (host.config.clone(), host.passphrase.clone())
         };
-        self.connect(&config).await
+        self.connect_with_passphrase(&config, passphrase.as_deref())
+            .await
     }
 
     pub async fn is_connected(&self, id: &str) -> bool {
@@ -260,7 +270,10 @@ impl SshConnectionPool {
 
     async fn refresh_session(&self, conn: &ConnectedHost) -> Result<(), String> {
         let new_session = std::sync::Arc::new(
-            clawpal_core::ssh::SshSession::connect(&conn.config)
+            clawpal_core::ssh::SshSession::connect_with_passphrase(
+                &conn.config,
+                conn.passphrase.as_deref(),
+            )
                 .await
                 .map_err(|e| e.to_string())?,
         );
