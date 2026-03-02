@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use serde::{Deserialize, Serialize};
 
 use crate::config_io::{read_json, write_json};
@@ -90,6 +93,19 @@ pub fn get_zeroclaw_usage_stats() -> Result<ZeroclawUsageStatsResponse, String> 
 }
 
 #[tauri::command]
+pub fn get_session_usage_stats(session_id: String) -> Result<ZeroclawUsageStatsResponse, String> {
+    let stats = crate::runtime::zeroclaw::process::get_session_usage(&session_id);
+    Ok(ZeroclawUsageStatsResponse {
+        total_calls: stats.total_calls,
+        usage_calls: stats.usage_calls,
+        prompt_tokens: stats.prompt_tokens,
+        completion_tokens: stats.completion_tokens,
+        total_tokens: stats.total_tokens,
+        last_updated_ms: stats.last_updated_ms,
+    })
+}
+
+#[tauri::command]
 pub fn get_zeroclaw_runtime_target() -> Result<ZeroclawRuntimeTargetResponse, String> {
     let target = crate::runtime::zeroclaw::process::get_zeroclaw_runtime_target();
     Ok(ZeroclawRuntimeTargetResponse {
@@ -99,6 +115,43 @@ pub fn get_zeroclaw_runtime_target() -> Result<ZeroclawRuntimeTargetResponse, St
         preferred_model: target.preferred_model,
         provider_order: target.provider_order,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Per-session model overrides (in-memory only)
+// ---------------------------------------------------------------------------
+
+fn session_model_overrides() -> &'static Mutex<HashMap<String, String>> {
+    static STORE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+pub fn set_session_model_override(session_id: String, model: String) -> Result<(), String> {
+    let trimmed = model.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("model must not be empty".into());
+    }
+    if let Ok(mut map) = session_model_overrides().lock() {
+        map.insert(session_id, trimmed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_session_model_override(session_id: String) -> Result<Option<String>, String> {
+    let map = session_model_overrides()
+        .lock()
+        .map_err(|e| e.to_string())?;
+    Ok(map.get(&session_id).cloned())
+}
+
+#[tauri::command]
+pub fn clear_session_model_override(session_id: String) -> Result<(), String> {
+    if let Ok(mut map) = session_model_overrides().lock() {
+        map.remove(&session_id);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

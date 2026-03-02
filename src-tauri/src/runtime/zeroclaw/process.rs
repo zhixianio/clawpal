@@ -266,6 +266,43 @@ pub fn get_zeroclaw_usage_stats() -> ZeroclawUsageStats {
     usage_store().lock().map(|stats| *stats).unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// Per-session usage tracking
+// ---------------------------------------------------------------------------
+
+fn session_usage_store() -> &'static Mutex<std::collections::HashMap<String, ZeroclawUsageStats>> {
+    static STORE: OnceLock<Mutex<std::collections::HashMap<String, ZeroclawUsageStats>>> =
+        OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+pub fn record_session_usage(session_id: &str, prompt_tokens: u64, completion_tokens: u64) {
+    if session_id.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = session_usage_store().lock() {
+        let stats = map
+            .entry(session_id.to_string())
+            .or_insert_with(ZeroclawUsageStats::default);
+        stats.total_calls = stats.total_calls.saturating_add(1);
+        stats.usage_calls = stats.usage_calls.saturating_add(1);
+        stats.prompt_tokens = stats.prompt_tokens.saturating_add(prompt_tokens);
+        stats.completion_tokens = stats.completion_tokens.saturating_add(completion_tokens);
+        stats.total_tokens = stats
+            .total_tokens
+            .saturating_add(prompt_tokens.saturating_add(completion_tokens));
+        stats.last_updated_ms = now_ms();
+    }
+}
+
+pub fn get_session_usage(session_id: &str) -> ZeroclawUsageStats {
+    session_usage_store()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(session_id).copied())
+        .unwrap_or_default()
+}
+
 fn sanitize_instance_namespace(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {

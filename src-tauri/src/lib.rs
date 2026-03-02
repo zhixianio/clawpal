@@ -8,12 +8,13 @@ use crate::cli_runner::{
 };
 use crate::commands::{
     analyze_sessions, apply_config_patch, backup_before_upgrade, chat_via_openclaw,
-    check_openclaw_update, clear_all_sessions, connect_docker_instance, connect_local_instance,
-    connect_ssh_instance, create_agent, delete_agent, delete_backup, delete_cron_job,
-    delete_local_instance_home, delete_model_profile, delete_registered_instance,
-    delete_sessions_by_ids, delete_ssh_host, deploy_watchdog, diagnose_primary_via_rescue,
-    discover_local_instances, ensure_access_profile, extract_model_profiles_from_config,
-    fix_issues, get_app_preferences, get_cached_model_catalog, get_cron_runs, get_status_extra,
+    check_openclaw_update, clear_all_sessions, clear_session_model_override,
+    connect_docker_instance, connect_local_instance, connect_ssh_instance, create_agent,
+    delete_agent, delete_backup, delete_cron_job, delete_local_instance_home, delete_model_profile,
+    delete_registered_instance, delete_sessions_by_ids, delete_ssh_host, deploy_watchdog,
+    diagnose_primary_via_rescue, discover_local_instances, ensure_access_profile,
+    extract_model_profiles_from_config, fix_issues, get_app_preferences, get_cached_model_catalog,
+    get_cron_runs, get_session_model_override, get_session_usage_stats, get_status_extra,
     get_status_light, get_system_status, get_watchdog_status, get_zeroclaw_runtime_target,
     get_zeroclaw_usage_stats, list_agents_overview, list_backups, list_bindings,
     list_channels_minimal, list_cron_jobs, list_discord_guild_channels, list_history,
@@ -42,11 +43,11 @@ use crate::commands::{
     remote_upsert_model_profile, remote_write_raw_config, repair_primary_via_rescue,
     resolve_api_keys, resolve_provider_auth, restart_gateway, restore_from_backup, rollback,
     run_doctor_command, run_openclaw_upgrade, set_active_clawpal_data_dir,
-    set_active_openclaw_home, set_agent_model, set_global_model, set_zeroclaw_model_preference,
-    setup_agent_identity, sftp_list_dir, sftp_read_file, sftp_remove_file, sftp_write_file,
-    ssh_connect, ssh_connect_with_passphrase, ssh_disconnect, ssh_exec, ssh_status, start_watchdog,
-    stop_watchdog, test_model_profile, trigger_cron_job, uninstall_watchdog, upsert_model_profile,
-    upsert_ssh_host,
+    set_active_openclaw_home, set_agent_model, set_global_model, set_session_model_override,
+    set_zeroclaw_model_preference, setup_agent_identity, sftp_list_dir, sftp_read_file,
+    sftp_remove_file, sftp_write_file, ssh_connect, ssh_connect_with_passphrase, ssh_disconnect,
+    ssh_exec, ssh_status, start_watchdog, stop_watchdog, test_model_profile, trigger_cron_job,
+    uninstall_watchdog, upsert_model_profile, upsert_ssh_host,
 };
 use crate::doctor_commands::{
     collect_doctor_context, collect_doctor_context_remote, doctor_approve_invoke, doctor_connect,
@@ -59,6 +60,7 @@ use crate::install::commands::{
 use crate::install::session_store::InstallSessionStore;
 use crate::install_commands::{install_send_message, install_start_session};
 use crate::node_client::NodeClient;
+use crate::runtime::zeroclaw::cost::estimate_query_cost;
 use crate::ssh::SshConnectionPool;
 
 pub mod access_discovery;
@@ -119,7 +121,12 @@ pub fn run() {
             get_status_extra,
             get_app_preferences,
             get_zeroclaw_usage_stats,
+            get_session_usage_stats,
             get_zeroclaw_runtime_target,
+            set_session_model_override,
+            get_session_model_override,
+            clear_session_model_override,
+            estimate_query_cost,
             list_recipes,
             list_model_profiles,
             get_cached_model_catalog,

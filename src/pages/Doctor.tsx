@@ -35,6 +35,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DoctorChat } from "@/components/DoctorChat";
+import { TokenBadge } from "@/components/TokenBadge";
+import { ModelSwitcher } from "@/components/ModelSwitcher";
 import { SessionAnalysisPanel } from "@/components/SessionAnalysisPanel";
 import type { BackupInfo } from "@/lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
@@ -1030,7 +1032,7 @@ export function Doctor({
                 </div>
               )}
               <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant="outline" className="text-xs">
                     {t("doctor.engineZeroclaw")}
                   </Badge>
@@ -1038,6 +1040,8 @@ export function Doctor({
                     <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
                     {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
                   </Badge>
+                  <TokenBadge sessionId="zeroclaw-doctor" model="gpt-4o" />
+                  <ModelSwitcher sessionId="zeroclaw-doctor" defaultModel="gpt-4o" />
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
