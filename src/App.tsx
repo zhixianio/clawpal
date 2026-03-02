@@ -34,8 +34,8 @@ import { SshFormWidget } from "./components/SshFormWidget";
 import type { AgentGuidanceItem } from "./components/GuidanceCard";
 import {
   SSH_PASSPHRASE_RETRY_HINT,
-  buildSshPassphraseConnectErrorMessage,
   buildSshPassphraseCancelMessage,
+  buildSshPassphraseConnectErrorMessage,
 } from "@/lib/sshConnectErrors";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
@@ -772,15 +772,20 @@ export function App() {
       return;
     } catch (err) {
       const raw = String(err);
-      if ((!host || host.authMethod !== "password") && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
+      if (host && host.authMethod !== "password" && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
         const passphrase = await requestPassphrase(hostLabel);
         if (passphrase !== null) {
           try {
-            await api.sshConnectWithPassphrase(hostId, passphrase);
+            await withGuidance(
+              () => api.sshConnectWithPassphrase(hostId, passphrase),
+              "sshConnectWithPassphrase",
+              hostId,
+              "remote_ssh",
+            );
             return;
           } catch (passphraseErr) {
             const passphraseRaw = String(passphraseErr);
-            const fallbackMessage = buildSshPassphraseConnectErrorMessage(passphraseRaw, hostLabel);
+            const fallbackMessage = buildSshPassphraseConnectErrorMessage(passphraseRaw, hostLabel, t);
             if (fallbackMessage) {
               throw new Error(fallbackMessage);
             }
@@ -792,10 +797,12 @@ export function App() {
             });
           }
         } else {
-          throw new Error(
-            buildSshPassphraseCancelMessage(hostLabel),
-          );
+          throw new Error(buildSshPassphraseCancelMessage(hostLabel, t));
         }
+      }
+      const fallbackMessage = buildSshPassphraseConnectErrorMessage(raw, hostLabel, t);
+      if (fallbackMessage) {
+        throw new Error(fallbackMessage);
       }
       throw await explainAndBuildGuidanceError({
         method: "sshConnect",
@@ -804,7 +811,7 @@ export function App() {
         rawError: err,
       });
     }
-  }, [requestPassphrase, sshHosts]);
+  }, [requestPassphrase, sshHosts, t]);
 
   const syncRemoteAuthAfterConnect = useCallback(async (hostId: string) => {
     const now = Date.now();

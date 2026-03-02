@@ -4,57 +4,58 @@ import {
   SSH_PASSPHRASE_RETRY_HINT,
   SSH_PASSPHRASE_REJECT_HINT,
   SSH_NO_KEY_HINT,
-  buildSshPassphraseConnectErrorMessage,
-  buildSshPassphraseCancelMessage,
   SSH_PUBLIC_KEY_PERMISSION_HINT,
+  buildSshPassphraseCancelMessage,
+  buildSshPassphraseConnectErrorMessage,
 } from "../sshConnectErrors";
 
+const t = (key: string, opts: Record<string, string> = {}) => {
+  const text = {
+    "ssh.passphraseValidationFailed": "PASS_FAIL_{{host}}",
+    "ssh.missingKeyFile": "MISSING_KEY_{{host}}",
+    "ssh.publicKeyRejected": "PUBLIC_KEY_REJECTED_{{host}}",
+    "ssh.passphraseCancelled": "CANCEL_{{host}}",
+  }[key] || key;
+  return text.replace("{{host}}", opts.host ?? "");
+};
+
 describe("sshConnectErrors", () => {
-  test("classifies passphrase-required error", () => {
+  test("classifies retry hint", () => {
     expect(SSH_PASSPHRASE_RETRY_HINT.test("The key is encrypted.")).toBe(true);
   });
 
-  test("classifies wrong passphrase", () => {
+  test("classifies reject hint", () => {
     expect(SSH_PASSPHRASE_REJECT_HINT.test("bad decrypt")).toBe(true);
   });
 
-  test("classifies missing key path error", () => {
+  test("classifies missing key", () => {
     expect(SSH_NO_KEY_HINT.test("Could not open /Users/foo/.ssh/hetzner")).toBe(true);
   });
 
-  test("maps passphrase connect error to clear user message", () => {
-    const host = "hetzner";
-    const message = buildSshPassphraseConnectErrorMessage("passphrase authentication failed: Bad decrypt", host);
-    expect(message).toContain(`host: ${host}`);
-    expect(message).toContain("SSH 口令校验失败");
-  });
-
-  test("maps key-missing connect error to clear user message", () => {
-    const host = "hetzner";
-    const message = buildSshPassphraseConnectErrorMessage("Could not open key file /Users/foo/.ssh/id_rsa", host);
-    expect(message).toContain(`host: ${host}`);
-    expect(message).toContain("未找到可用私钥文件");
-  });
-
-  test("maps permission denied connect error to clear user message", () => {
-    const host = "hetzner";
-    const message = buildSshPassphraseConnectErrorMessage("permission denied: public key authentication failed", host);
-    expect(message).toContain(`host: ${host}`);
-    expect(message).toContain("SSH 认证失败");
-    expect(message).toContain("authorized_keys");
-  });
-
-  test("returns null for unrelated message", () => {
-    expect(
-      buildSshPassphraseConnectErrorMessage("ssh connect timeout after 10s", "hetzner"),
-    ).toBeNull();
-  });
-
-  test("returns cancel message with host label", () => {
-    expect(buildSshPassphraseCancelMessage("hetzner")).toContain("hetzner");
-  });
-
-  test("exposes permission-denied hint", () => {
+  test("classifies public key rejected", () => {
     expect(SSH_PUBLIC_KEY_PERMISSION_HINT.test("public key authentication failed")).toBe(true);
+  });
+
+  test("maps passphrase retry error to localized message", () => {
+    const msg = buildSshPassphraseConnectErrorMessage("bad decrypt", "hetzner", t);
+    expect(msg).toBe("PASS_FAIL_hetzner");
+  });
+
+  test("maps missing key error to localized message", () => {
+    const msg = buildSshPassphraseConnectErrorMessage("Could not open key file", "hetzner", t);
+    expect(msg).toBe("MISSING_KEY_hetzner");
+  });
+
+  test("maps permission-denied error to localized message", () => {
+    const msg = buildSshPassphraseConnectErrorMessage("public key authentication failed", "hetzner", t);
+    expect(msg).toBe("PUBLIC_KEY_REJECTED_hetzner");
+  });
+
+  test("maps unknown errors to null", () => {
+    expect(buildSshPassphraseConnectErrorMessage("ssh connect timeout after 10s", "hetzner", t)).toBeNull();
+  });
+
+  test("maps cancel message to localized message", () => {
+    expect(buildSshPassphraseCancelMessage("hetzner", t)).toBe("CANCEL_hetzner");
   });
 });
