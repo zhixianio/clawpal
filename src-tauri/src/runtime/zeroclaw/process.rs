@@ -11,8 +11,9 @@ use std::{
 use crate::models::{resolve_paths, OpenClawPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::AsyncBufReadExt;
 
-use super::sanitize::sanitize_output;
+use super::sanitize::{sanitize_line, sanitize_output};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -886,6 +887,185 @@ pub fn run_zeroclaw_message(
         }
         if let Ok(v) = try_once(provider_base_args.clone()) {
             return Ok(v);
+        }
+    }
+
+    if attempt_errors.is_empty() {
+        Err("zeroclaw sidecar failed with no actionable error details.".to_string())
+    } else {
+        Err(format!(
+            "All providers/models failed. Attempts: {}",
+            attempt_errors.join(" | ")
+        ))
+    }
+}
+
+async fn stream_once<F>(
+    cmd: &Path,
+    cfg: &Path,
+    env_pairs: &[(String, String)],
+    args: &[String],
+    on_delta: &F,
+) -> Result<String, String>
+where
+    F: Fn(&str),
+{
+    // Reset stale deltas from any prior failed attempt.
+    on_delta("");
+
+    let mut child = tokio::process::Command::new(cmd)
+        .envs(env_pairs.iter().cloned())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn zeroclaw sidecar: {e}"))?;
+
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture zeroclaw stdout".to_string())?;
+
+    let mut reader = tokio::io::BufReader::new(stdout_pipe).lines();
+    let mut accumulated = String::new();
+
+    while let Some(line) = reader
+        .next_line()
+        .await
+        .map_err(|e| format!("error reading zeroclaw stdout: {e}"))?
+    {
+        if let Some(sanitized) = sanitize_line(&line) {
+            if !accumulated.is_empty() {
+                accumulated.push('\n');
+            }
+            accumulated.push_str(&sanitized);
+            on_delta(&accumulated);
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("failed to wait for zeroclaw sidecar: {e}"))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    record_zeroclaw_usage(&accumulated, &stderr);
+
+    if parse_usage_from_text(&accumulated).is_none() && parse_usage_from_text(&stderr).is_none() {
+        if let Ok(mut stats) = usage_store().lock() {
+            if let Some((prompt, completion, total)) =
+                read_usage_from_builtin_traces(cmd, cfg, env_pairs)
+            {
+                stats.usage_calls = stats.usage_calls.saturating_add(1);
+                stats.prompt_tokens = stats.prompt_tokens.saturating_add(prompt);
+                stats.completion_tokens = stats.completion_tokens.saturating_add(completion);
+                stats.total_tokens = stats.total_tokens.saturating_add(total);
+                stats.last_updated_ms = now_ms();
+            }
+        }
+    }
+
+    if !output.status.success() {
+        let msg = if !stderr.is_empty() {
+            stderr
+        } else {
+            accumulated.clone()
+        };
+        return Err(format!("zeroclaw sidecar failed: {msg}"));
+    }
+
+    if !accumulated.is_empty() {
+        return Ok(accumulated);
+    }
+    Ok("(zeroclaw returned no output)".to_string())
+}
+
+pub async fn run_zeroclaw_message_streaming<F>(
+    message: &str,
+    instance_id: &str,
+    session_scope: &str,
+    on_delta: F,
+) -> Result<String, String>
+where
+    F: Fn(&str) + Send + 'static,
+{
+    let cmd = resolve_zeroclaw_command_path()
+        .ok_or_else(|| "zeroclaw binary not found in bundled resources".to_string())?;
+    let cfg = doctor_sidecar_config_dir(instance_id, session_scope)?;
+    ensure_runtime_trace_mode(&cfg);
+    let env_pairs = zeroclaw_env_pairs_from_clawpal();
+    if env_pairs.is_empty() {
+        return Err(
+            "No compatible API key found in ClawPal model profiles for zeroclaw.".to_string(),
+        );
+    }
+    let cfg_arg = cfg.to_string_lossy().to_string();
+    let message = clamp_message_for_cli(message);
+    let base_args = vec![
+        "--config-dir".to_string(),
+        cfg_arg,
+        "agent".to_string(),
+        "-m".to_string(),
+        message,
+    ];
+    let preferred_model = crate::commands::load_zeroclaw_model_preference();
+    let provider_order = provider_order_for_runtime(&env_pairs, preferred_model.as_deref());
+    if provider_order.is_empty() {
+        return Err(
+            "No supported zeroclaw provider is available from current profiles.".to_string(),
+        );
+    }
+
+    let mut attempt_errors = Vec::<String>::new();
+
+    for provider in provider_order {
+        let mut provider_base_args = base_args.clone();
+        provider_base_args.push("-p".to_string());
+        provider_base_args.push(provider.to_string());
+
+        let mut model_candidates = candidate_models_for_provider(provider);
+        prepend_preferred_model_candidate(
+            &mut model_candidates,
+            preferred_model.clone(),
+            Some(provider),
+        );
+        if model_candidates.is_empty() {
+            match stream_once(&cmd, &cfg, &env_pairs, &provider_base_args, &on_delta).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    attempt_errors.push(format!("provider={provider} no-model: {e}"));
+                    continue;
+                }
+            }
+        }
+
+        let mut auth_break = false;
+        for model in &model_candidates {
+            let mut args = provider_base_args.clone();
+            args.push("--model".to_string());
+            args.push(model.clone());
+            match stream_once(&cmd, &cfg, &env_pairs, &args, &on_delta).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    attempt_errors.push(format!("provider={provider} model={model}: {e}"));
+                    let lower = e.to_ascii_lowercase();
+                    if lower.contains("authentication_error")
+                        || lower.contains("unauthorized")
+                        || lower.contains("invalid x-api-key")
+                        || lower.contains("invalid api key")
+                    {
+                        auth_break = true;
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
+        if !auth_break {
+            if let Ok(v) = stream_once(&cmd, &cfg, &env_pairs, &provider_base_args, &on_delta).await
+            {
+                return Ok(v);
+            }
         }
     }
 

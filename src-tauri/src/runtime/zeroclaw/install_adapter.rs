@@ -4,7 +4,7 @@ use crate::runtime::types::{
 };
 use serde_json::json;
 
-use super::process::run_zeroclaw_message;
+use super::process::{run_zeroclaw_message, run_zeroclaw_message_streaming};
 use super::session::{append_history, build_prompt_with_history_preamble, reset_history};
 
 pub struct ZeroclawInstallAdapter;
@@ -64,6 +64,67 @@ impl ZeroclawInstallAdapter {
             message: err,
             action_hint: None,
         }
+    }
+}
+
+impl ZeroclawInstallAdapter {
+    pub async fn start_streaming<F>(
+        &self,
+        key: &RuntimeSessionKey,
+        message: &str,
+        on_delta: F,
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError>
+    where
+        F: Fn(&str) + Send + 'static,
+    {
+        let session_key = key.storage_key();
+        reset_history(&session_key);
+        let prompt = Self::install_domain_prompt(key, message);
+        let text = run_zeroclaw_message_streaming(
+            &prompt,
+            &key.instance_id,
+            &key.storage_key(),
+            on_delta,
+        )
+        .await
+        .map_err(Self::map_error)?;
+        append_history(&session_key, "system", &prompt);
+        if let Some((invoke, note)) = Self::parse_tool_intent(&text) {
+            append_history(&session_key, "assistant", &note);
+            return Ok(vec![RuntimeEvent::chat_final(note), invoke]);
+        }
+        append_history(&session_key, "assistant", &text);
+        Ok(vec![RuntimeEvent::chat_final(text)])
+    }
+
+    pub async fn send_streaming<F>(
+        &self,
+        key: &RuntimeSessionKey,
+        message: &str,
+        on_delta: F,
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError>
+    where
+        F: Fn(&str) + Send + 'static,
+    {
+        let session_key = key.storage_key();
+        append_history(&session_key, "user", message);
+        let preamble = format!("{}\n", crate::prompt_templates::install_history_preamble());
+        let prompt = build_prompt_with_history_preamble(&session_key, message, &preamble);
+        let guarded = Self::install_domain_prompt(key, &prompt);
+        let text = run_zeroclaw_message_streaming(
+            &guarded,
+            &key.instance_id,
+            &key.storage_key(),
+            on_delta,
+        )
+        .await
+        .map_err(Self::map_error)?;
+        if let Some((invoke, note)) = Self::parse_tool_intent(&text) {
+            append_history(&session_key, "assistant", &note);
+            return Ok(vec![RuntimeEvent::chat_final(note), invoke]);
+        }
+        append_history(&session_key, "assistant", &text);
+        Ok(vec![RuntimeEvent::chat_final(text)])
     }
 }
 
