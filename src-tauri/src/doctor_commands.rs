@@ -6,9 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::doctor_runtime_bridge::emit_runtime_event;
 use crate::models::resolve_paths;
-use crate::runtime::types::{
-    RuntimeDomain, RuntimeError, RuntimeEvent, RuntimeSessionKey,
-};
+use crate::runtime::types::{RuntimeDomain, RuntimeError, RuntimeEvent, RuntimeSessionKey};
 use crate::runtime::zeroclaw::adapter::ZeroclawDoctorAdapter;
 use crate::runtime::zeroclaw::install_adapter::ZeroclawInstallAdapter;
 use crate::ssh::SshConnectionPool;

@@ -4,8 +4,9 @@ use crate::runtime::types::{
 };
 use serde_json::json;
 
-use super::process::{run_zeroclaw_message, run_zeroclaw_message_streaming};
+use super::process::run_zeroclaw_message;
 use super::session::{append_history, build_prompt_with_history_preamble, reset_history};
+use super::streaming::run_zeroclaw_streaming_turn;
 
 pub struct ZeroclawInstallAdapter;
 
@@ -80,21 +81,19 @@ impl ZeroclawInstallAdapter {
         let session_key = key.storage_key();
         reset_history(&session_key);
         let prompt = Self::install_domain_prompt(key, message);
-        let text = run_zeroclaw_message_streaming(
+        let assistant_events = run_zeroclaw_streaming_turn(
+            key,
             &prompt,
-            &key.instance_id,
-            &key.storage_key(),
+            true,
+            None,
             on_delta,
+            |text| text,
+            Self::parse_tool_intent,
+            Self::map_error,
         )
-        .await
-        .map_err(Self::map_error)?;
+        .await?;
         append_history(&session_key, "system", &prompt);
-        if let Some((invoke, note)) = Self::parse_tool_intent(&text) {
-            append_history(&session_key, "assistant", &note);
-            return Ok(vec![RuntimeEvent::chat_final(note), invoke]);
-        }
-        append_history(&session_key, "assistant", &text);
-        Ok(vec![RuntimeEvent::chat_final(text)])
+        Ok(assistant_events)
     }
 
     pub async fn send_streaming<F>(
@@ -111,20 +110,18 @@ impl ZeroclawInstallAdapter {
         let preamble = format!("{}\n", crate::prompt_templates::install_history_preamble());
         let prompt = build_prompt_with_history_preamble(&session_key, message, &preamble);
         let guarded = Self::install_domain_prompt(key, &prompt);
-        let text = run_zeroclaw_message_streaming(
+        let assistant_events = run_zeroclaw_streaming_turn(
+            key,
             &guarded,
-            &key.instance_id,
-            &key.storage_key(),
+            false,
+            Some(message),
             on_delta,
+            |text| text,
+            Self::parse_tool_intent,
+            Self::map_error,
         )
-        .await
-        .map_err(Self::map_error)?;
-        if let Some((invoke, note)) = Self::parse_tool_intent(&text) {
-            append_history(&session_key, "assistant", &note);
-            return Ok(vec![RuntimeEvent::chat_final(note), invoke]);
-        }
-        append_history(&session_key, "assistant", &text);
-        Ok(vec![RuntimeEvent::chat_final(text)])
+        .await?;
+        Ok(assistant_events)
     }
 }
 

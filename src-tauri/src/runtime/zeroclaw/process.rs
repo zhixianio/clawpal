@@ -11,7 +11,7 @@ use std::{
 use crate::models::{resolve_paths, OpenClawPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use super::sanitize::{sanitize_line, sanitize_output};
 
@@ -910,9 +910,6 @@ async fn stream_once<F>(
 where
     F: Fn(&str),
 {
-    // Reset stale deltas from any prior failed attempt.
-    on_delta("");
-
     let mut child = tokio::process::Command::new(cmd)
         .envs(env_pairs.iter().cloned())
         .args(args)
@@ -925,8 +922,18 @@ where
         .stdout
         .take()
         .ok_or_else(|| "failed to capture zeroclaw stdout".to_string())?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture zeroclaw stderr".to_string())?;
 
     let mut reader = tokio::io::BufReader::new(stdout_pipe).lines();
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr_reader = tokio::io::BufReader::new(stderr_pipe);
+        let mut stderr = String::new();
+        let _ = stderr_reader.read_to_string(&mut stderr).await;
+        stderr
+    });
     let mut accumulated = String::new();
 
     while let Some(line) = reader
@@ -943,12 +950,15 @@ where
         }
     }
 
-    let output = child
-        .wait_with_output()
+    let status = child
+        .wait()
         .await
         .map_err(|e| format!("failed to wait for zeroclaw sidecar: {e}"))?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stderr = stderr_task
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     record_zeroclaw_usage(&accumulated, &stderr);
 
     if parse_usage_from_text(&accumulated).is_none() && parse_usage_from_text(&stderr).is_none() {
@@ -965,7 +975,7 @@ where
         }
     }
 
-    if !output.status.success() {
+    if !status.success() {
         let msg = if !stderr.is_empty() {
             stderr
         } else {
@@ -1017,6 +1027,7 @@ where
     }
 
     let mut attempt_errors = Vec::<String>::new();
+    on_delta("");
 
     for provider in provider_order {
         let mut provider_base_args = base_args.clone();
