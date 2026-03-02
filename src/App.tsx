@@ -1598,6 +1598,7 @@ export function App() {
               onDataChange={bumpConfigVersion}
               hasAppUpdate={appUpdateAvailable}
               onAppUpdateSeen={() => setAppUpdateAvailable(false)}
+              onNavigateToProfiles={() => setStartSection("profiles")}
             />
           )}
 
