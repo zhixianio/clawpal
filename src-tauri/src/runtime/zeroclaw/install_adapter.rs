@@ -6,6 +6,7 @@ use serde_json::json;
 
 use super::process::run_zeroclaw_message;
 use super::session::{append_history, build_prompt_with_history_preamble, reset_history};
+use super::streaming::run_zeroclaw_streaming_turn;
 
 pub struct ZeroclawInstallAdapter;
 
@@ -64,6 +65,63 @@ impl ZeroclawInstallAdapter {
             message: err,
             action_hint: None,
         }
+    }
+}
+
+impl ZeroclawInstallAdapter {
+    pub async fn start_streaming<F>(
+        &self,
+        key: &RuntimeSessionKey,
+        message: &str,
+        on_delta: F,
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        let session_key = key.storage_key();
+        reset_history(&session_key);
+        let prompt = Self::install_domain_prompt(key, message);
+        let assistant_events = run_zeroclaw_streaming_turn(
+            key,
+            &prompt,
+            true,
+            None,
+            on_delta,
+            |text| text,
+            Self::parse_tool_intent,
+            Self::map_error,
+        )
+        .await?;
+        append_history(&session_key, "system", &prompt);
+        Ok(assistant_events)
+    }
+
+    pub async fn send_streaming<F>(
+        &self,
+        key: &RuntimeSessionKey,
+        message: &str,
+        on_delta: F,
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        let session_key = key.storage_key();
+        append_history(&session_key, "user", message);
+        let preamble = format!("{}\n", crate::prompt_templates::install_history_preamble());
+        let prompt = build_prompt_with_history_preamble(&session_key, message, &preamble);
+        let guarded = Self::install_domain_prompt(key, &prompt);
+        let assistant_events = run_zeroclaw_streaming_turn(
+            key,
+            &guarded,
+            false,
+            Some(message),
+            on_delta,
+            |text| text,
+            Self::parse_tool_intent,
+            Self::map_error,
+        )
+        .await?;
+        Ok(assistant_events)
     }
 }
 

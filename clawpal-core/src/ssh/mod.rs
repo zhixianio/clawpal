@@ -96,18 +96,6 @@ impl SshSession {
         if config.host.trim().is_empty() {
             return Err(SshError::InvalidConfig("host is empty".to_string()));
         }
-        if config.auth_method.trim().eq_ignore_ascii_case("password")
-            && config
-                .password
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .is_none()
-        {
-            return Err(SshError::InvalidConfig(
-                "password auth selected but password is empty".to_string(),
-            ));
-        }
         let backend = match connect_and_auth(config, passphrase).await {
             Ok((handle, _)) => Backend::Russh {
                 handle: Arc::new(handle),
@@ -457,11 +445,10 @@ async fn connect_and_auth(
     .map_err(|e| SshError::Connect(e.to_string()))?;
 
     if config.auth_method.trim().eq_ignore_ascii_case("password") {
-        let password = config
-            .password
-            .as_deref()
+        let password = passphrase
             .map(str::trim)
             .filter(|v| !v.is_empty())
+            .or_else(|| config.password.as_deref().map(str::trim).filter(|v| !v.is_empty()))
             .ok_or_else(|| {
                 SshError::InvalidConfig("password auth selected but password is empty".to_string())
             })?;

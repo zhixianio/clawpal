@@ -24,6 +24,18 @@ describe("sshConnectErrors", () => {
     expect(SSH_PASSPHRASE_RETRY_HINT.test("The key is encrypted.")).toBe(true);
   });
 
+  test("classifies public-key auth failure from russh connect output", () => {
+    expect(
+      SSH_PASSPHRASE_RETRY_HINT.test(
+        "public key authentication failed for root@5.78.141.96:22 after trying /Users/user/.ssh/hetzner: encrypted or passphrase mismatch (key exchange failed)",
+      ),
+    ).toBe(true);
+  });
+
+  test("classifies password auth failure hint", () => {
+    expect(SSH_PASSPHRASE_RETRY_HINT.test("password is empty")).toBe(true);
+  });
+
   test("classifies reject hint", () => {
     expect(SSH_PASSPHRASE_REJECT_HINT.test("bad decrypt")).toBe(true);
   });

@@ -21,7 +21,7 @@ uuid = { version = "1.11.0", features = ["v4"] }
 chrono = { version = "0.4.38", features = ["clock"] }
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
-tokio = { version = "1", features = ["sync", "process", "macros"] }
+tokio = { version = "1", features = ["sync", "process", "macros", "io-util"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 shellexpand = "3.1"

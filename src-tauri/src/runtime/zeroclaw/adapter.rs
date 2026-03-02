@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use super::process::run_zeroclaw_message;
 use super::session::{append_history, build_prompt_with_history, reset_history};
+use super::streaming::run_zeroclaw_streaming_turn;
 
 pub struct ZeroclawDoctorAdapter;
 
@@ -113,6 +114,59 @@ impl ZeroclawDoctorAdapter {
             message: err,
             action_hint: None,
         }
+    }
+}
+
+impl ZeroclawDoctorAdapter {
+    pub async fn start_streaming<F>(
+        &self,
+        key: &RuntimeSessionKey,
+        message: &str,
+        on_delta: F,
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        let prompt = Self::doctor_domain_prompt(key, message);
+        let assistant_events = run_zeroclaw_streaming_turn(
+            key,
+            &prompt,
+            true,
+            None,
+            on_delta,
+            Self::normalize_doctor_output,
+            Self::parse_tool_intent,
+            Self::map_error,
+        )
+        .await?;
+        let session_key = key.storage_key();
+        append_history(&session_key, "system", &prompt);
+        Ok(assistant_events)
+    }
+
+    pub async fn send_streaming<F>(
+        &self,
+        key: &RuntimeSessionKey,
+        message: &str,
+        on_delta: F,
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        let prompt = build_prompt_with_history(&key.storage_key(), message);
+        let guarded = Self::doctor_domain_prompt(key, &prompt);
+        let assistant_events = run_zeroclaw_streaming_turn(
+            key,
+            &guarded,
+            false,
+            Some(message),
+            on_delta,
+            Self::normalize_doctor_output,
+            Self::parse_tool_intent,
+            Self::map_error,
+        )
+        .await?;
+        Ok(assistant_events)
     }
 }
 

@@ -11,8 +11,9 @@ use std::{
 use crate::models::{resolve_paths, OpenClawPaths};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
-use super::sanitize::sanitize_output;
+use super::sanitize::{sanitize_line, sanitize_output};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -780,6 +781,114 @@ fn prepend_preferred_model_candidate(
     candidates.insert(0, normalized);
 }
 
+async fn run_zeroclaw_retry<T, Fut>(
+    base_args: &[String],
+    provider_order: &[&str],
+    preferred_model: Option<String>,
+    mut run_once: T,
+) -> Result<String, String>
+where
+    T: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    let mut attempt_errors = Vec::<String>::new();
+    for provider in provider_order {
+        let provider = *provider;
+        let mut provider_base_args = base_args.to_vec();
+        provider_base_args.push("-p".to_string());
+        provider_base_args.push(provider.to_string());
+
+        let mut model_candidates = candidate_models_for_provider(provider);
+        prepend_preferred_model_candidate(
+            &mut model_candidates,
+            preferred_model.clone(),
+            Some(provider),
+        );
+        if model_candidates.is_empty() {
+            match run_once(provider_base_args.clone()).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    attempt_errors.push(format!("provider={provider} no-model: {e}"));
+                    continue;
+                }
+            }
+        }
+
+        let mut auth_break = false;
+        for model in &model_candidates {
+            let mut args = provider_base_args.clone();
+            args.push("--model".to_string());
+            args.push(model.clone());
+            match run_once(args).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    attempt_errors.push(format!("provider={provider} model={model}: {e}"));
+                    let lower = e.to_ascii_lowercase();
+                    if lower.contains("authentication_error")
+                        || lower.contains("unauthorized")
+                        || lower.contains("invalid x-api-key")
+                        || lower.contains("invalid api key")
+                    {
+                        auth_break = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !auth_break {
+            if let Ok(v) = run_once(provider_base_args).await {
+                return Ok(v);
+            }
+        }
+    }
+
+    if attempt_errors.is_empty() {
+        Err("zeroclaw sidecar failed with no actionable error details.".to_string())
+    } else {
+        Err(format!(
+            "All providers/models failed. Attempts: {}",
+            attempt_errors.join(" | ")
+        ))
+    }
+}
+
+fn run_zeroclaw_once(
+    cmd: &Path,
+    cfg: &Path,
+    env_pairs: &[(String, String)],
+    args: &[String],
+) -> Result<String, String> {
+    let output = Command::new(cmd)
+        .envs(env_pairs.iter().cloned())
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run zeroclaw sidecar: {e}"))?;
+    let stdout = sanitize_output(&String::from_utf8_lossy(&output.stdout));
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    record_zeroclaw_usage(&stdout, &stderr);
+    if parse_usage_from_text(&stdout).is_none() && parse_usage_from_text(&stderr).is_none() {
+        if let Ok(mut stats) = usage_store().lock() {
+            if let Some((prompt, completion, total)) =
+                read_usage_from_builtin_traces(cmd, cfg, env_pairs)
+            {
+                stats.usage_calls = stats.usage_calls.saturating_add(1);
+                stats.prompt_tokens = stats.prompt_tokens.saturating_add(prompt);
+                stats.completion_tokens = stats.completion_tokens.saturating_add(completion);
+                stats.total_tokens = stats.total_tokens.saturating_add(total);
+                stats.last_updated_ms = now_ms();
+            }
+        }
+    }
+    if !output.status.success() {
+        let msg = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(format!("zeroclaw sidecar failed: {msg}"));
+    }
+    if !stdout.is_empty() {
+        return Ok(stdout);
+    }
+    Ok("(zeroclaw returned no output)".to_string())
+}
+
 pub fn run_zeroclaw_message(
     message: &str,
     instance_id: &str,
@@ -811,92 +920,166 @@ pub fn run_zeroclaw_message(
             "No supported zeroclaw provider is available from current profiles.".to_string(),
         );
     }
-    let mut attempt_errors = Vec::<String>::new();
-    let try_once = |args: Vec<String>| -> Result<String, String> {
-        let output = Command::new(&cmd)
-            .envs(env_pairs.clone())
-            .args(args)
-            .output()
-            .map_err(|e| format!("failed to run zeroclaw sidecar: {e}"))?;
-        let stdout = sanitize_output(&String::from_utf8_lossy(&output.stdout));
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        record_zeroclaw_usage(&stdout, &stderr);
-        if parse_usage_from_text(&stdout).is_none() && parse_usage_from_text(&stderr).is_none() {
-            if let Ok(mut stats) = usage_store().lock() {
-                if let Some((prompt, completion, total)) =
-                    read_usage_from_builtin_traces(&cmd, &cfg, &env_pairs)
-                {
-                    stats.usage_calls = stats.usage_calls.saturating_add(1);
-                    stats.prompt_tokens = stats.prompt_tokens.saturating_add(prompt);
-                    stats.completion_tokens = stats.completion_tokens.saturating_add(completion);
-                    stats.total_tokens = stats.total_tokens.saturating_add(total);
-                    stats.last_updated_ms = now_ms();
-                }
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| format!("failed to initialize runtime: {e}"))?;
+    runtime.block_on(run_zeroclaw_retry(
+        &base_args,
+        &provider_order,
+        preferred_model,
+        |args| {
+            let cmd = cmd.clone();
+            let cfg = cfg.clone();
+            let env_pairs = env_pairs.clone();
+            let args = args;
+            async move {
+                run_zeroclaw_once(&cmd, &cfg, &env_pairs, &args)
+            }
+        },
+    ))
+}
+
+async fn stream_once(
+    cmd: &Path,
+    cfg: &Path,
+    env_pairs: &[(String, String)],
+    args: &[String],
+    on_delta: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, String> {
+    let mut child = tokio::process::Command::new(cmd)
+        .envs(env_pairs.iter().cloned())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn zeroclaw sidecar: {e}"))?;
+
+    let stdout_pipe = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture zeroclaw stdout".to_string())?;
+    let stderr_pipe = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture zeroclaw stderr".to_string())?;
+
+    let mut reader = tokio::io::BufReader::new(stdout_pipe).lines();
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr_reader = tokio::io::BufReader::new(stderr_pipe);
+        let mut stderr = String::new();
+        let _ = stderr_reader.read_to_string(&mut stderr).await;
+        stderr
+    });
+    let mut accumulated = String::new();
+
+    while let Some(line) = reader
+        .next_line()
+        .await
+        .map_err(|e| format!("error reading zeroclaw stdout: {e}"))?
+    {
+        if let Some(sanitized) = sanitize_line(&line) {
+            if !accumulated.is_empty() {
+                accumulated.push('\n');
+            }
+            accumulated.push_str(&sanitized);
+            on_delta(&accumulated);
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("failed to wait for zeroclaw sidecar: {e}"))?;
+    let stderr = stderr_task
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    record_zeroclaw_usage(&accumulated, &stderr);
+
+    if parse_usage_from_text(&accumulated).is_none() && parse_usage_from_text(&stderr).is_none() {
+        if let Ok(mut stats) = usage_store().lock() {
+            if let Some((prompt, completion, total)) =
+                read_usage_from_builtin_traces(cmd, cfg, env_pairs)
+            {
+                stats.usage_calls = stats.usage_calls.saturating_add(1);
+                stats.prompt_tokens = stats.prompt_tokens.saturating_add(prompt);
+                stats.completion_tokens = stats.completion_tokens.saturating_add(completion);
+                stats.total_tokens = stats.total_tokens.saturating_add(total);
+                stats.last_updated_ms = now_ms();
             }
         }
-        if !output.status.success() {
-            let msg = if !stderr.is_empty() { stderr } else { stdout };
-            return Err(format!("zeroclaw sidecar failed: {msg}"));
-        }
-        if !stdout.is_empty() {
-            return Ok(stdout);
-        }
-        Ok("(zeroclaw returned no output)".to_string())
-    };
-    for provider in provider_order {
-        let mut provider_base_args = base_args.clone();
-        provider_base_args.push("-p".to_string());
-        provider_base_args.push(provider.to_string());
+    }
 
-        let mut model_candidates = candidate_models_for_provider(provider);
-        prepend_preferred_model_candidate(
-            &mut model_candidates,
-            preferred_model.clone(),
-            Some(provider),
+    if !status.success() {
+        let msg = if !stderr.is_empty() {
+            stderr
+        } else {
+            accumulated.clone()
+        };
+        return Err(format!("zeroclaw sidecar failed: {msg}"));
+    }
+
+    if !accumulated.is_empty() {
+        return Ok(accumulated);
+    }
+    Ok("(zeroclaw returned no output)".to_string())
+}
+
+pub async fn run_zeroclaw_message_streaming<F>(
+    message: &str,
+    instance_id: &str,
+    session_scope: &str,
+    on_delta: F,
+) -> Result<String, String>
+where
+    F: Fn(&str) + Send + Sync + 'static,
+{
+    let cmd = resolve_zeroclaw_command_path()
+        .ok_or_else(|| "zeroclaw binary not found in bundled resources".to_string())?;
+    let cfg = doctor_sidecar_config_dir(instance_id, session_scope)?;
+    ensure_runtime_trace_mode(&cfg);
+    let env_pairs = zeroclaw_env_pairs_from_clawpal();
+    if env_pairs.is_empty() {
+        return Err(
+            "No compatible API key found in ClawPal model profiles for zeroclaw.".to_string(),
         );
-        if model_candidates.is_empty() {
-            match try_once(provider_base_args.clone()) {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    attempt_errors.push(format!("provider={provider} no-model: {e}"));
-                    continue;
-                }
-            }
-        }
-
-        for model in model_candidates {
-            let mut args = provider_base_args.clone();
-            args.push("--model".to_string());
-            args.push(model.clone());
-            match try_once(args) {
-                Ok(v) => return Ok(v),
-                Err(e) => {
-                    attempt_errors.push(format!("provider={provider} model={model}: {e}"));
-                    let lower = e.to_ascii_lowercase();
-                    if lower.contains("authentication_error")
-                        || lower.contains("unauthorized")
-                        || lower.contains("invalid x-api-key")
-                        || lower.contains("invalid api key")
-                    {
-                        break;
-                    }
-                    continue;
-                }
-            }
-        }
-        if let Ok(v) = try_once(provider_base_args.clone()) {
-            return Ok(v);
-        }
+    }
+    let cfg_arg = cfg.to_string_lossy().to_string();
+    let message = clamp_message_for_cli(message);
+    let base_args = vec![
+        "--config-dir".to_string(),
+        cfg_arg,
+        "agent".to_string(),
+        "-m".to_string(),
+        message,
+    ];
+    let preferred_model = crate::commands::load_zeroclaw_model_preference();
+    let provider_order = provider_order_for_runtime(&env_pairs, preferred_model.as_deref());
+    if provider_order.is_empty() {
+        return Err(
+            "No supported zeroclaw provider is available from current profiles.".to_string(),
+        );
     }
 
-    if attempt_errors.is_empty() {
-        Err("zeroclaw sidecar failed with no actionable error details.".to_string())
-    } else {
-        Err(format!(
-            "All providers/models failed. Attempts: {}",
-            attempt_errors.join(" | ")
-        ))
-    }
+    let on_delta: std::sync::Arc<dyn Fn(&str) + Send + Sync> =
+        std::sync::Arc::new(on_delta);
+    (on_delta.as_ref())("");
+    run_zeroclaw_retry(
+        &base_args,
+        &provider_order,
+        preferred_model,
+        |args| {
+            let cmd = cmd.clone();
+            let cfg = cfg.clone();
+            let env_pairs = env_pairs.clone();
+            let on_delta = std::sync::Arc::clone(&on_delta);
+            let args = args;
+            async move {
+                stream_once(&cmd, &cfg, &env_pairs, &args, on_delta.as_ref()).await
+            }
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

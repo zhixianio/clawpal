@@ -2,7 +2,7 @@ use tauri::AppHandle;
 
 use crate::doctor_commands::register_runtime_invoke;
 use crate::doctor_runtime_bridge::emit_runtime_event;
-use crate::runtime::types::{RuntimeAdapter, RuntimeDomain, RuntimeEvent, RuntimeSessionKey};
+use crate::runtime::types::{RuntimeDomain, RuntimeEvent, RuntimeSessionKey};
 use crate::runtime::zeroclaw::install_adapter::ZeroclawInstallAdapter;
 
 #[tauri::command]
@@ -22,7 +22,11 @@ pub async fn install_start_session(
         session_key.clone(),
     );
     let adapter = ZeroclawInstallAdapter;
-    match adapter.start(&key, &context) {
+    let app_clone = app.clone();
+    let on_delta = move |text: &str| {
+        emit_runtime_event(&app_clone, RuntimeEvent::chat_delta(text.to_string()));
+    };
+    match adapter.start_streaming(&key, &context, on_delta).await {
         Ok(events) => {
             for ev in events {
                 register_runtime_invoke(&ev);
@@ -55,7 +59,11 @@ pub async fn install_send_message(
         session_key.clone(),
     );
     let adapter = ZeroclawInstallAdapter;
-    match adapter.send(&key, &message) {
+    let app_clone = app.clone();
+    let on_delta = move |text: &str| {
+        emit_runtime_event(&app_clone, RuntimeEvent::chat_delta(text.to_string()));
+    };
+    match adapter.send_streaming(&key, &message, on_delta).await {
         Ok(events) => {
             for ev in events {
                 register_runtime_invoke(&ev);

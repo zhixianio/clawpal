@@ -766,13 +766,13 @@ export function App() {
 
   const connectWithPassphraseFallback = useCallback(async (hostId: string) => {
     const host = sshHosts.find((h) => h.id === hostId);
-    const hostLabel = host?.label || host?.host || hostId;
+    const hostLabel = host?.label || host?.host || (hostId.startsWith("ssh:") ? hostId.slice("ssh:".length) : hostId);
     try {
       await api.sshConnect(hostId);
       return;
     } catch (err) {
       const raw = String(err);
-      if (host && host.authMethod !== "password" && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
+      if (SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
         const passphrase = await requestPassphrase(hostLabel);
         if (passphrase !== null) {
           try {

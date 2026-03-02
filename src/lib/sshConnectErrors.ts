@@ -4,7 +4,7 @@ export type SshTranslate = (
 ) => string;
 
 export const SSH_PASSPHRASE_RETRY_HINT =
-  /passphrase|sign_and_send_pubkey|agent refused operation|can't open \/dev\/tty|authentication agent|key is encrypted|encrypted|passphrase required|public key authentication failed/i;
+  /passphrase|sign_and_send_pubkey|agent refused operation|can't open \/dev\/tty|authentication agent|key is encrypted|encrypted|passphrase required|public key authentication failed|password authentication failed|password is empty|password.*required/i;
 
 export const SSH_PASSPHRASE_REJECT_HINT =
   /bad decrypt|incorrect passphrase|wrong passphrase|passphrase.*failed|decrypt failed/i;

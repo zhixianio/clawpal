@@ -6,9 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::doctor_runtime_bridge::emit_runtime_event;
 use crate::models::resolve_paths;
-use crate::runtime::types::{
-    RuntimeAdapter, RuntimeDomain, RuntimeError, RuntimeEvent, RuntimeSessionKey,
-};
+use crate::runtime::types::{RuntimeDomain, RuntimeError, RuntimeEvent, RuntimeSessionKey};
 use crate::runtime::zeroclaw::adapter::ZeroclawDoctorAdapter;
 use crate::runtime::zeroclaw::install_adapter::ZeroclawInstallAdapter;
 use crate::ssh::SshConnectionPool;
@@ -106,7 +104,11 @@ pub async fn doctor_start_diagnosis(
         session_key.clone(),
     );
     let adapter = ZeroclawDoctorAdapter;
-    match adapter.start(&key, &context) {
+    let app_clone = app.clone();
+    let on_delta = move |text: &str| {
+        emit_runtime_event(&app_clone, RuntimeEvent::chat_delta(text.to_string()));
+    };
+    match adapter.start_streaming(&key, &context, on_delta).await {
         Ok(events) => {
             for ev in events {
                 register_runtime_invoke(&ev);
@@ -145,7 +147,11 @@ pub async fn doctor_send_message(
         session_key.clone(),
     );
     let adapter = ZeroclawDoctorAdapter;
-    match adapter.send(&key, &message) {
+    let app_clone = app.clone();
+    let on_delta = move |text: &str| {
+        emit_runtime_event(&app_clone, RuntimeEvent::chat_delta(text.to_string()));
+    };
+    match adapter.send_streaming(&key, &message, on_delta).await {
         Ok(events) => {
             for ev in events {
                 register_runtime_invoke(&ev);
@@ -256,10 +262,18 @@ pub async fn doctor_approve_invoke(
         agent_id.clone(),
         session_key.clone(),
     );
+    let app_clone = app.clone();
+    let on_delta = move |text: &str| {
+        emit_runtime_event(&app_clone, RuntimeEvent::chat_delta(text.to_string()));
+    };
     let send_result = if is_install {
-        ZeroclawInstallAdapter.send(&key, &result_text)
+        ZeroclawInstallAdapter
+            .send_streaming(&key, &result_text, on_delta)
+            .await
     } else {
-        ZeroclawDoctorAdapter.send(&key, &result_text)
+        ZeroclawDoctorAdapter
+            .send_streaming(&key, &result_text, on_delta)
+            .await
     };
     let events = match handle_runtime_send_result(rt_domain.as_str(), send_result) {
         Ok(events) => events,
