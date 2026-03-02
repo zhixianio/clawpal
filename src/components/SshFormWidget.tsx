@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,26 +9,71 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { SshHost } from "@/lib/types";
+import type { SshConfigHostSuggestion, SshHost } from "@/lib/types";
 
 interface SshFormWidgetProps {
   invokeId: string;
   defaults?: Partial<SshHost>;
+  sshConfigSuggestions?: SshConfigHostSuggestion[];
   onSubmit: (invokeId: string, host: SshHost) => void;
   onCancel: (invokeId: string) => void;
 }
 
-export function SshFormWidget({ invokeId, defaults, onSubmit, onCancel }: SshFormWidgetProps) {
+const SSH_CONFIG_MANUAL_ALIAS = "__manual__";
+
+export function SshFormWidget({
+  invokeId,
+  defaults,
+  sshConfigSuggestions = [],
+  onSubmit,
+  onCancel,
+}: SshFormWidgetProps) {
   const { t } = useTranslation();
   const [host, setHost] = useState(defaults?.host ?? "");
   const [port, setPort] = useState(String(defaults?.port ?? 22));
   const [username, setUsername] = useState(defaults?.username ?? "");
   const [authMethod, setAuthMethod] = useState<"ssh_config" | "key" | "password">(
-    (defaults?.authMethod as "ssh_config" | "key" | "password") ?? "ssh_config",
+    (defaults?.authMethod as "ssh_config" | "key" | "password") ?? "key",
   );
   const [keyPath, setKeyPath] = useState(defaults?.keyPath ?? "");
   const [password, setPassword] = useState(defaults?.password ?? "");
   const [label, setLabel] = useState(defaults?.label ?? "");
+  const [selectedSshConfigAlias, setSelectedSshConfigAlias] = useState(
+    SSH_CONFIG_MANUAL_ALIAS,
+  );
+
+  const filteredSshConfigHosts = useMemo(() => {
+    const seen = new Set<string>();
+    const sorted = [...sshConfigSuggestions]
+      .filter((item) => {
+        const key = item.hostAlias.trim();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.hostAlias.localeCompare(b.hostAlias, undefined, { sensitivity: "base" }));
+    return sorted;
+  }, [sshConfigSuggestions]);
+
+  const applySshConfigSuggestion = (alias: string) => {
+    if (alias === SSH_CONFIG_MANUAL_ALIAS) {
+      setSelectedSshConfigAlias(SSH_CONFIG_MANUAL_ALIAS);
+      return;
+    }
+    const preset = filteredSshConfigHosts.find((item) => item.hostAlias === alias);
+    if (!preset) {
+      setSelectedSshConfigAlias(SSH_CONFIG_MANUAL_ALIAS);
+      return;
+    }
+    setSelectedSshConfigAlias(alias);
+    setHost(preset.hostAlias);
+    setUsername(preset.user ?? "");
+    setPort(String(preset.port ?? 22));
+    setKeyPath(preset.identityFile ?? "");
+    setPassword("");
+    setAuthMethod("ssh_config");
+    setLabel(preset.hostAlias);
+  };
 
   const isValid = host.trim().length > 0 && (authMethod !== "password" || password.length > 0);
 
@@ -49,6 +94,33 @@ export function SshFormWidget({ invokeId, defaults, onSubmit, onCancel }: SshFor
   return (
     <div className="rounded-lg border p-3 space-y-3 bg-[oklch(0.96_0_0)] dark:bg-muted/50">
       <div className="text-xs font-medium">{t("installChat.sshFormTitle")}</div>
+      {filteredSshConfigHosts.length > 0 && (
+        <div className="space-y-1">
+          <label className="text-xs font-medium">{t("installChat.sshConfigPreset")}</label>
+          <Select
+            value={selectedSshConfigAlias}
+            onValueChange={applySshConfigSuggestion}
+          >
+            <SelectTrigger className="h-8 text-sm">
+              <SelectValue placeholder={t("installChat.sshConfigPresetPlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={SSH_CONFIG_MANUAL_ALIAS}>
+                {t("installChat.sshConfigPresetManual")}
+              </SelectItem>
+              {filteredSshConfigHosts.map((item) => (
+                <SelectItem key={item.hostAlias} value={item.hostAlias}>
+                  {item.hostAlias}
+                  {item.hostName ? ` (${item.hostName})` : ""}
+                  {item.user ? ` • ${item.user}` : ""}
+                  {item.port && item.port !== 22 ? `:${item.port}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">{t("installChat.sshConfigPresetHint")}</p>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-2">
         <div className="col-span-2 space-y-1">
           <label className="text-xs font-medium">{t("installChat.sshHost")}</label>

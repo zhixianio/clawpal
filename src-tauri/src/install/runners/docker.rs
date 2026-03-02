@@ -3,7 +3,7 @@ use crate::install::types::InstallStep;
 use dirs::home_dir;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DEFAULT_GATEWAY_PORT: u16 = 18789;
 const PORT_STEP: u16 = 10;

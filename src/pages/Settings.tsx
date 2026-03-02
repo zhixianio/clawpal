@@ -5,7 +5,8 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "sonner";
-import { useApi } from "@/lib/use-api";
+import { hasGuidanceEmitted, useApi } from "@/lib/use-api";
+import { isAlreadyExplainedGuidanceError } from "@/lib/guidance";
 import { useTheme } from "@/lib/use-theme";
 import { useFont } from "@/lib/use-font";
 import type { UiFont } from "@/lib/use-font";
@@ -61,7 +62,7 @@ type ProfileForm = {
 };
 
 const MODEL_CATALOG_CACHE_TTL_MS = 5 * 60_000;
-const ENABLE_PROFILE_TEST_BUTTON = false;
+const ENABLE_PROFILE_TEST_BUTTON = true;
 const ZEROCLAW_SUPPORTED_PROVIDERS = new Set([
   "openrouter",
   "openai",
@@ -164,12 +165,20 @@ function AutocompleteField({
   );
 }
 
-export function Settings({ onDataChange, hasAppUpdate, onAppUpdateSeen, globalMode = false, section = "all" }: {
+export function Settings({
+  onDataChange,
+  hasAppUpdate,
+  onAppUpdateSeen,
+  globalMode = false,
+  section = "all",
+  onOpenDoctor,
+}: {
   onDataChange?: () => void;
   hasAppUpdate?: boolean;
   onAppUpdateSeen?: () => void;
   globalMode?: boolean;
   section?: "all" | "profiles" | "preferences";
+  onOpenDoctor?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const ua = useApi();
@@ -513,6 +522,10 @@ export function Settings({ onDataChange, hasAppUpdate, onAppUpdateSeen, globalMo
   };
 
   const testProfile = async (profile: ModelProfile) => {
+    if (!profile.enabled) {
+      toast.error(t('settings.testProfileDisabled'));
+      return;
+    }
     setTestingProfileId(profile.id);
     try {
       await ua.testModelProfile(profile.id);
@@ -524,7 +537,47 @@ export function Settings({ onDataChange, hasAppUpdate, onAppUpdateSeen, globalMo
       );
     } catch (e) {
       const errorText = e instanceof Error ? e.message : String(e);
-      toast.error(t('settings.testProfileFailed', { error: errorText }));
+      if (hasGuidanceEmitted(e) || isAlreadyExplainedGuidanceError(errorText)) {
+        if (onOpenDoctor) {
+          toast.error(
+            <div className="space-y-2">
+              <p>{t('settings.testProfileFailed', { error: t('home.fixInDoctor') })}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    onOpenDoctor();
+                  }}
+                >
+                  {t("home.fixInDoctor")}
+                </Button>
+              </div>
+            </div>
+          );
+        }
+        return;
+      }
+      toast.error(
+        <div className="space-y-2">
+          <p>{t('settings.testProfileFailed', { error: errorText })}</p>
+          <div className="flex flex-wrap gap-2">
+          {onOpenDoctor && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                onOpenDoctor();
+              }}
+            >
+              {t("home.fixInDoctor")}
+            </Button>
+          )}
+          </div>
+        </div>
+      );
     } finally {
       setTestingProfileId(null);
     }

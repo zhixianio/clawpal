@@ -5716,16 +5716,44 @@ pub async fn ssh_connect(
     pool: State<'_, SshConnectionPool>,
     host_id: String,
 ) -> Result<bool, String> {
+    crate::commands::logs::log_dev(format!("[dev][ssh_connect] begin host_id={host_id}"));
     // If already connected and handle is alive, reuse
     if pool.is_connected(&host_id).await {
+        crate::commands::logs::log_dev(format!(
+            "[dev][ssh_connect] reuse existing connection host_id={host_id}"
+        ));
         return Ok(true);
     }
     let hosts = read_hosts_from_registry()?;
+    if hosts.is_empty() {
+        crate::commands::logs::log_dev("[dev][ssh_connect] host registry is empty");
+    }
     let host = hosts
         .into_iter()
         .find(|h| h.id == host_id)
-        .ok_or_else(|| format!("No SSH host config with id: {host_id}"))?;
-    pool.connect(&host).await?;
+        .ok_or_else(|| {
+            let mut ids = Vec::new();
+            for h in read_hosts_from_registry().unwrap_or_default() {
+                ids.push(h.id);
+            }
+            crate::commands::logs::log_dev(format!(
+                "[dev][ssh_connect] no host found host_id={host_id} known={ids:?}"
+            ));
+            format!("No SSH host config with id: {host_id}")
+        })?;
+    if let Err(error) = pool.connect(&host).await {
+        crate::commands::logs::log_dev(format!(
+            "[dev][ssh_connect] failed host_id={} host={} user={} port={} auth_method={} error={}",
+            host_id,
+            host.host,
+            host.username,
+            host.port,
+            host.auth_method,
+            error
+        ));
+        return Err(format!("ssh connect failed: {error}"));
+    }
+    crate::commands::logs::log_dev(format!("[dev][ssh_connect] success host_id={host_id}"));
     Ok(true)
 }
 
@@ -5735,16 +5763,49 @@ pub async fn ssh_connect_with_passphrase(
     host_id: String,
     passphrase: String,
 ) -> Result<bool, String> {
+    crate::commands::logs::log_dev(format!(
+        "[dev][ssh_connect_with_passphrase] begin host_id={host_id}"
+    ));
     if pool.is_connected(&host_id).await {
+        crate::commands::logs::log_dev(format!(
+            "[dev][ssh_connect_with_passphrase] reuse existing connection host_id={host_id}"
+        ));
         return Ok(true);
     }
     let hosts = read_hosts_from_registry()?;
+    if hosts.is_empty() {
+        crate::commands::logs::log_dev(
+            "[dev][ssh_connect_with_passphrase] host registry is empty",
+        );
+    }
     let host = hosts
         .into_iter()
         .find(|h| h.id == host_id)
-        .ok_or_else(|| format!("No SSH host config with id: {host_id}"))?;
-    pool.connect_with_passphrase(&host, Some(passphrase.as_str()))
-        .await?;
+        .ok_or_else(|| {
+            let mut ids = Vec::new();
+            for h in read_hosts_from_registry().unwrap_or_default() {
+                ids.push(h.id);
+            }
+            crate::commands::logs::log_dev(format!(
+                "[dev][ssh_connect_with_passphrase] no host found host_id={host_id} known={ids:?}"
+            ));
+            format!("No SSH host config with id: {host_id}")
+        })?;
+    if let Err(error) = pool.connect_with_passphrase(&host, Some(passphrase.as_str())).await {
+        crate::commands::logs::log_dev(format!(
+            "[dev][ssh_connect_with_passphrase] failed host_id={} host={} user={} port={} auth_method={} error={}",
+            host_id,
+            host.host,
+            host.username,
+            host.port,
+            host.auth_method,
+            error
+        ));
+        return Err(format!("ssh connect failed: {error}"));
+    }
+    crate::commands::logs::log_dev(format!(
+        "[dev][ssh_connect_with_passphrase] success host_id={host_id}"
+    ));
     Ok(true)
 }
 

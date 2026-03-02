@@ -14,10 +14,18 @@ import {
 import { AgentMessageBubble } from "@/components/AgentMessageBubble";
 import { SshFormWidget } from "@/components/SshFormWidget";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
+import { hasGuidanceEmitted } from "@/lib/use-api";
+import { isAlreadyExplainedGuidanceError } from "@/lib/guidance";
 import { api } from "@/lib/api";
 import { withGuidance } from "@/lib/guidance";
 import { installHubFallbackPromptTemplate, renderPromptTemplate } from "@/lib/prompt-templates";
-import type { DoctorChatMessage, InstallMethod, InstallSession, SshHost } from "@/lib/types";
+import type {
+  DoctorChatMessage,
+  InstallMethod,
+  InstallSession,
+  SshConfigHostSuggestion,
+  SshHost,
+} from "@/lib/types";
 import i18n from "../i18n";
 
 /**
@@ -115,6 +123,22 @@ const PRESET_TAGS = [
   { key: "connect_wsl2", labelKey: "installChat.tag.connectWsl2" },
 ];
 
+const DIAGNOSTIC_LOG_LINES = 300;
+
+type InstallHubDiagnosticLogs = {
+  appLog: string;
+  errorLog: string;
+  gatewayLog: string;
+  gatewayErrorLog: string;
+};
+
+const EMPTY_DIAGNOSTIC_LOGS: InstallHubDiagnosticLogs = {
+  appLog: "",
+  errorLog: "",
+  gatewayLog: "",
+  gatewayErrorLog: "",
+};
+
 function sanitizeSshIdSegment(raw: string): string {
   const lowered = raw.toLowerCase().trim();
   const replaced = lowered.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -143,15 +167,19 @@ function buildInstallPrompt(userIntent: string): string {
 export function InstallHub({
   open,
   onOpenChange,
-  showToast,
+  showToast: _showToast,
   onNavigate,
   onReady,
+  onOpenDoctor,
+  connectRemoteHost,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   showToast?: (message: string, type?: "success" | "error") => void;
   onNavigate?: (route: string) => void;
   onReady?: (session: InstallSession) => void;
+  onOpenDoctor?: () => void;
+  connectRemoteHost?: (hostId: string) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const agent = useDoctorAgent();
@@ -161,12 +189,24 @@ export function InstallHub({
   const [installMethod, setInstallMethod] = useState<InstallMethod>("local");
   const [runLogs, setRunLogs] = useState<string[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
+  const [runErrorHasGuidance, setRunErrorHasGuidance] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [connectSubmitting, setConnectSubmitting] = useState(false);
   const [dockerConnectHome, setDockerConnectHome] = useState("~/.clawpal/docker-local");
   const [dockerConnectLabel, setDockerConnectLabel] = useState("docker-local");
   const [wsl2ConnectHome, setWsl2ConnectHome] = useState("");
   const [wsl2ConnectLabel, setWsl2ConnectLabel] = useState("wsl2-default");
+  const [sshConfigSuggestions, setSshConfigSuggestions] = useState<
+    SshConfigHostSuggestion[]
+  >([]);
+  const [sshConfigSuggestionsLoading, setSshConfigSuggestionsLoading] = useState(false);
+  const [sshConfigSuggestionsError, setSshConfigSuggestionsError] = useState<string | null>(null);
+  const [sshConfigSuggestionsLoaded, setSshConfigSuggestionsLoaded] = useState(false);
+  const [diagnosticHostId, setDiagnosticHostId] = useState<string | null>(null);
+  const [diagnosticLogs, setDiagnosticLogs] = useState<InstallHubDiagnosticLogs>(EMPTY_DIAGNOSTIC_LOGS);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll on new messages
@@ -189,15 +229,182 @@ export function InstallHub({
       setInstallMethod("local");
       setRunLogs([]);
       setRunError(null);
+      setRunErrorHasGuidance(false);
       setActiveSessionId(null);
       setConnectSubmitting(false);
       setDockerConnectHome("~/.clawpal/docker-local");
       setDockerConnectLabel("docker-local");
       setWsl2ConnectHome("");
       setWsl2ConnectLabel("wsl2-default");
+      setSshConfigSuggestions([]);
+      setSshConfigSuggestionsLoading(false);
+      setSshConfigSuggestionsError(null);
+      setSshConfigSuggestionsLoaded(false);
+      setDiagnosticHostId(null);
+      setDiagnosticLogs(EMPTY_DIAGNOSTIC_LOGS);
+      setDiagnosticsLoading(false);
+      setDiagnosticsVisible(false);
+      setDiagnosticsError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  const loadSshConfigSuggestions = useCallback(async () => {
+    if (sshConfigSuggestionsLoading) {
+      return;
+    }
+    if (sshConfigSuggestionsLoaded) {
+      return;
+    }
+    setSshConfigSuggestionsLoading(true);
+    setSshConfigSuggestionsError(null);
+    try {
+      const list = await withGuidance(
+        () => api.listSshConfigHosts(),
+        "listSshConfigHosts",
+        "local",
+        "local",
+      );
+      setSshConfigSuggestions(list);
+    } catch (e) {
+      if (import.meta.env.DEV) {
+        console.error("[dev exception] loadSshConfigSuggestions", e);
+      }
+      setSshConfigSuggestionsError(
+        e instanceof Error ? e.message : String(e),
+      );
+      setSshConfigSuggestions([]);
+    } finally {
+      setSshConfigSuggestionsLoaded(true);
+      setSshConfigSuggestionsLoading(false);
+    }
+  }, [sshConfigSuggestionsLoaded, sshConfigSuggestionsLoading]);
+
+  const clearDiagnostics = useCallback(() => {
+    setDiagnosticHostId(null);
+    setDiagnosticLogs(EMPTY_DIAGNOSTIC_LOGS);
+    setDiagnosticsLoading(false);
+    setDiagnosticsVisible(false);
+    setDiagnosticsError(null);
+  }, []);
+
+  const formatLogReadError = (label: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return `[${label}] ${message}`;
+  };
+
+  const readRemoteDiagnostics = useCallback(async (hostId: string) => {
+    const [appLog, errorLog, gatewayLog, gatewayErrorLog] = await Promise.all([
+      api
+        .remoteReadAppLog(hostId, DIAGNOSTIC_LOG_LINES)
+        .catch((error) => {
+          if (import.meta.env.DEV) {
+            console.error("[dev exception] readRemoteDiagnostics app.log", {
+              hostId,
+              error,
+            });
+          }
+          return formatLogReadError("app.log", error);
+        }),
+      api
+        .remoteReadErrorLog(hostId, DIAGNOSTIC_LOG_LINES)
+        .catch((error) => {
+          if (import.meta.env.DEV) {
+            console.error("[dev exception] readRemoteDiagnostics error.log", {
+              hostId,
+              error,
+            });
+          }
+          return formatLogReadError("error.log", error);
+        }),
+      api
+        .remoteReadGatewayLog(hostId, DIAGNOSTIC_LOG_LINES)
+        .catch((error) => {
+          if (import.meta.env.DEV) {
+            console.error("[dev exception] readRemoteDiagnostics gateway.log", {
+              hostId,
+              error,
+            });
+          }
+          return formatLogReadError("gateway.log", error);
+        }),
+      api
+        .remoteReadGatewayErrorLog(hostId, DIAGNOSTIC_LOG_LINES)
+        .catch((error) => {
+          if (import.meta.env.DEV) {
+            console.error("[dev exception] readRemoteDiagnostics gateway.err.log", {
+              hostId,
+              error,
+            });
+          }
+          return formatLogReadError("gateway.err.log", error);
+        }),
+    ]);
+    return { appLog, errorLog, gatewayLog, gatewayErrorLog };
+  }, [formatLogReadError]);
+
+  const readLocalDiagnostics = useCallback(async () => {
+      const [appLog, errorLog, gatewayLog, gatewayErrorLog] = await Promise.all([
+      api.readAppLog(DIAGNOSTIC_LOG_LINES).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.error("[dev exception] readLocalDiagnostics app.log", error);
+        }
+        return formatLogReadError("app.log", error);
+      }),
+      api.readErrorLog(DIAGNOSTIC_LOG_LINES).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.error("[dev exception] readLocalDiagnostics error.log", error);
+        }
+        return formatLogReadError("error.log", error);
+      }),
+      api.readGatewayLog(DIAGNOSTIC_LOG_LINES).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.error("[dev exception] readLocalDiagnostics gateway.log", error);
+        }
+        return formatLogReadError("gateway.log", error);
+      }),
+      api.readGatewayErrorLog(DIAGNOSTIC_LOG_LINES).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.error("[dev exception] readLocalDiagnostics gateway.err.log", error);
+        }
+        return formatLogReadError("gateway.err.log", error);
+      }),
+    ]);
+    return { appLog, errorLog, gatewayLog, gatewayErrorLog };
+  }, [formatLogReadError]);
+
+  const refreshDiagnostics = useCallback(async (hostId: string | null) => {
+    if (diagnosticsLoading) {
+      return;
+    }
+    setDiagnosticsLoading(true);
+    setDiagnosticsError(null);
+    setDiagnosticsVisible(true);
+    try {
+      const logs = hostId
+        ? await readRemoteDiagnostics(hostId)
+        : await readLocalDiagnostics();
+      setDiagnosticLogs(logs);
+      setDiagnosticHostId(hostId);
+    } catch (error) {
+      if (import.meta.env.DEV) {
+        console.error("[dev exception] refreshDiagnostics", {
+          hostId,
+          error,
+        });
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      setDiagnosticsError(message);
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }, [diagnosticsLoading, readRemoteDiagnostics, readLocalDiagnostics]);
+
+  useEffect(() => {
+    if (open && mode === "connect_ssh") {
+      void loadSshConfigSuggestions();
+    }
+  }, [loadSshConfigSuggestions, mode, open]);
 
   // Start agent session with the user's first message baked into the system prompt
   const startSession = useCallback((userIntent: string) => {
@@ -348,6 +555,87 @@ export function InstallHub({
   });
 
   const hasMessages = visibleMessages.length > 0;
+  const clearRunErrorState = useCallback(() => {
+    setRunError(null);
+    setRunErrorHasGuidance(false);
+    clearDiagnostics();
+  }, [clearDiagnostics]);
+
+  const diagnosticTargetLabel = diagnosticHostId
+    ? `remote (${diagnosticHostId})`
+    : t("instance.local");
+  const renderDiagnosticSection = (title: string, content: string) => (
+    <details className="border border-border rounded-md" open>
+      <summary className="px-3 py-2 cursor-pointer text-xs font-medium">
+        {title}
+      </summary>
+      <pre className="px-3 pb-2 whitespace-pre-wrap break-words text-xs font-mono max-h-48 overflow-auto">
+        {content || t("doctor.noLogs")}
+      </pre>
+    </details>
+  );
+
+  const runErrorPanel = runError ? (
+    <div className="rounded-md border border-destructive/30 bg-destructive/5 text-destructive px-3 py-2 space-y-2">
+      <p className="text-sm font-medium">{t("doctor.failed")}</p>
+      {!runErrorHasGuidance && (
+        <p className="text-sm whitespace-pre-wrap break-words">{runError}</p>
+      )}
+      {runErrorHasGuidance && (
+        <p className="text-sm text-muted-foreground">
+          {t("home.fixInDoctor")}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {onOpenDoctor && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => onOpenDoctor()}
+          >
+            {t("home.fixInDoctor")}
+          </Button>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant={diagnosticsVisible ? "secondary" : "outline"}
+          onClick={() => setDiagnosticsVisible((v) => !v)}
+        >
+          {diagnosticsVisible ? t("doctor.collapse") : t("doctor.details")}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            void refreshDiagnostics(diagnosticHostId);
+          }}
+          disabled={diagnosticsLoading}
+        >
+          {t("doctor.refreshLogs")}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t("doctor.appLog")} / {t("doctor.errorLog")} / {t("doctor.gatewayLogs")} 来源：{diagnosticTargetLabel}
+      </p>
+      {diagnosticsLoading && (
+        <p className="text-xs text-muted-foreground animate-pulse">loading…</p>
+      )}
+      {diagnosticsError && (
+        <p className="text-xs text-destructive">diagnostics: {diagnosticsError}</p>
+      )}
+      {diagnosticsVisible && (
+        <div className="space-y-2">
+          {renderDiagnosticSection(t("doctor.appLog"), diagnosticLogs.appLog)}
+          {renderDiagnosticSection(t("doctor.errorLog"), diagnosticLogs.errorLog)}
+          {renderDiagnosticSection(`${t("doctor.gatewayLogs")} (app)`, diagnosticLogs.gatewayLog)}
+          {renderDiagnosticSection(`${t("doctor.gatewayLogs")} (error)`, diagnosticLogs.gatewayErrorLog)}
+        </div>
+      )}
+    </div>
+  ) : null;
 
   // Done button handler — builds a synthetic InstallSession and calls onReady
   const handleDone = useCallback(() => {
@@ -369,13 +657,20 @@ export function InstallHub({
   const handleSshConnectSubmit = useCallback(async (host: SshHost) => {
     setConnectSubmitting(true);
     setRunError(null);
+    clearDiagnostics();
+    let targetHostId: string | null = null;
     try {
       const existingHosts = await withGuidance(
         () => api.listSshHosts(),
         "listSshHosts",
         "local",
         "local",
-      ).catch(() => [] as SshHost[]);
+      ).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.error("[dev exception] listSshHosts in handleSshConnectSubmit", error);
+        }
+        return [] as SshHost[];
+      });
       const requestedId = host.id?.trim();
       const idBase = requestedId || buildDefaultSshHostId(host);
       const existingIds = new Set(existingHosts.map((item) => item.id));
@@ -385,6 +680,7 @@ export function InstallHub({
         resolvedId = `${idBase}-${suffix}`;
         suffix += 1;
       }
+      targetHostId = resolvedId;
       const saved = await withGuidance(
         () => api.upsertSshHost({
           ...host,
@@ -394,12 +690,17 @@ export function InstallHub({
         resolvedId,
         "remote_ssh",
       );
-      await withGuidance(
-        () => api.sshConnect(saved.id),
-        "sshConnect",
-        saved.id,
-        "remote_ssh",
-      );
+      targetHostId = saved.id;
+      if (connectRemoteHost) {
+        await connectRemoteHost(saved.id);
+      } else {
+        await withGuidance(
+          () => api.sshConnect(saved.id),
+          "sshConnect",
+          saved.id,
+          "remote_ssh",
+        );
+      }
       try {
         await withGuidance(
           () => api.remoteGetInstanceStatus(saved.id),
@@ -409,6 +710,9 @@ export function InstallHub({
         );
       } catch {
         // Remote openclaw might not be installed yet — that's OK for connect
+        if (import.meta.env.DEV) {
+          console.warn("[dev exception] remoteGetInstanceStatus skipped (not installed)", saved.id);
+        }
       }
       const now = new Date().toISOString();
       onReady?.({
@@ -425,17 +729,28 @@ export function InstallHub({
         updated_at: now,
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setRunError(message);
-      showToast?.(message, "error");
+      const errorText = e instanceof Error ? e.message : String(e);
+      const guidanceError = hasGuidanceEmitted(e) || isAlreadyExplainedGuidanceError(errorText);
+      if (import.meta.env.DEV) {
+        console.error("[dev exception] handleSshConnectSubmit", {
+          targetHostId,
+          error: e,
+          guidanceError,
+        });
+      }
+      setDiagnosticHostId(targetHostId);
+      setRunError(guidanceError ? t("doctor.failed") : errorText);
+      setRunErrorHasGuidance(guidanceError);
+      void refreshDiagnostics(targetHostId);
     } finally {
       setConnectSubmitting(false);
     }
-  }, [onReady, showToast]);
+  }, [onReady, refreshDiagnostics, clearDiagnostics, connectRemoteHost]);
 
   const handleDockerConnectSubmit = useCallback(async () => {
     setConnectSubmitting(true);
     setRunError(null);
+    clearDiagnostics();
     try {
       const home = dockerConnectHome.trim();
       if (!home) throw new Error("Docker OpenClaw home is required");
@@ -463,17 +778,20 @@ export function InstallHub({
         updated_at: now,
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setRunError(message);
-      showToast?.(message, "error");
+      const errorText = e instanceof Error ? e.message : String(e);
+      const guidanceError = hasGuidanceEmitted(e) || isAlreadyExplainedGuidanceError(errorText);
+      setRunError(guidanceError ? t("doctor.failed") : errorText);
+      setRunErrorHasGuidance(guidanceError);
+      void refreshDiagnostics(null);
     } finally {
       setConnectSubmitting(false);
     }
-  }, [dockerConnectHome, dockerConnectLabel, onReady, showToast]);
+  }, [clearDiagnostics, dockerConnectHome, dockerConnectLabel, onReady, refreshDiagnostics]);
 
   const handleWsl2ConnectSubmit = useCallback(async () => {
     setConnectSubmitting(true);
     setRunError(null);
+    clearDiagnostics();
     try {
       const home = wsl2ConnectHome.trim();
       if (!home) throw new Error("WSL2 OpenClaw home path is required");
@@ -516,13 +834,15 @@ export function InstallHub({
         updated_at: now,
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setRunError(message);
-      showToast?.(message, "error");
+      const errorText = e instanceof Error ? e.message : String(e);
+      const guidanceError = hasGuidanceEmitted(e) || isAlreadyExplainedGuidanceError(errorText);
+      setRunError(guidanceError ? t("doctor.failed") : errorText);
+      setRunErrorHasGuidance(guidanceError);
+      void refreshDiagnostics(null);
     } finally {
       setConnectSubmitting(false);
     }
-  }, [wsl2ConnectHome, wsl2ConnectLabel, onReady, showToast]);
+  }, [clearDiagnostics, wsl2ConnectHome, wsl2ConnectLabel, onReady, refreshDiagnostics]);
 
   return (
     <>
@@ -549,12 +869,21 @@ export function InstallHub({
             </div>
             <SshFormWidget
               invokeId="connect-ssh-form"
+              sshConfigSuggestions={sshConfigSuggestions}
               onSubmit={(_invokeId, host) => handleSshConnectSubmit(host)}
-              onCancel={() => setMode("idle")}
+              onCancel={() => {
+                setMode("idle");
+                clearRunErrorState();
+              }}
             />
-            {runError && (
+            {sshConfigSuggestionsLoading && (
+              <div className="text-xs text-muted-foreground">
+                {t("installChat.sshConfigPresetLoading")}
+              </div>
+            )}
+            {sshConfigSuggestionsError && !sshConfigSuggestionsLoading && (
               <div className="text-sm text-destructive border border-destructive/30 rounded-md px-3 py-2 bg-destructive/5">
-                {runError}
+                {sshConfigSuggestionsError}
               </div>
             )}
           </div>
@@ -578,18 +907,20 @@ export function InstallHub({
               />
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setMode("idle")} disabled={connectSubmitting}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setMode("idle");
+                  clearRunErrorState();
+                }}
+                disabled={connectSubmitting}
+              >
                 {t("installChat.cancel")}
               </Button>
               <Button onClick={handleDockerConnectSubmit} disabled={connectSubmitting}>
                 {t("installChat.submit")}
               </Button>
             </DialogFooter>
-            {runError && (
-              <div className="text-sm text-destructive border border-destructive/30 rounded-md px-3 py-2 bg-destructive/5">
-                {runError}
-              </div>
-            )}
           </div>
         ) : mode === "connect_wsl2" ? (
           <div className="space-y-4 py-2">
@@ -611,18 +942,20 @@ export function InstallHub({
               />
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setMode("idle")} disabled={connectSubmitting}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setMode("idle");
+                  clearRunErrorState();
+                }}
+                disabled={connectSubmitting}
+              >
                 {t("installChat.cancel")}
               </Button>
               <Button onClick={handleWsl2ConnectSubmit} disabled={connectSubmitting}>
                 {t("installChat.submit")}
               </Button>
             </DialogFooter>
-            {runError && (
-              <div className="text-sm text-destructive border border-destructive/30 rounded-md px-3 py-2 bg-destructive/5">
-                {runError}
-              </div>
-            )}
           </div>
         ) : mode === "running" || mode === "failed" ? (
           <div className="space-y-3">
@@ -640,11 +973,6 @@ export function InstallHub({
                 ))}
               </div>
             </div>
-            {runError && (
-              <div className="text-sm text-destructive border border-destructive/30 rounded-md px-3 py-2 bg-destructive/5">
-                {runError}
-              </div>
-            )}
           </div>
         ) : (
           <>
@@ -732,6 +1060,8 @@ export function InstallHub({
           </>
         )}
 
+        {runErrorPanel}
+
         {/* Footer with Done / Connect button */}
         {(mode === "connect_ssh" || mode === "connect_docker" || mode === "connect_wsl2") && connectSubmitting && (
           <DialogFooter>
@@ -749,7 +1079,13 @@ export function InstallHub({
         )}
         {mode === "failed" && (
           <DialogFooter>
-            <Button variant="outline" onClick={() => setMode("idle")}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setMode("idle");
+                clearRunErrorState();
+              }}
+            >
               {t("installChat.cancel")}
             </Button>
             <Button
