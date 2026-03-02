@@ -137,6 +137,7 @@ export function Doctor({
   const { instanceId, isDocker, isRemote, isConnected } = useInstance();
   const doctor = useDoctorAgent();
   const [runtimeModel, setRuntimeModel] = useState<string | undefined>(undefined);
+  const [sessionModelOverride, setSessionModelOverride] = useState<string | undefined>(undefined);
   const [remoteConnState, setRemoteConnState] = useState<"checking" | "connected" | "disconnected">("checking");
 
   const [diagnosing, setDiagnosing] = useState(false);
@@ -215,6 +216,17 @@ export function Doctor({
   // Use instanceId as the stable session key for model override / usage tracking.
   // This matches the backend which looks up overrides by instance_id.
   const doctorSessionId = instanceId || "local";
+
+  // Track session model override so TokenBadge uses the effective model for cost.
+  useEffect(() => {
+    if (!doctorSessionId) return;
+    invoke<string | null>("get_session_model_override", { sessionId: doctorSessionId })
+      .then((m) => setSessionModelOverride(m ?? undefined))
+      .catch(() => {});
+  }, [doctorSessionId]);
+
+  // Effective model: session override takes priority over global runtime model.
+  const effectiveModel = sessionModelOverride ?? runtimeModel;
 
   const handleStartDiagnosis = async (extraContext?: string) => {
     setStartError(null);
@@ -1055,8 +1067,8 @@ export function Doctor({
                     <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
                     {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
                   </Badge>
-                  <TokenBadge sessionId={doctorSessionId} model={runtimeModel} />
-                  <ModelSwitcher sessionId={doctorSessionId} defaultModel={runtimeModel} />
+                  <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
+                  <ModelSwitcher sessionId={doctorSessionId} defaultModel={runtimeModel} onModelChange={setSessionModelOverride} />
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">

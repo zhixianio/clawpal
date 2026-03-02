@@ -21,9 +21,11 @@ const AVAILABLE_MODELS = [
 interface ModelSwitcherProps {
   sessionId: string;
   defaultModel?: string;
+  /** Notifies parent when the effective model changes (override set/cleared). */
+  onModelChange?: (model: string | undefined) => void;
 }
 
-export function ModelSwitcher({ sessionId, defaultModel }: ModelSwitcherProps) {
+export function ModelSwitcher({ sessionId, defaultModel, onModelChange }: ModelSwitcherProps) {
   const [override, setOverride] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -40,6 +42,7 @@ export function ModelSwitcher({ sessionId, defaultModel }: ModelSwitcherProps) {
     try {
       await invoke("set_session_model_override", { sessionId, model });
       setOverride(model);
+      onModelChange?.(model);
     } catch {
       // silently ignore
     }
@@ -50,6 +53,7 @@ export function ModelSwitcher({ sessionId, defaultModel }: ModelSwitcherProps) {
     try {
       await invoke("clear_session_model_override", { sessionId });
       setOverride(null);
+      onModelChange?.(undefined);
     } catch {
       // silently ignore
     }
