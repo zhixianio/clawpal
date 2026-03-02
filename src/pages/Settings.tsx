@@ -756,6 +756,11 @@ export function Settings({
                   {zeroclawSaving && (
                     <span className="text-xs text-muted-foreground">{t("settings.saving")}</span>
                   )}
+                  {zeroclawModelCandidates.length === 0 && !zeroclawSaving && (
+                    <p className="text-xs text-muted-foreground basis-full mt-1">
+                      {t("settings.zeroclawNoProfiles")}
+                    </p>
+                  )}
                   <div className="ml-auto text-right text-xs text-muted-foreground min-w-[240px]">
                     {zeroclawUsageLoading ? (
                       <div>{t("settings.zeroclawUsageLoading")}</div>

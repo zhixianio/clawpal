@@ -238,6 +238,7 @@
   "settings.zeroclawModelPlaceholder": "e.g. anthropic/claude-sonnet-4-5",
   "settings.zeroclawModelSaved": "Crayfish model preference saved",
   "settings.zeroclawModelSaveFailed": "Failed to save crayfish model preference: {{error}}",
+  "settings.zeroclawNoProfiles": "No compatible model profiles found. Add a model profile in the Profiles section to enable Zeroclaw.",
   "settings.zeroclawUsageLoading": "Usage stats loading...",
   "settings.zeroclawUsageTotalTokens": "Token usage: {{count}}",
   "settings.zeroclawUsageCalls": "Calls: {{count}}",

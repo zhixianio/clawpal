@@ -238,6 +238,7 @@
   "settings.zeroclawModelPlaceholder": "例如 anthropic/claude-sonnet-4-5",
   "settings.zeroclawModelSaved": "小龙虾模型偏好已保存",
   "settings.zeroclawModelSaveFailed": "保存小龙虾模型偏好失败：{{error}}",
+  "settings.zeroclawNoProfiles": "未找到兼容的模型配置。请先在「配置」中添加模型，以启用 Zeroclaw。",
   "settings.zeroclawUsageLoading": "用量统计加载中...",
   "settings.zeroclawUsageTotalTokens": "Token 用量：{{count}}",
   "settings.zeroclawUsageCalls": "调用次数：{{count}}",
