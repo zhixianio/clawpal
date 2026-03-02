@@ -842,9 +842,8 @@ pub fn run_zeroclaw_message(
         message,
     ];
     // Per-session model override takes priority over global preference.
-    let preferred_model =
-        crate::commands::preferences::lookup_session_model_override(instance_id)
-            .or_else(|| crate::commands::load_zeroclaw_model_preference());
+    let preferred_model = crate::commands::preferences::lookup_session_model_override(instance_id)
+        .or_else(|| crate::commands::load_zeroclaw_model_preference());
     let provider_order = provider_order_for_runtime(&env_pairs, preferred_model.as_deref());
     if provider_order.is_empty() {
         return Err(
