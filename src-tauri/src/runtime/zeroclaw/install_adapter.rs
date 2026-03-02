@@ -74,9 +74,9 @@ impl ZeroclawInstallAdapter {
         key: &RuntimeSessionKey,
         message: &str,
         on_delta: F,
-    ) -> Result<Vec<RuntimeEvent>, RuntimeError>
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
     where
-        F: Fn(&str) + Send + 'static,
+        F: Fn(&str) + Send + Sync + 'static,
     {
         let session_key = key.storage_key();
         reset_history(&session_key);
@@ -101,9 +101,9 @@ impl ZeroclawInstallAdapter {
         key: &RuntimeSessionKey,
         message: &str,
         on_delta: F,
-    ) -> Result<Vec<RuntimeEvent>, RuntimeError>
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
     where
-        F: Fn(&str) + Send + 'static,
+        F: Fn(&str) + Send + Sync + 'static,
     {
         let session_key = key.storage_key();
         append_history(&session_key, "user", message);

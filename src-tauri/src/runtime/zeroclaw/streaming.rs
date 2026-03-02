@@ -15,7 +15,7 @@ pub(crate) async fn run_zeroclaw_streaming_turn<FDelta, FNormalize, FIntent, FMa
     map_error: FMapError,
 ) -> Result<Vec<RuntimeEvent>, RuntimeError>
 where
-    FDelta: Fn(&str) + Send + 'static,
+    FDelta: Fn(&str) + Send + Sync + 'static,
     FNormalize: Fn(String) -> String,
     FIntent: Fn(&str) -> Option<(RuntimeEvent, String)>,
     FMapError: Fn(String) -> RuntimeError,

@@ -6,7 +6,7 @@ use crate::runtime::types::{
 use serde_json::json;
 use serde_json::Value;
 
-use super::process::{run_zeroclaw_message, run_zeroclaw_message_streaming};
+use super::process::run_zeroclaw_message;
 use super::session::{append_history, build_prompt_with_history, reset_history};
 use super::streaming::run_zeroclaw_streaming_turn;
 
@@ -123,9 +123,9 @@ impl ZeroclawDoctorAdapter {
         key: &RuntimeSessionKey,
         message: &str,
         on_delta: F,
-    ) -> Result<Vec<RuntimeEvent>, RuntimeError>
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
     where
-        F: Fn(&str) + Send + 'static,
+        F: Fn(&str) + Send + Sync + 'static,
     {
         let prompt = Self::doctor_domain_prompt(key, message);
         let assistant_events = run_zeroclaw_streaming_turn(
@@ -149,9 +149,9 @@ impl ZeroclawDoctorAdapter {
         key: &RuntimeSessionKey,
         message: &str,
         on_delta: F,
-    ) -> Result<Vec<RuntimeEvent>, RuntimeError>
+) -> Result<Vec<RuntimeEvent>, RuntimeError>
     where
-        F: Fn(&str) + Send + 'static,
+        F: Fn(&str) + Send + Sync + 'static,
     {
         let prompt = build_prompt_with_history(&key.storage_key(), message);
         let guarded = Self::doctor_domain_prompt(key, &prompt);

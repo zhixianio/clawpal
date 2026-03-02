@@ -783,7 +783,7 @@ fn prepend_preferred_model_candidate(
 
 async fn run_zeroclaw_retry<T, Fut>(
     base_args: &[String],
-    provider_order: &[String],
+    provider_order: &[&str],
     preferred_model: Option<String>,
     mut run_once: T,
 ) -> Result<String, String>
@@ -793,6 +793,7 @@ where
 {
     let mut attempt_errors = Vec::<String>::new();
     for provider in provider_order {
+        let provider = *provider;
         let mut provider_base_args = base_args.to_vec();
         provider_base_args.push("-p".to_string());
         provider_base_args.push(provider.to_string());
@@ -925,20 +926,25 @@ pub fn run_zeroclaw_message(
         &base_args,
         &provider_order,
         preferred_model,
-        |args| async { run_zeroclaw_once(&cmd, &cfg, &env_pairs, &args) },
+        |args| {
+            let cmd = cmd.clone();
+            let cfg = cfg.clone();
+            let env_pairs = env_pairs.clone();
+            let args = args;
+            async move {
+                run_zeroclaw_once(&cmd, &cfg, &env_pairs, &args)
+            }
+        },
     ))
 }
 
-async fn stream_once<F>(
+async fn stream_once(
     cmd: &Path,
     cfg: &Path,
     env_pairs: &[(String, String)],
     args: &[String],
-    on_delta: &F,
-) -> Result<String, String>
-where
-    F: Fn(&str),
-{
+    on_delta: &(dyn Fn(&str) + Send + Sync),
+) -> Result<String, String> {
     let mut child = tokio::process::Command::new(cmd)
         .envs(env_pairs.iter().cloned())
         .args(args)
@@ -1026,7 +1032,7 @@ pub async fn run_zeroclaw_message_streaming<F>(
     on_delta: F,
 ) -> Result<String, String>
 where
-    F: Fn(&str) + Send + 'static,
+    F: Fn(&str) + Send + Sync + 'static,
 {
     let cmd = resolve_zeroclaw_command_path()
         .ok_or_else(|| "zeroclaw binary not found in bundled resources".to_string())?;
@@ -1055,12 +1061,23 @@ where
         );
     }
 
-    on_delta("");
+    let on_delta: std::sync::Arc<dyn Fn(&str) + Send + Sync> =
+        std::sync::Arc::new(on_delta);
+    (on_delta.as_ref())("");
     run_zeroclaw_retry(
         &base_args,
         &provider_order,
         preferred_model,
-        |args| stream_once(&cmd, &cfg, &env_pairs, &args, &on_delta),
+        |args| {
+            let cmd = cmd.clone();
+            let cfg = cfg.clone();
+            let env_pairs = env_pairs.clone();
+            let on_delta = std::sync::Arc::clone(&on_delta);
+            let args = args;
+            async move {
+                stream_once(&cmd, &cfg, &env_pairs, &args, on_delta.as_ref()).await
+            }
+        },
     )
     .await
 }
