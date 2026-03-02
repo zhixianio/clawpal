@@ -106,7 +106,19 @@ function callWithReadCache<TResult>(
 function emitRemoteInvokeMetric(payload: Record<string, unknown>) {
   const line = `[metrics][remote_invoke] ${JSON.stringify(payload)}`;
   // fire-and-forget: metrics collection must not affect user flow
-  void invoke("log_app_event", { message: line }).catch(() => {});
+  void invoke("log_app_event", { message: line }).catch((error) => {
+    if (import.meta.env.DEV) {
+      console.warn("[dev ignored error] emitRemoteInvokeMetric", error);
+    }
+  });
+}
+
+function logDevApiError(context: string, error: unknown, detail: Record<string, unknown> = {}): void {
+  if (!import.meta.env.DEV) return;
+  console.error(`[dev api error] ${context}`, {
+    ...detail,
+    error: String(error),
+  });
 }
 
 function shouldLogRemoteInvokeMetric(ok: boolean, elapsedMs: number): boolean {
@@ -183,6 +195,12 @@ export function useApi() {
               return result;
             })
             .catch(async (error) => {
+              logDevApiError("useApi dispatch remote catch", error, {
+                method: method || "unknown",
+                transport,
+                instanceId,
+                argsCount: args.length,
+              });
               const elapsedMs = Date.now() - startedAt;
               if (shouldLogRemoteInvokeMetric(false, elapsedMs)) {
               emitRemoteInvokeMetric({
@@ -199,10 +217,20 @@ export function useApi() {
         }
         if (isDocker) {
           return localFn(...args).catch(async (error) => {
+            logDevApiError("useApi dispatch local catch (docker)", error, {
+              method: method || "unknown",
+              transport,
+              argsCount: args.length,
+            });
             throw await explainAndWrapError(method, error);
           });
         }
         return localFn(...args).catch(async (error) => {
+          logDevApiError("useApi dispatch local catch", error, {
+            method: method || "unknown",
+            transport,
+            argsCount: args.length,
+          });
           throw await explainAndWrapError(method, error);
         });
       };
@@ -354,9 +382,11 @@ export function useApi() {
         api.deleteModelProfile,
       ),
       testModelProfile: ((profileId: string) =>
-        api.testModelProfile(profileId).catch(async (error) => {
-          throw await explainAndWrapError("testModelProfile", error);
-        })),
+        dispatch(
+          api.testModelProfile,
+          api.remoteTestModelProfile,
+          "testModelProfile",
+        )(profileId)),
       resolveApiKeys: localGlobalCached(
         "resolveApiKeys",
         10_000,

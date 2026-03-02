@@ -6,6 +6,11 @@ import i18n from "../i18n";
 const AGENT_GUIDANCE_THROTTLE = new Map<string, number>();
 const AGENT_GUIDANCE_THROTTLE_TTL_MS = 90_000;
 
+function logDevGuidanceError(context: string, detail: unknown): void {
+  if (!import.meta.env.DEV) return;
+  console.error(`[dev guidance] ${context}`, detail);
+}
+
 function normalizeErrorSignature(raw: string): string {
   return raw
     .toLowerCase()
@@ -42,9 +47,18 @@ export function isAlreadyExplainedGuidanceError(errorText: string): boolean {
   const text = errorText.toLowerCase();
   return (
     text.includes("下一步建议")
+    || text.includes("建议先做诊断再继续")
+    || text.includes("建议先执行诊断")
+    || text.includes("建议先进行诊断")
+    || text.includes("建议先打开")
+    || text.includes("建议前往")
+    || text.includes("建议打开")
     || text.includes("建议执行诊断命令")
     || text.includes("recommend")
     || text.includes("next step")
+    || text.includes("open doctor")
+    || text.includes("run doctor")
+    || text.includes("start doctor")
     || text.includes("ssh连接失败，无法打开通道")
   );
 }
@@ -149,6 +163,12 @@ export async function explainAndBuildGuidanceError({
     }
     return wrapped;
   } catch {
+    logDevGuidanceError("explainAndBuildGuidanceError", {
+      method,
+      instanceId,
+      transport,
+      rawError: original,
+    });
     return new Error(original);
   }
 }
@@ -174,6 +194,12 @@ export async function withGuidance<T>(
   try {
     return await fn();
   } catch (error) {
+    logDevGuidanceError("withGuidance", {
+      method,
+      instanceId,
+      transport,
+      rawError: error,
+    });
     throw await explainAndBuildGuidanceError({
       method,
       instanceId,

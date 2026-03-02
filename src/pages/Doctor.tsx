@@ -78,6 +78,7 @@ interface DoctorProps {
   active?: boolean;
   launchGuidance?: DoctorLaunchGuidance | null;
   onLaunchGuidanceConsumed?: (instanceId: string) => void;
+  connectRemoteHost?: (hostId: string) => Promise<void>;
 }
 
 const createInitialRescueUiState = (): RescueUiState => ({
@@ -126,6 +127,7 @@ export function Doctor({
   active = false,
   launchGuidance = null,
   onLaunchGuidanceConsumed,
+  connectRemoteHost,
 }: DoctorProps) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -215,7 +217,11 @@ export function Doctor({
         setRemoteConnState("checking");
         const status = await ua.sshStatus(instanceId);
         if (status !== "connected") {
-          await ua.sshConnect(instanceId);
+          if (connectRemoteHost) {
+            await connectRemoteHost(instanceId);
+          } else {
+            await ua.sshConnect(instanceId);
+          }
         }
         setRemoteConnState("connected");
       }

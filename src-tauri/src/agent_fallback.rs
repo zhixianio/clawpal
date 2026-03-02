@@ -197,16 +197,51 @@ fn rules_fallback(
             }],
         };
     }
+    if lower.contains("permission denied") && lower.contains("publickey") {
+        return GuidanceBody {
+            summary: "SSH 公钥认证被拒绝，通常是用户名/私钥未匹配，或目标用户不允许公钥登录。".to_string(),
+            actions: vec![
+                "确认 ~/.ssh/config 里的 User 与目标实例实际登录用户一致（例如 root 账号通常被禁用）。".to_string(),
+                "确认对应 IdentityFile 的公钥已写入远端 ~/.ssh/authorized_keys。".to_string(),
+                "可先在终端运行 `ssh <alias>` 验证后再返回重试。".to_string(),
+                "若仍失败，请先打开 Doctor 页面执行自动诊断并按建议修复。".to_string(),
+            ],
+            structured_actions: vec![GuidanceAction {
+                label: "让小龙虾修复".to_string(),
+                action_type: "doctor_handoff".to_string(),
+                tool: None,
+                args: None,
+                invoke_type: None,
+                context: Some(format!("SSH 公钥认证失败: {}", error_text)),
+            }],
+        };
+    }
     if lower.contains("not connected to remote")
         || lower.contains("ssh")
         || lower.contains("connection refused")
+        || lower.contains("no connection for id")
     {
+        let target_id = error_text
+            .split_once("No connection for id:")
+            .map(|(_, tail)| tail.trim().to_string())
+            .or_else(|| {
+                error_text
+                    .split_once("no connection for id:")
+                    .map(|(_, tail)| tail.trim().to_string())
+            })
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "当前远端实例".to_string());
+        let target_hint = if target_id == "当前远端实例" {
+            "当前远端实例".to_string()
+        } else {
+            format!("实例 `{target_id}`")
+        };
         return GuidanceBody {
-            summary: "当前远程连接不可用，导致操作失败。".to_string(),
+            summary: format!("当前远程连接不可用：{target_hint} 会话已断开，操作失败。"),
             actions: vec![
-                "先在实例页重新连接 SSH，并确认网络可达。".to_string(),
+                format!("先在实例页重连 {target_hint} 的 SSH 并确认网络可达。"),
                 "执行一次健康检查，确认网关和配置目录可访问。".to_string(),
-                "若仍失败，打开 Doctor 页面执行自动诊断并按建议修复。".to_string(),
+                "若仍失败，请先打开 Doctor 页面执行自动诊断并按建议修复。".to_string(),
             ],
             structured_actions: vec![
                 GuidanceAction {
@@ -223,7 +258,7 @@ fn rules_fallback(
                     tool: None,
                     args: None,
                     invoke_type: None,
-                    context: Some(format!("SSH 连接失败: {}", error_text)),
+                    context: Some(format!("SSH 连接失败: {target_hint}")),
                 },
             ],
         };
@@ -480,5 +515,26 @@ mod tests {
             .structured_actions
             .iter()
             .any(|a| a.action_type == "inline_fix" && a.tool.as_deref() == Some("clawpal")));
+    }
+
+    #[test]
+    fn rules_fallback_no_connection_id_has_reconnect_hint() {
+        let result = rules_fallback(
+            "No connection for id: ssh:hetzner",
+            "remote_ssh",
+            "testModelProfile",
+            None,
+        );
+        assert!(
+            result.summary.contains("实例 `ssh:hetzner`")
+                || result.summary.contains("实例")
+        );
+        assert!(result.actions.iter().any(|a| a.contains("重连")));
+        assert!(
+            result
+                .structured_actions
+                .iter()
+                .any(|a| a.action_type == "inline_fix" && a.tool.as_deref() == Some("clawpal"))
+        );
     }
 }

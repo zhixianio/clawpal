@@ -113,7 +113,9 @@ impl SshSession {
                 handle: Arc::new(handle),
             },
             Err(err) => {
-                if config.auth_method.trim().eq_ignore_ascii_case("password") {
+                if config.auth_method.trim().eq_ignore_ascii_case("password")
+                    || matches!(&err, SshError::Auth(_) | SshError::InvalidConfig(_))
+                {
                     return Err(err);
                 }
                 Backend::Legacy
@@ -473,28 +475,56 @@ async fn connect_and_auth(
         return Err(SshError::Auth("password authentication failed".to_string()));
     }
 
+    let mut attempts: Vec<String> = Vec::new();
     for key_path in candidate_key_paths(&resolved) {
         let expanded = shellexpand::tilde(&key_path).to_string();
         let key_pair = passphrase
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .and_then(|phrase| russh_keys::load_secret_key(&expanded, Some(phrase)).ok())
-            .or_else(|| russh_keys::load_secret_key(&expanded, None).ok());
+            .and_then(|phrase| {
+                match russh_keys::load_secret_key(&expanded, Some(phrase)) {
+                    Ok(pair) => Some(pair),
+                    Err(err) => {
+                        attempts.push(format!("{expanded}: encrypted or passphrase mismatch ({err})"));
+                        None
+                    }
+                }
+            })
+            .or_else(|| match russh_keys::load_secret_key(&expanded, None) {
+                Ok(pair) => Some(pair),
+                Err(err) => {
+                    attempts.push(format!("{expanded}: failed to load ({err})"));
+                    None
+                }
+            });
         let Some(key_pair) = key_pair else {
             continue;
         };
         let ok = handle
             .authenticate_publickey(&resolved.username, Arc::new(key_pair))
             .await
-            .map_err(|e| SshError::Auth(e.to_string()))?;
+            .map_err(|e| {
+                attempts.push(format!("{expanded}: auth request failed ({})", e));
+                SshError::Auth(e.to_string())
+            })?;
         if ok {
             return Ok((handle, resolved));
         }
+        attempts.push(format!("{expanded}: auth rejected"));
     }
 
-    Err(SshError::Auth(
-        "public key authentication failed (no usable key path)".to_string(),
-    ))
+    let details = if attempts.is_empty() {
+        "no candidate keys were available".to_string()
+    } else {
+        attempts.join("; ")
+    };
+    Err(SshError::Auth(format!(
+        "public key authentication failed for {}@{}:{} after trying {}",
+        resolved.username,
+        resolved.host,
+        resolved.port,
+        details
+    )))
 }
 
 fn resolve_target(config: &SshHostConfig) -> Result<ResolvedTarget> {

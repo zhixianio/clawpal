@@ -83,6 +83,8 @@ interface StartPageProps {
   onInstallReady: (session: InstallSession) => void;
   showToast: (message: string, type?: "success" | "error") => void;
   onNavigate: (route: string) => void;
+  onOpenDoctor?: () => void;
+  connectRemoteHost?: (hostId: string) => Promise<void>;
   discoveredInstances: DiscoveredInstance[];
   discoveringInstances: boolean;
   onConnectDiscovered: (instance: DiscoveredInstance) => void;
@@ -101,6 +103,8 @@ export function StartPage({
   onInstallReady,
   showToast,
   onNavigate,
+  onOpenDoctor,
+  connectRemoteHost,
   discoveredInstances,
   discoveringInstances,
   onConnectDiscovered,
@@ -272,12 +276,16 @@ export function StartPage({
   const handleSshCheck = useCallback(async (hostId: string) => {
     setSshChecking((prev) => ({ ...prev, [hostId]: true }));
     try {
-      await withGuidance(
-        () => api.sshConnect(hostId),
-        "sshConnect",
-        hostId,
-        "remote_ssh",
-      );
+      if (connectRemoteHost) {
+        await connectRemoteHost(hostId);
+      } else {
+        await withGuidance(
+          () => api.sshConnect(hostId),
+          "sshConnect",
+          hostId,
+          "remote_ssh",
+        );
+      }
       const status = await withGuidance(
         () => api.remoteGetInstanceStatus(hostId),
         "remoteGetInstanceStatus",
@@ -297,7 +305,7 @@ export function StartPage({
       setSshChecking((prev) => ({ ...prev, [hostId]: false }));
       setSshChecked((prev) => ({ ...prev, [hostId]: true }));
     }
-  }, []);
+  }, [connectRemoteHost]);
 
   const toCardType = useCallback((instanceType: string, instanceId: string): "local" | "docker" | "ssh" | "wsl2" => {
     if (instanceType === "remote_ssh") return "ssh";
@@ -479,6 +487,8 @@ export function StartPage({
         onOpenChange={setInstallDialogOpen}
         showToast={showToast}
         onNavigate={onNavigate}
+        connectRemoteHost={connectRemoteHost}
+        onOpenDoctor={onOpenDoctor}
         onReady={(session: InstallSession) => {
           setInstallDialogOpen(false);
           onInstallReady(session);
