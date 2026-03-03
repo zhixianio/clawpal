@@ -1367,16 +1367,6 @@ export function App() {
         onClick: () => { navigateRoute("home"); setStartSection("profiles"); },
       },
       {
-        key: "start-doctor",
-        active: route === "doctor",
-        icon: <StethoscopeIcon className="size-4" />,
-        label: t("nav.doctor"),
-        badge: doctorNavPulse ? <span className="ml-auto h-2 w-2 rounded-full bg-primary animate-pulse" /> : undefined,
-        onClick: () => {
-          openDoctor();
-        },
-      },
-      {
         key: "start-settings",
         active: startSection === "settings",
         icon: <SettingsIcon className="size-4" />,
