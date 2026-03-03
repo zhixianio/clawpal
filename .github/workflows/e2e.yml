@@ -17,7 +17,7 @@ concurrency:
 jobs:
   profile-e2e:
     runs-on: ubuntu-latest
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+    environment: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && 'production' || 'development' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
