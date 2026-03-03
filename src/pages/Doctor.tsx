@@ -149,7 +149,7 @@ export function Doctor({
   const ua = useApi();
   const { instanceId, isDocker, isRemote, isConnected } = useInstance();
   const zeroclawDoctor = useDoctorAgent();
-  const openclawDoctor = useDoctorAgent();
+  const openclawDoctor = useDoctorAgent({ enableBridgeEvents: false });
   const [runtimeModel, setRuntimeModel] = useState<string | undefined>(undefined);
   const [sessionModelOverride, setSessionModelOverride] = useState<string | undefined>(undefined);
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);

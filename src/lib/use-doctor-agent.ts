@@ -33,6 +33,9 @@ type DoctorSessionContext = {
 };
 
 type DoctorEngineMode = "openclaw" | "zeroclaw";
+type UseDoctorAgentOptions = {
+  enableBridgeEvents?: boolean;
+};
 type DoctorSessionCache = {
   version: number;
   context: DoctorSessionContext;
@@ -213,7 +216,8 @@ function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "instal
   return false;
 }
 
-export function useDoctorAgent() {
+export function useDoctorAgent(options: UseDoctorAgentOptions = {}) {
+  const enableBridgeEvents = options.enableBridgeEvents ?? true;
   const [connected, setConnected] = useState(false);
   const [bridgeConnected, setBridgeConnected] = useState(false);
   const [messages, setMessages] = useState<DoctorChatMessage[]>([]);
@@ -284,6 +288,7 @@ export function useDoctorAgent() {
 
 
   useEffect(() => {
+    if (!enableBridgeEvents) return;
     let disposed = false;
     const unlistenFns: Array<() => void> = [];
     const bind = async <T,>(event: string, handler: Parameters<typeof listen<T>>[1]) => {
