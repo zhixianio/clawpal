@@ -15,10 +15,47 @@ type ApiReadCacheEntry = {
   expiresAt: number;
   value: unknown;
   inFlight?: Promise<unknown>;
+  /** If > Date.now(), this entry is "pinned" by an optimistic update and polls should not overwrite it. */
+  optimisticUntil?: number;
 };
 
 const API_READ_CACHE = new Map<string, ApiReadCacheEntry>();
 const API_READ_CACHE_MAX_ENTRIES = 512;
+
+/** Subscribers keyed by cache key; notified on cache value changes. */
+const _cacheSubscribers = new Map<string, Set<() => void>>();
+
+function _notifyCacheSubscribers(key: string) {
+  const subs = _cacheSubscribers.get(key);
+  if (subs) {
+    for (const fn of subs) fn();
+  }
+}
+
+/** Subscribe to changes on a specific cache key. Returns an unsubscribe function. */
+export function subscribeToCacheKey(key: string, callback: () => void): () => void {
+  let set = _cacheSubscribers.get(key);
+  if (!set) {
+    set = new Set();
+    _cacheSubscribers.set(key, set);
+  }
+  set.add(callback);
+  return () => {
+    set!.delete(callback);
+    if (set!.size === 0) _cacheSubscribers.delete(key);
+  };
+}
+
+/** Read the current cached value for a key (if any). */
+export function readCacheValue<T>(key: string): T | undefined {
+  const entry = API_READ_CACHE.get(key);
+  return entry?.value as T | undefined;
+}
+
+export function buildCacheKey(instanceCacheKey: string, method: string, args: unknown[] = []): string {
+  return makeCacheKey(instanceCacheKey, method, args);
+}
+
 function makeCacheKey(instanceCacheKey: string, method: string, args: unknown[]): string {
   let serializedArgs = "";
   try {
@@ -46,17 +83,44 @@ function invalidateReadCacheForInstance(instanceCacheKey: string, methods?: stri
     if (!key.startsWith(`${instanceCacheKey}:`)) continue;
     if (!methodSet) {
       API_READ_CACHE.delete(key);
+      _notifyCacheSubscribers(key);
       continue;
     }
     const method = key.slice(instanceCacheKey.length + 1).split(":", 1)[0];
     if (methodSet.has(method)) {
       API_READ_CACHE.delete(key);
+      _notifyCacheSubscribers(key);
     }
   }
 }
 
 export function invalidateGlobalReadCache(methods?: string[]) {
   invalidateReadCacheForInstance("__global__", methods);
+}
+
+/**
+ * Set an optimistic value for a cache key, "pinning" it so that polling
+ * results will NOT overwrite it for `pinDurationMs` (default 15s).
+ *
+ * This solves the race condition where:
+ *   mutation → optimistic setState → poll fires → stale cache → UI flickers back
+ *
+ * The pin auto-expires, so if the backend takes longer than expected,
+ * the next poll after expiry will overwrite with fresh data.
+ */
+export function setOptimisticReadCache<T>(
+  key: string,
+  value: T,
+  pinDurationMs = 15_000,
+) {
+  const existing = API_READ_CACHE.get(key);
+  API_READ_CACHE.set(key, {
+    value,
+    expiresAt: Date.now() + pinDurationMs, // Keep it "valid" for the pin duration
+    optimisticUntil: Date.now() + pinDurationMs,
+    inFlight: existing?.inFlight,
+  });
+  _notifyCacheSubscribers(key);
 }
 
 function callWithReadCache<TResult>(
@@ -71,6 +135,10 @@ function callWithReadCache<TResult>(
   const key = makeCacheKey(instanceCacheKey, method, args);
   const entry = API_READ_CACHE.get(key);
   if (entry) {
+    // If pinned by optimistic update, return the pinned value
+    if (entry.optimisticUntil && entry.optimisticUntil > now) {
+      return Promise.resolve(entry.value as TResult);
+    }
     if (entry.expiresAt > now) {
       return Promise.resolve(entry.value as TResult);
     }
@@ -80,11 +148,23 @@ function callWithReadCache<TResult>(
   }
   const request = loader()
     .then((value) => {
+      const current = API_READ_CACHE.get(key);
+      // Don't overwrite if a newer optimistic value was set while we were fetching
+      if (current?.optimisticUntil && current.optimisticUntil > Date.now()) {
+        // Clear inFlight but keep the optimistic value
+        API_READ_CACHE.set(key, {
+          ...current,
+          inFlight: undefined,
+        });
+        return current.value as TResult;
+      }
       API_READ_CACHE.set(key, {
         value,
         expiresAt: Date.now() + ttlMs,
+        optimisticUntil: undefined,
       });
       trimReadCacheIfNeeded();
+      _notifyCacheSubscribers(key);
       return value;
     })
     .catch((error) => {
@@ -97,6 +177,7 @@ function callWithReadCache<TResult>(
   API_READ_CACHE.set(key, {
     value: entry?.value,
     expiresAt: entry?.expiresAt ?? 0,
+    optimisticUntil: entry?.optimisticUntil,
     inFlight: request as Promise<unknown>,
   });
   trimReadCacheIfNeeded();
@@ -305,11 +386,36 @@ export function useApi() {
     [instanceCacheKey, globalCacheKey],
   );
 
+  /**
+   * Pin an optimistic value in the read cache for a specific API method.
+   * While pinned (default 15s), polling calls to the same method will
+   * return the pinned value instead of overwriting with stale backend data.
+   *
+   * Usage: ua.pinOptimistic("listAgents", agents.filter(a => a.id !== deletedId));
+   */
+  const pinOptimistic = useCallback(
+    <T,>(method: string, value: T, args: unknown[] = [], pinDurationMs = 15_000) => {
+      const key = makeCacheKey(instanceCacheKey, method, args);
+      setOptimisticReadCache(key, value, pinDurationMs);
+    },
+    [instanceCacheKey],
+  );
+
+  /** Pin an optimistic value in the global cache (for methods like listModelProfiles). */
+  const pinOptimisticGlobal = useCallback(
+    <T,>(method: string, value: T, args: unknown[] = [], pinDurationMs = 15_000) => {
+      const key = makeCacheKey(globalCacheKey, method, args);
+      setOptimisticReadCache(key, value, pinDurationMs);
+    },
+    [globalCacheKey],
+  );
+
   return useMemo(
     () => ({
       // Instance state
       instanceId,
       instanceToken,
+      instanceCacheKey,
       isRemote,
       isDocker,
       isConnected,
@@ -319,6 +425,10 @@ export function useApi() {
       discordChannelsLoading,
       refreshChannelNodesCache,
       refreshDiscordChannelsCache,
+
+      // Optimistic cache pinning
+      pinOptimistic,
+      pinOptimisticGlobal,
 
       // Status
       getInstanceStatus: dispatch(
@@ -657,7 +767,10 @@ export function useApi() {
       localGlobalCached,
       withInvalidation,
       withGlobalInvalidation,
+      pinOptimistic,
+      pinOptimisticGlobal,
       instanceId,
+      instanceCacheKey,
       isRemote,
       isDocker,
       isConnected,

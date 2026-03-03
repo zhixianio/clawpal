@@ -95,8 +95,22 @@ export function Home({
 
   // Skip polling refreshes while there are queued commands (to preserve optimistic UI)
   const hasPendingRef = useRef(false);
+  // Timestamp until which polls should not overwrite optimistic component state.
+  // This closes the race window between queueCommand() and the next queuedCommandsCount() poll.
+  const optimisticLockedUntilRef = useRef(0);
+
+  /** Mark state as optimistically locked for the given duration. */
+  const lockOptimistic = useCallback((durationMs = 15_000) => {
+    optimisticLockedUntilRef.current = Date.now() + durationMs;
+    hasPendingRef.current = true;
+  }, []);
+
   useEffect(() => {
-    const check = () => { ua.queuedCommandsCount().then((n) => { hasPendingRef.current = n > 0; }).catch(() => {}); };
+    const check = () => { ua.queuedCommandsCount().then((n) => {
+      // Don't clear the flag if we're within the optimistic lock window
+      if (optimisticLockedUntilRef.current > Date.now()) return;
+      hasPendingRef.current = n > 0;
+    }).catch(() => {}); };
     check();
     const interval = setInterval(check, ua.isRemote ? 10000 : 3000);
     return () => clearInterval(interval);
@@ -194,7 +208,7 @@ export function Home({
 
   const fetchStatus = useCallback(() => {
     if (ua.isRemote && !ua.isConnected) return; // Wait for SSH connection
-    if (hasPendingRef.current) return; // Don't overwrite optimistic UI
+    if (hasPendingRef.current || optimisticLockedUntilRef.current > Date.now()) return; // Don't overwrite optimistic UI
     if (statusInFlightRef.current) return; // Prevent overlapping polls
     statusInFlightRef.current = true;
     ua.getInstanceStatus().then((s) => {
@@ -281,7 +295,7 @@ export function Home({
 
   const refreshAgents = useCallback(() => {
     if (ua.isRemote && !ua.isConnected) return; // Wait for SSH connection
-    if (hasPendingRef.current) return; // Don't overwrite optimistic UI
+    if (hasPendingRef.current || optimisticLockedUntilRef.current > Date.now()) return; // Don't overwrite optimistic UI
     ua.listAgents().then((a) => {
       setAgents(a);
       if (ua.isRemote) remoteErrorShownRef.current = false;
@@ -383,12 +397,15 @@ export function Home({
 
   const handleDeleteAgent = (agentId: string) => {
     if (ua.isRemote && !ua.isConnected) return;
+    lockOptimistic();
     ua.queueCommand(
       `Delete agent: ${agentId}`,
       ["openclaw", "agents", "delete", agentId, "--force"],
     ).then(() => {
-      // Optimistic UI update
-      setAgents((prev) => prev?.filter((a) => a.id !== agentId) ?? null);
+      // Optimistic UI update + pin in cache so polling doesn't overwrite
+      const updated = agents?.filter((a) => a.id !== agentId) ?? null;
+      setAgents(updated);
+      if (updated) ua.pinOptimistic("listAgents", updated);
     }).catch((e) => { if (!hasGuidanceEmitted(e)) showToast?.(String(e), "error"); });
   };
 
@@ -454,6 +471,8 @@ export function Home({
                   if (val === "__raw__") return;
                   setSavingModel(true);
                   const modelValue = resolveModelValue(val === "__none__" ? null : val);
+                  // Lock optimistic state immediately to prevent polls from overwriting
+                  lockOptimistic();
                   const p = modelValue
                     ? ua.queueCommand(
                         `Set global model: ${modelValue}`,
@@ -463,10 +482,9 @@ export function Home({
                         "Clear global model override",
                         ["openclaw", "config", "unset", "agents.defaults.model.primary"],
                       );
-                  p.then(() => {
-                    // Optimistic UI update
-                    setStatus((prev) => prev ? { ...prev, globalDefaultModel: modelValue ?? "" } : prev);
-                  }).catch((e) => { if (!hasGuidanceEmitted(e)) showToast?.(String(e), "error"); })
+                  // Optimistic UI update — applied immediately, protected by lockOptimistic
+                  setStatus((prev) => prev ? { ...prev, globalDefaultModel: modelValue ?? "" } : prev);
+                  p.catch((e) => { if (!hasGuidanceEmitted(e)) showToast?.(String(e), "error"); })
                     .finally(() => setSavingModel(false));
                 }}
                 disabled={savingModel}
@@ -514,6 +532,7 @@ export function Home({
                           className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
                           disabled={idx === 0}
                           onClick={() => {
+                            lockOptimistic();
                             const arr = [...(status.fallbackModels ?? [])];
                             [arr[idx - 1], arr[idx]] = [arr[idx], arr[idx - 1]];
                             setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
@@ -531,6 +550,7 @@ export function Home({
                           className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
                           disabled={idx === (status.fallbackModels ?? []).length - 1}
                           onClick={() => {
+                            lockOptimistic();
                             const arr = [...(status.fallbackModels ?? [])];
                             [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]];
                             setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
@@ -547,6 +567,7 @@ export function Home({
                           variant="ghost"
                           className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive"
                           onClick={() => {
+                            lockOptimistic();
                             const arr = (status.fallbackModels ?? []).filter((_, i) => i !== idx);
                             setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
                             const cmd = arr.length > 0
@@ -573,6 +594,7 @@ export function Home({
                     if (!val) return;
                     const modelValue = resolveModelValue(val);
                     if (!modelValue) return;
+                    lockOptimistic();
                     const arr = [...(status.fallbackModels ?? []), modelValue];
                     setStatus((prev) => prev ? { ...prev, fallbackModels: arr } : prev);
                     ua.queueCommand(
@@ -646,6 +668,7 @@ export function Home({
                           })()}
                           onValueChange={async (val) => {
                             const modelValue = resolveModelValue(val === "__none__" ? null : val);
+                            lockOptimistic();
                             try {
                               // Find agent index in config list
                               const raw = await ua.readRawConfig();
@@ -665,10 +688,12 @@ export function Home({
                                 // Agent not in list yet — append
                                 await ua.queueCommand(label, ["openclaw", "config", "set", `agents.list.${list.length}`, JSON.stringify({ id: agent.id, model: modelValue }), "--json"]);
                               }
-                              // Optimistic UI update
-                              setAgents((prev) => prev?.map((a) =>
+                              // Optimistic UI update + pin in cache
+                              const updated = agents?.map((a) =>
                                 a.id === agent.id ? { ...a, model: modelValue ?? null } : a
-                              ) ?? null);
+                              ) ?? null;
+                              setAgents(updated);
+                              if (updated) ua.pinOptimistic("listAgents", updated);
                             } catch (e) {
                               if (!hasGuidanceEmitted(e)) showToast?.(String(e), "error");
                             }
