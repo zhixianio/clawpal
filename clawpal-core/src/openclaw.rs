@@ -196,16 +196,20 @@ mod tests {
 
     #[cfg(unix)]
     fn create_fake_openclaw_script(body: &str) -> String {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
         let dir =
             std::env::temp_dir().join(format!("clawpal-core-openclaw-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("fake-openclaw.sh");
-        fs::write(&path, body).expect("write script");
-        #[cfg(unix)]
+        // Open → write → fsync → close explicitly to avoid ETXTBSY on exec.
         {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+            let mut f = fs::File::create(&path).expect("create script");
+            f.write_all(body.as_bytes()).expect("write script");
+            f.sync_all().expect("sync script");
         }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
         path.to_string_lossy().to_string()
     }
 
