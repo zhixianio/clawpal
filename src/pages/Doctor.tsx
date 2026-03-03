@@ -725,12 +725,13 @@ export function Doctor({
 
   useEffect(() => {
     let cancelled = false;
+    if (!showZeroclawDiagnosis) return;
     void refreshRescueStatus(() => cancelled);
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instanceId, isRemote, isConnected]);
+  }, [instanceId, isRemote, isConnected, showZeroclawDiagnosis]);
 
   useEffect(() => {
     if (!active || !launchGuidance || !zeroclawDoctorUiLoaded) return;
@@ -808,9 +809,8 @@ export function Doctor({
     ua.listBackups().then(setBackups).catch((e) => console.error("Failed to load backups:", e));
   }, [ua]);
   useEffect(refreshBackups, [refreshBackups]);
-  // Keep legacy recovery entry points visible, but keep zeroclaw-specific
-  // diagnosis UI hidden while the underlying logic remains unchanged.
-  const showLegacyRecoveryCards = true;
+  // Rescue Bot is an alpha feature, shown only when alpha mode is enabled.
+  const showLegacyRecoveryCards = showZeroclawDiagnosis;
   const isWsl2 = instanceId.startsWith("wsl2:");
   const displayedDoctorTarget = isRemote || isDocker || isWsl2 ? instanceId : "local";
   const instanceTypeLabel = isRemote
