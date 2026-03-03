@@ -152,6 +152,7 @@ jobs:
 
       - name: Determine if prerelease
         id: release_flags
+        shell: bash
         run: |
           if [[ "${{ github.ref_name }}" == *-alpha* || "${{ github.ref_name }}" == *-beta* || "${{ github.ref_name }}" == *-rc* ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"

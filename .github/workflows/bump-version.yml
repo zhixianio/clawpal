@@ -63,6 +63,18 @@ jobs:
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           echo "### Version bump: $CURRENT → $NEW" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Determine if prerelease
+        id: release_flags
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          if [[ "$NEW" == *-alpha* || "$NEW" == *-beta* || "$NEW" == *-rc* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "### Tag type: prerelease" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "### Tag type: release" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Update package.json
         run: |
           npm version "${{ steps.version.outputs.new }}" --no-git-tag-version
@@ -86,5 +98,6 @@ jobs:
 
           NEW="${{ steps.version.outputs.new }}"
           git commit -m "chore: bump version to ${NEW}"
+          echo "Bumping to prerelease: ${{ steps.release_flags.outputs.is_prerelease }}"
           git tag "v${NEW}"
           git push origin HEAD --follow-tags
