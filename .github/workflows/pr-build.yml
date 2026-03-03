@@ -95,7 +95,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          BUNDLE_DIR="target/${{ matrix.target }}/release/bundle"
 
           find "$BUNDLE_DIR" -type f \( \
             -name "*.dmg" -o \
