@@ -150,6 +150,15 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Determine if prerelease
+        id: release_flags
+        run: |
+          if [[ "${{ github.ref_name }}" == *-alpha* || "${{ github.ref_name }}" == *-beta* || "${{ github.ref_name }}" == *-rc* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -187,7 +196,7 @@ jobs:
             - `.deb`: `sudo dpkg -i clawpal_*.deb`
             - `.AppImage`: `chmod +x ClawPal_*.AppImage && ./ClawPal_*.AppImage`
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ steps.release_flags.outputs.is_prerelease == 'true' }}
           args: --target ${{ matrix.target }}
 
       - name: Upload Windows portable exe
