@@ -25,6 +25,33 @@ function hasAnyPrefix(value: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) => value === prefix || value.startsWith(`${prefix} `));
 }
 
+type DoctorEngineMode = "openclaw" | "zeroclaw";
+
+function extractOpenclawText(result: Record<string, unknown>): string {
+  const payloads = result.payloads;
+  if (Array.isArray(payloads)) {
+    const text = payloads
+      .map((item) => (item as { text?: string }).text)
+      .filter((v): v is string => typeof v === "string" && v.length > 0)
+      .join("\n");
+    if (text) return text;
+  }
+  const text = result.text;
+  if (typeof text === "string") return text;
+  const content = result.content;
+  if (typeof content === "string") return content;
+  return "";
+}
+
+function extractOpenclawSessionId(result: Record<string, unknown>): string | undefined {
+  const meta = result.meta as Record<string, unknown> | undefined;
+  if (!meta || typeof meta !== "object") return;
+  const agentMeta = meta.agentMeta as Record<string, unknown> | undefined;
+  if (!agentMeta || typeof agentMeta !== "object") return;
+  const rawSessionId = agentMeta.sessionId;
+  return typeof rawSessionId === "string" ? rawSessionId.trim() || undefined : undefined;
+}
+
 function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "install"): boolean {
   if (domain !== "doctor") return false;
   const args = normalizeInvokeArgs(invoke);
@@ -86,6 +113,9 @@ export function useDoctorAgent() {
   const targetRef = useRef("local");
   const instanceScopeRef = useRef("local");
   const domainRef = useRef<"doctor" | "install">("doctor");
+  const instanceTransportRef = useRef<"local" | "docker_local" | "remote_ssh">("local");
+  const engineRef = useRef<DoctorEngineMode>("zeroclaw");
+  const openclawSessionIdRef = useRef<string | undefined>(undefined);
   // Last connection params for reconnect
   const wasConnectedRef = useRef(false);
 
@@ -382,51 +412,83 @@ export function useDoctorAgent() {
       instanceTransport: "local" | "docker_local" | "remote_ssh" = "local",
       systemPrompt?: string,
       domain: "doctor" | "install" = "doctor",
+      engine: DoctorEngineMode = "zeroclaw",
     ) => {
-    agentIdRef.current = agentId;
-    const scope = (instanceScope ?? targetRef.current ?? "local").trim() || "local";
-    const executionTarget = instanceTransport === "remote_ssh" ? scope : "local";
-    targetRef.current = executionTarget;
-    instanceScopeRef.current = scope;
-    setTargetState(executionTarget);
-    domainRef.current = domain;
-    setLoading(true);
-    setMessages([]);
-    setPendingInvokes(new Map());
-    streamingRef.current = "";
-    streamEndedRef.current = false;
-    // Fresh session key per diagnosis — no inherited stale state
-    sessionKeyRef.current = `agent:${agentId}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
-    sessionActiveRef.current = true;
-    try {
-      const scope = instanceScopeRef.current;
-      let prompt: string;
-      if (systemPrompt) {
-        prompt = systemPrompt;
-      } else {
-        const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
-        const transportLine =
-          instanceTransport === "docker_local"
-            ? `Current target transport is docker_local (instance: ${scope}).`
-            : instanceTransport === "remote_ssh"
-              ? `Current target transport is remote_ssh (instance: ${scope}).`
-              : "Current target transport is local.";
-        prompt = renderPromptTemplate(doctorStartPromptTemplate(), {
-          "{{language}}": lang,
-          "{{transport_line}}": transportLine,
-          "{{context}}": context,
-        });
+      agentIdRef.current = agentId;
+      const scope = (instanceScope ?? targetRef.current ?? "local").trim() || "local";
+      const executionTarget = instanceTransport === "remote_ssh" ? scope : "local";
+      targetRef.current = executionTarget;
+      instanceScopeRef.current = scope;
+      setTargetState(executionTarget);
+      domainRef.current = domain;
+      instanceTransportRef.current = instanceTransport;
+      engineRef.current = domain === "install" ? "zeroclaw" : engine;
+      setLoading(true);
+      setError(null);
+      setMessages([]);
+      setPendingInvokes(new Map());
+      streamingRef.current = "";
+      streamEndedRef.current = false;
+      // Fresh session key per diagnosis — no inherited stale state
+      sessionKeyRef.current = `agent:${agentId}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
+      openclawSessionIdRef.current = undefined;
+      sessionActiveRef.current = engineRef.current === "zeroclaw";
+      try {
+        const scope = instanceScopeRef.current;
+        let prompt: string;
+        if (systemPrompt) {
+          prompt = systemPrompt;
+        } else {
+          const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
+          const transportLine =
+            instanceTransport === "docker_local"
+              ? `Current target transport is docker_local (instance: ${scope}).`
+              : instanceTransport === "remote_ssh"
+                ? `Current target transport is remote_ssh (instance: ${scope}).`
+                : "Current target transport is local.";
+          prompt = renderPromptTemplate(doctorStartPromptTemplate(), {
+            "{{language}}": lang,
+            "{{transport_line}}": transportLine,
+            "{{context}}": context,
+          });
+        }
+        if (domain === "install") {
+          await api.installStartSession(prompt, sessionKeyRef.current, agentId, scope);
+        } else if (engineRef.current === "zeroclaw") {
+          await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId, scope);
+        } else {
+          const chatMessageId = nextMsgId();
+          setConnected(true);
+          setBridgeConnected(false);
+          try {
+            const currentSessionId = openclawSessionIdRef.current ?? sessionKeyRef.current;
+            const response = instanceTransportRef.current === "remote_ssh"
+              ? await api.remoteChatViaOpenclaw(scope, agentId, prompt, currentSessionId)
+              : await api.chatViaOpenclaw(agentId, prompt, currentSessionId);
+            const assistantText = extractOpenclawText(response as Record<string, unknown>);
+            const restoredSessionId = extractOpenclawSessionId(response as Record<string, unknown>);
+            if (restoredSessionId) {
+              openclawSessionIdRef.current = restoredSessionId;
+            }
+            if (!assistantText) {
+              throw new Error("No text returned from openclaw diagnosis");
+            }
+            setMessages((prev) => [...prev, {
+              id: chatMessageId,
+              role: "assistant",
+              content: assistantText,
+            }]);
+            setLoading(false);
+          } catch (err) {
+            setConnected(false);
+            throw err;
+          }
+        }
+      } catch (err) {
+        setError(`Start diagnosis failed: ${err}`);
+        setLoading(false);
       }
-      if (domain === "install") {
-        await api.installStartSession(prompt, sessionKeyRef.current, agentId, scope);
-      } else {
-        await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId, scope);
-      }
-    } catch (err) {
-      setError(`Start diagnosis failed: ${err}`);
-      setLoading(false);
-    }
-  }, []);
+    }, []);
 
   const sendMessage = useCallback(async (message: string) => {
     setLoading(true);
@@ -435,6 +497,26 @@ export function useDoctorAgent() {
     try {
       if (domainRef.current === "install") {
         await api.installSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
+      } else if (engineRef.current === "openclaw") {
+        const currentSessionId = openclawSessionIdRef.current ?? sessionKeyRef.current;
+        const response = instanceTransportRef.current === "remote_ssh"
+          ? await api.remoteChatViaOpenclaw(
+            instanceScopeRef.current,
+            agentIdRef.current,
+            message,
+            currentSessionId,
+          )
+          : await api.chatViaOpenclaw(agentIdRef.current, message, currentSessionId);
+        const assistantText = extractOpenclawText(response as Record<string, unknown>);
+        const restoredSessionId = extractOpenclawSessionId(response as Record<string, unknown>);
+        if (restoredSessionId) {
+          openclawSessionIdRef.current = restoredSessionId;
+        }
+        if (!assistantText) {
+          throw new Error("No text returned from openclaw diagnosis");
+        }
+        setMessages((prev) => [...prev, { id: nextMsgId(), role: "assistant", content: assistantText }]);
+        setLoading(false);
       } else {
         await api.doctorSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
       }
@@ -445,6 +527,9 @@ export function useDoctorAgent() {
   }, []);
 
   const approveInvoke = useCallback(async (invokeId: string) => {
+    if (domainRef.current === "doctor" && engineRef.current === "openclaw") {
+      return;
+    }
     setMessages((prev) =>
       prev.map((m) => {
         if (m.invoke?.id === invokeId && m.role === "tool-call") {
@@ -477,6 +562,9 @@ export function useDoctorAgent() {
   }, []);
 
   const rejectInvoke = useCallback(async (invokeId: string, reason = "User rejected") => {
+    if (domainRef.current === "doctor" && engineRef.current === "openclaw") {
+      return;
+    }
     setPendingInvokes((prev) => {
       const next = new Map(prev);
       next.delete(invokeId);
@@ -506,6 +594,7 @@ export function useDoctorAgent() {
     setApprovedPatterns(new Set());
     streamingRef.current = "";
     streamEndedRef.current = false;
+    openclawSessionIdRef.current = undefined;
   }, []);
 
   return {

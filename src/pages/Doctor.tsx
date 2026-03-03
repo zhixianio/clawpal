@@ -259,7 +259,9 @@ export function Doctor({
         setRemoteConnState("connected");
       }
 
-      await doctor.connect();
+      if (showZeroclawDiagnosis) {
+        await doctor.connect();
+      }
       setStartupStage("collecting");
       const baseContext = isRemote
         ? await ua.collectDoctorContextRemote(instanceId)
@@ -273,7 +275,15 @@ export function Doctor({
           ? "docker_local"
           : "local";
       setStartupStage("starting");
-      await doctor.startDiagnosis(context, "main", diagnosisScope, diagnosisTransport);
+      await doctor.startDiagnosis(
+        context,
+        "main",
+        diagnosisScope,
+        diagnosisTransport,
+        undefined,
+        "doctor",
+        showZeroclawDiagnosis ? "zeroclaw" : "openclaw",
+      );
     } catch (err) {
       const msg = String(err);
       setStartError(msg);
