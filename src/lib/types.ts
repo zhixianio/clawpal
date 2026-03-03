@@ -197,6 +197,7 @@ export interface RemoteAuthSyncResult {
 
 export interface AppPreferences {
   zeroclawModel: string | null;
+  showZeroclawDoctorUi: boolean;
 }
 
 export interface ZeroclawUsageStats {

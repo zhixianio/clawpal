@@ -11,6 +11,8 @@ use crate::models::{resolve_paths, OpenClawPaths};
 pub struct AppPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zeroclaw_model: Option<String>,
+    #[serde(default)]
+    pub show_zeroclaw_doctor_ui: bool,
 }
 
 fn app_preferences_path(paths: &OpenClawPaths) -> std::path::PathBuf {
@@ -54,6 +56,15 @@ pub fn set_zeroclaw_model_preference(model: Option<String>) -> Result<AppPrefere
     let paths = resolve_paths();
     let mut prefs = load_app_preferences_from_paths(&paths);
     prefs.zeroclaw_model = normalize_optional_string(model);
+    save_app_preferences_from_paths(&paths, &prefs)?;
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_zeroclaw_doctor_ui_preference(show_ui: bool) -> Result<AppPreferences, String> {
+    let paths = resolve_paths();
+    let mut prefs = load_app_preferences_from_paths(&paths);
+    prefs.show_zeroclaw_doctor_ui = show_ui;
     save_app_preferences_from_paths(&paths, &prefs)?;
     Ok(prefs)
 }

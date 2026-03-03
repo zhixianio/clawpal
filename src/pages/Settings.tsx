@@ -200,6 +200,7 @@ export function Settings({
   const [zeroclawUsageLoading, setZeroclawUsageLoading] = useState(true);
   const [zeroclawTarget, setZeroclawTarget] = useState<ZeroclawRuntimeTarget | null>(null);
   const [zeroclawTargetLoading, setZeroclawTargetLoading] = useState(true);
+  const [showZeroclawDoctorUi, setShowZeroclawDoctorUi] = useState(false);
   const zeroclawPrefsLoadedRef = useRef(false);
   const zeroclawLastSavedRef = useRef("");
 
@@ -308,6 +309,9 @@ export function Settings({
         setZeroclawModel(value);
         zeroclawLastSavedRef.current = value.trim();
         zeroclawPrefsLoadedRef.current = true;
+
+        const nextShowZeroclawUi = Boolean(prefs.showZeroclawDoctorUi);
+        setShowZeroclawDoctorUi(nextShowZeroclawUi);
       })
       .catch((e) => console.error("Failed to load app preferences:", e));
   }, [ua]);
@@ -588,6 +592,19 @@ export function Settings({
   const showProfiles = section !== "preferences";
   const showPreferences = section !== "profiles";
 
+  const handleZeroclawDoctorUiToggle = useCallback((nextChecked: boolean) => {
+    setShowZeroclawDoctorUi(nextChecked);
+    ua.setZeroclawDoctorUiPreference(nextChecked)
+      .then((prefs) => {
+        setShowZeroclawDoctorUi(Boolean(prefs.showZeroclawDoctorUi));
+      })
+      .catch((e) => {
+        setShowZeroclawDoctorUi((current) => !current);
+        const errorText = e instanceof Error ? e.message : String(e);
+        toast.error(t("settings.zeroclawDoctorUiSaveFailed", { error: errorText }));
+      });
+  }, [t, ua]);
+
   useEffect(() => {
     if (!zeroclawPrefsLoadedRef.current) return;
     const next = zeroclawModel.trim();
@@ -631,6 +648,29 @@ export function Settings({
             {showPreferences && (
             <Card>
               <CardContent className="space-y-4">
+                <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                  <summary className="cursor-pointer text-sm font-semibold text-foreground">
+                    {t("settings.alphaFeatures")}
+                  </summary>
+                  <div className="mt-3 space-y-3">
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.alphaFeaturesDescription")}
+                    </p>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <Label className="text-sm font-medium">{t("settings.alphaEnableZeroclawUi")}</Label>
+                      <Checkbox
+                        checked={showZeroclawDoctorUi}
+                        onCheckedChange={(checked) => handleZeroclawDoctorUiToggle(checked === true)}
+                        aria-label={t("settings.alphaEnableZeroclawUi")}
+                        className="h-5 w-5"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t("settings.alphaEnableZeroclawUiHint")}
+                    </p>
+                  </div>
+                </details>
+
                 {/* Version */}
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <Label className="text-sm font-semibold">{t('settings.currentVersion')}</Label>

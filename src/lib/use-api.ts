@@ -726,6 +726,10 @@ export function useApi() {
         api.setZeroclawModelPreference,
         ["getAppPreferences", "getZeroclawRuntimeTarget"],
       ),
+      setZeroclawDoctorUiPreference: withGlobalInvalidation(
+        api.setZeroclawDoctorUiPreference,
+        ["getAppPreferences"],
+      ),
       ensureAccessProfile: api.ensureAccessProfile,
       recordInstallExperience: api.recordInstallExperience,
       openUrl: api.openUrl,
