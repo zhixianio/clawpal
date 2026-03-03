@@ -199,6 +199,26 @@ export interface AppPreferences {
   zeroclawModel: string | null;
 }
 
+export type BugReportBackend = "sentry" | "glitchTip" | "customUrl";
+export type BugReportSeverity = "info" | "warn" | "error" | "critical";
+
+export interface BugReportSettings {
+  enabled: boolean;
+  backend: BugReportBackend;
+  endpoint: string | null;
+  severityThreshold: BugReportSeverity;
+  maxReportsPerHour: number;
+}
+
+export interface BugReportStats {
+  sessionId: string;
+  totalSent: number;
+  sentLastHour: number;
+  droppedRateLimited: number;
+  sendFailures: number;
+  lastSentAt: string | null;
+}
+
 export interface ZeroclawUsageStats {
   totalCalls: number;
   usageCalls: number;

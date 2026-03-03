@@ -712,6 +712,24 @@ export function useApi() {
         10_000,
         api.getAppPreferences,
       ),
+      getBugReportSettings: localGlobalCached(
+        "getBugReportSettings",
+        5_000,
+        api.getBugReportSettings,
+      ),
+      setBugReportSettings: withGlobalInvalidation(
+        api.setBugReportSettings,
+        ["getBugReportSettings"],
+      ),
+      getBugReportStats: localGlobalCached(
+        "getBugReportStats",
+        2_000,
+        api.getBugReportStats,
+      ),
+      testBugReportConnection: withGlobalInvalidation(
+        api.testBugReportConnection,
+        ["getBugReportStats"],
+      ),
       getZeroclawUsageStats: localGlobalCached(
         "getZeroclawUsageStats",
         2_000,

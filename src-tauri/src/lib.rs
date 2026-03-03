@@ -1,4 +1,8 @@
 use crate::agent_fallback::explain_operation_error;
+use crate::bug_report::{
+    get_bug_report_settings, get_bug_report_stats, set_bug_report_settings,
+    test_bug_report_connection,
+};
 use crate::cli_runner::{
     apply_queued_commands, discard_queued_commands, list_queued_commands, preview_queued_commands,
     queue_command, queued_commands_count, remote_apply_queued_commands,
@@ -66,6 +70,7 @@ use crate::ssh::SshConnectionPool;
 pub mod access_discovery;
 pub mod agent_fallback;
 pub mod bridge_client;
+pub mod bug_report;
 pub mod cli_runner;
 pub mod commands;
 pub mod config_io;
@@ -120,6 +125,10 @@ pub fn run() {
             get_status_light,
             get_status_extra,
             get_app_preferences,
+            get_bug_report_settings,
+            set_bug_report_settings,
+            get_bug_report_stats,
+            test_bug_report_connection,
             get_zeroclaw_usage_stats,
             get_session_usage_stats,
             get_zeroclaw_runtime_target,
@@ -281,6 +290,7 @@ pub fn run() {
             precheck_auth,
         ])
         .setup(|_app| {
+            crate::bug_report::install_panic_hook();
             // Run PATH fix in background so it doesn't block window creation.
             // openclaw commands won't fire until user interaction, giving this
             // plenty of time to complete.

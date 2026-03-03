@@ -1,0 +1,53 @@
+pub mod collector;
+pub mod reporter;
+pub mod sanitize;
+pub mod settings;
+
+use std::sync::Once;
+
+use collector::BugReportStats;
+use settings::{BugReportSettings, BugReportSeverity};
+
+#[tauri::command]
+pub fn get_bug_report_settings() -> Result<BugReportSettings, String> {
+    Ok(settings::load_bug_report_settings())
+}
+
+#[tauri::command]
+pub fn set_bug_report_settings(settings: BugReportSettings) -> Result<BugReportSettings, String> {
+    settings::save_bug_report_settings(settings)
+}
+
+#[tauri::command]
+pub fn get_bug_report_stats() -> Result<BugReportStats, String> {
+    Ok(collector::get_stats())
+}
+
+#[tauri::command]
+pub fn test_bug_report_connection() -> Result<bool, String> {
+    collector::send_test_report().map(|_| true)
+}
+
+pub fn install_panic_hook() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            let payload = if let Some(msg) = panic_info.payload().downcast_ref::<&str>() {
+                (*msg).to_string()
+            } else if let Some(msg) = panic_info.payload().downcast_ref::<String>() {
+                msg.clone()
+            } else {
+                "panic".to_string()
+            };
+            let location = panic_info
+                .location()
+                .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+                .unwrap_or_else(|| "unknown".to_string());
+            let message = format!("panic at {location}: {payload}");
+
+            collector::capture(BugReportSeverity::Critical, &message, None);
+            previous(panic_info);
+        }));
+    });
+}
