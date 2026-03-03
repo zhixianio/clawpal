@@ -40,6 +40,7 @@ import { DoctorChat } from "@/components/DoctorChat";
 import { TokenBadge } from "@/components/TokenBadge";
 import { ModelSwitcher } from "@/components/ModelSwitcher";
 import { SessionAnalysisPanel } from "@/components/SessionAnalysisPanel";
+import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
 import type { BackupInfo } from "@/lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
 
@@ -150,6 +151,7 @@ export function Doctor({
   const [backingUp, setBackingUp] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const [deletingBackupName, setDeletingBackupName] = useState<string | null>(null);
+  const [fadingOutBackupName, setFadingOutBackupName] = useState<string | null>(null);
 
   // Full-auto confirmation dialog
   const [fullAutoConfirmOpen, setFullAutoConfirmOpen] = useState(false);
@@ -181,7 +183,6 @@ export function Doctor({
     checkResult: primaryCheckResult,
     checkError: primaryCheckError,
     repairing: primaryRepairing,
-    repairingIssueId: primaryRepairingIssueId,
     repairResult: primaryRepairResult,
     repairError: primaryRepairError,
   } = primaryState;
@@ -794,20 +795,20 @@ export function Doctor({
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <p className="text-sm text-muted-foreground">{t("doctor.primaryRecoveryHint")}</p>
             <div className="flex items-center gap-2">
-              <Button
+              <AsyncActionButton
                 variant="default"
                 size="sm"
                 onClick={handleCheckPrimaryViaRescue}
+                loadingText={t("doctor.primaryChecking")}
                 disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
               >
-                {primaryCheckLoading
-                  ? t("doctor.primaryChecking")
-                  : t("doctor.primaryCheckNow")}
-              </Button>
-              <Button
+                {t("doctor.primaryCheckNow")}
+              </AsyncActionButton>
+              <AsyncActionButton
                 variant="secondary"
                 size="sm"
                 onClick={handleRepairPrimaryViaRescue}
+                loadingText={t("doctor.primaryRepairing")}
                 disabled={
                   primaryCheckLoading
                   || primaryRepairing
@@ -815,10 +816,8 @@ export function Doctor({
                   || (isRemote && !isConnected)
                 }
               >
-                {primaryRepairing
-                  ? t("doctor.primaryRepairing")
-                  : t("doctor.primaryRepairNow", { count: countSafeFixableIssues(primaryCheckResult) })}
-              </Button>
+                {t("doctor.primaryRepairNow", { count: countSafeFixableIssues(primaryCheckResult) })}
+              </AsyncActionButton>
             </div>
           </div>
           {primaryCheckError && (
@@ -881,15 +880,16 @@ export function Doctor({
                           </Button>
                         )}
                         {!check.ok && check.id.startsWith("primary.") && countSafeFixableIssues(primaryCheckResult) > 0 && (
-                          <Button
+                          <AsyncActionButton
                             variant="outline"
                             size="sm"
                             className="h-6 px-2 text-[11px]"
                             onClick={handleRepairPrimaryViaRescue}
+                            loadingText={t("doctor.primaryRepairing")}
                             disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
                           >
-                            {primaryRepairing ? t("doctor.primaryRepairing") : t("doctor.primaryQuickFix")}
-                          </Button>
+                            {t("doctor.primaryQuickFix")}
+                          </AsyncActionButton>
                         )}
                       </div>
                       <Badge variant={check.ok ? "outline" : "destructive"} className="text-[10px]">
@@ -915,19 +915,16 @@ export function Doctor({
                         <div className="flex items-center gap-2">
                           <div className="text-sm">{issue.message}</div>
                           {issue.source === "primary" && issue.autoFixable && (
-                            <Button
+                            <AsyncActionButton
                               variant="outline"
                               size="sm"
                               className="h-6 px-2 text-[11px]"
-                              onClick={() => {
-                                void handleRepairPrimaryIssue(issue);
-                              }}
+                              onClick={() => handleRepairPrimaryIssue(issue)}
+                              loadingText={t("doctor.primaryIssueFixing")}
                               disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
                             >
-                              {primaryRepairing && primaryRepairingIssueId === issue.id
-                                ? t("doctor.primaryIssueFixing")
-                                : t("doctor.primaryIssueFix")}
-                            </Button>
+                              {t("doctor.primaryIssueFix")}
+                            </AsyncActionButton>
                           )}
                         </div>
                         <div className="flex items-center gap-1">
@@ -1237,7 +1234,14 @@ export function Doctor({
         ) : (
           <div className="space-y-2">
             {backups.map((backup) => (
-              <Card key={backup.name}>
+              <Card
+                key={backup.name}
+                className={`overflow-hidden transition-all duration-300 ease-out ${
+                  fadingOutBackupName === backup.name
+                    ? "opacity-0 max-h-0"
+                    : "opacity-100 max-h-40"
+                }`}
+              >
                 <CardContent className="flex items-center justify-between">
                   <div>
                     <div className="font-medium text-sm">{backup.name}</div>
@@ -1288,8 +1292,12 @@ export function Doctor({
                     </AlertDialog>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button size="sm" variant="destructive" disabled={deletingBackupName === backup.name}>
-                          {deletingBackupName === backup.name ? t("home.deleting") : t("home.delete")}
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={deletingBackupName != null || fadingOutBackupName === backup.name}
+                        >
+                          {t("home.delete")}
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
@@ -1301,21 +1309,34 @@ export function Doctor({
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
-                          <AlertDialogAction
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            onClick={() => {
-                              setDeletingBackupName(backup.name);
-                              ua.deleteBackup(backup.name)
-                                .then(() => {
-                                  setBackups((prev) => prev?.filter((b) => b.name !== backup.name) ?? null);
+                          <AlertDialogAction asChild>
+                            <AsyncActionButton
+                              variant="destructive"
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              loadingText={t("home.deleting")}
+                              disabled={deletingBackupName != null}
+                              onClick={async () => {
+                                setDeletingBackupName(backup.name);
+                                try {
+                                  await ua.deleteBackup(backup.name);
+                                  setFadingOutBackupName(backup.name);
                                   setBackupMessage(t("home.deletedBackup", { name: backup.name }));
-                                  refreshBackups();
-                                })
-                                .catch((e) => { if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.deleteBackupFailed", { error: String(e) })); })
-                                .finally(() => setDeletingBackupName(null));
-                            }}
-                          >
-                            {t("home.delete")}
+                                  setTimeout(() => {
+                                    setBackups((prev) => prev?.filter((b) => b.name !== backup.name) ?? null);
+                                    setFadingOutBackupName((prev) => (prev === backup.name ? null : prev));
+                                    refreshBackups();
+                                  }, 350);
+                                } catch (e) {
+                                  if (!hasGuidanceEmitted(e)) {
+                                    setBackupMessage(t("home.deleteBackupFailed", { error: String(e) }));
+                                  }
+                                } finally {
+                                  setDeletingBackupName(null);
+                                }
+                              }}
+                            >
+                              {t("home.delete")}
+                            </AsyncActionButton>
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
