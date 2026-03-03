@@ -54,6 +54,7 @@ export function isAlreadyExplainedGuidanceError(errorText: string): boolean {
     || text.includes("建议前往")
     || text.includes("建议打开")
     || text.includes("建议执行诊断命令")
+    || text.includes("本机未安装 openclaw")
     || text.includes("recommend")
     || text.includes("next step")
     || text.includes("open doctor")
