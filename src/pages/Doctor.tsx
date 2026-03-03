@@ -234,6 +234,11 @@ export function Doctor({
   const effectiveModel = sessionModelOverride ?? runtimeModel;
 
   const handleStartDiagnosis = async (extraContext?: string) => {
+    if (!zeroclawDoctorUiLoaded) {
+      setStartError(t("doctor.loading"));
+      return;
+    }
+
     setStartError(null);
     setDiagnosing(true);
     setStartupStage("connecting");
@@ -1084,8 +1089,17 @@ export function Doctor({
                   {startupHint}
                 </div>
               )}
-              <Button onClick={() => { void handleStartDiagnosis(); }} disabled={diagnosing}>
-                {diagnosing ? t("doctor.connecting") : t("doctor.startDiagnosis")}
+              <Button
+                onClick={() => {
+                  void handleStartDiagnosis();
+                }}
+                disabled={diagnosing || !zeroclawDoctorUiLoaded}
+              >
+                {diagnosing
+                  ? t("doctor.connecting")
+                  : !zeroclawDoctorUiLoaded
+                    ? t("doctor.loading")
+                    : t("doctor.startDiagnosis")}
               </Button>
             </>
           ) : !doctor.connected && doctor.messages.length > 0 ? (
