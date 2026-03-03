@@ -112,7 +112,21 @@ impl OpenclawCli {
             }
         }
 
-        let output = cmd.output()?;
+        // Retry once on ETXTBSY (errno 26, "Text file busy"). This transient
+        // error can occur when the binary was just written/updated (e.g. during
+        // npm install or in tests under llvm-cov instrumentation).
+        let output = match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Command::new(&self.bin)
+                    .args(args)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .envs(env.iter().flat_map(|m| m.iter()))
+                    .output()?
+            }
+            other => other?,
+        };
         Ok(CliOutput {
             stdout: String::from_utf8_lossy(&output.stdout)
                 .trim_end()
