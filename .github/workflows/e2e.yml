@@ -43,8 +43,14 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Run E2E profile test
+      - name: Run E2E profile test (API key)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: cargo test -p clawpal-core --test profile_e2e -- --nocapture
+        working-directory: src-tauri
+
+      - name: Run E2E OAuth token test
+        env:
+          CLAUDE_OAUTH_TOKEN: ${{ secrets.CLAUDE_OAUTH_TOKEN }}
+        run: cargo test -p clawpal-core --test oauth_e2e -- --nocapture
         working-directory: src-tauri

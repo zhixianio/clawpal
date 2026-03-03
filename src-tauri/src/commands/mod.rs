@@ -3171,20 +3171,26 @@ fn run_provider_probe(
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
     let lower = provider_trimmed.to_ascii_lowercase();
+    let auth_kind = infer_auth_kind(&provider_trimmed, api_key.trim(), InternalAuthKind::ApiKey);
     let response = if lower == "anthropic" {
         let url = format!("{}/messages", resolved_base);
-        client
+        let mut req = client
             .post(&url)
-            .header("x-api-key", api_key.trim())
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&serde_json::json!({
-                "model": model_trimmed,
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}]
-            }))
-            .send()
-            .map_err(|e| format!("Provider request failed: {e}"))?
+            .header("content-type", "application/json");
+        req = match auth_kind {
+            InternalAuthKind::Authorization => {
+                req.header("Authorization", format!("Bearer {}", api_key.trim()))
+            }
+            InternalAuthKind::ApiKey => req.header("x-api-key", api_key.trim()),
+        };
+        req.json(&serde_json::json!({
+            "model": model_trimmed,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .map_err(|e| format!("Provider request failed: {e}"))?
     } else {
         let url = format!("{}/chat/completions", resolved_base);
         let mut req = client
