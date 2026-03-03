@@ -442,6 +442,7 @@
   "channels.noDiscordChannels": "No Discord channels cached. Click \"Refresh\" to discover channels from Discord.",
   "channels.discordRefreshed": "Discord channels refreshed",
   "channels.platformRefreshed": "{{platform}} channels refreshed",
+  "channels.default": "default",
   "channels.mainDefault": "main (default)",
   "channels.defaultModel": "default model",
   "channels.newAgent": "+ New agent...",

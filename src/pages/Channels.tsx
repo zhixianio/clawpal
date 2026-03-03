@@ -199,7 +199,7 @@ export function Channels({
     return `${emoji}${name}: ${a.id}${model}`;
   }
 
-  const renderAgentSelect = (platform: string, peerId: string) => {
+  const renderAgentSelect = (platform: string, peerId: string, guildDefaultAgentId?: string) => {
     const key = `${platform}:${peerId}`;
     const currentAgent = channelAgentMap.get(key);
     return (
@@ -210,7 +210,7 @@ export function Channels({
       >
         <SelectTrigger size="sm" className="text-xs max-w-full overflow-hidden">
           <SelectValue>
-            {currentAgent ? agentDisplayLabel(currentAgent) : t('channels.mainDefault')}
+            {currentAgent ? agentDisplayLabel(currentAgent) : (guildDefaultAgentId ? `${guildDefaultAgentId}（${t('channels.default')}）` : t('channels.mainDefault'))}
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
@@ -295,7 +295,7 @@ export function Channels({
                         <div key={ch.channelId} className="rounded-md border px-3 py-2">
                           <div className="text-sm font-medium">{ch.channelName}</div>
                           <div className="text-xs text-muted-foreground mt-0.5 mb-1.5">{ch.channelId}</div>
-                          {renderAgentSelect("discord", ch.channelId)}
+                          {renderAgentSelect("discord", ch.channelId, ch.defaultAgentId)}
                         </div>
                       ))}
                     </div>
@@ -325,10 +325,12 @@ export function Channels({
               <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-2">
                 {nodes.map((node) => {
                   const peerId = extractPeerId(node.path);
+                  const isAccount = node.channelType === "account";
+                  const label = node.displayName || (isAccount && peerId === "default" ? PLATFORM_LABELS[platform] || platform : peerId);
                   return (
                     <div key={node.path} className="rounded-md border px-3 py-2">
                       <div className="text-sm font-medium">
-                        {node.displayName || peerId}
+                        {label}
                       </div>
                       <div
                         className="text-xs text-muted-foreground mt-0.5 mb-1.5 truncate"
