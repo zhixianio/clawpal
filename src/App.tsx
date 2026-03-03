@@ -776,6 +776,20 @@ export function App() {
       // and state hasn't refreshed), assume non-password auth so the passphrase
       // dialog is still shown instead of falling through to a misleading error.
       if ((!host || host.authMethod !== "password") && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
+        // If the host already had a stored passphrase, the backend already tried it.
+        // Skip the dialog — the stored passphrase was wrong.
+        if (host?.passphrase && host.passphrase.length > 0) {
+          const fallbackMessage = buildSshPassphraseConnectErrorMessage(raw, hostLabel, t);
+          if (fallbackMessage) {
+            throw new Error(fallbackMessage);
+          }
+          throw await explainAndBuildGuidanceError({
+            method: "sshConnect",
+            instanceId: hostId,
+            transport: "remote_ssh",
+            rawError: err,
+          });
+        }
         const passphrase = await requestPassphrase(hostLabel);
         if (passphrase !== null) {
           try {

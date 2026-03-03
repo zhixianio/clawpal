@@ -298,6 +298,7 @@ export interface SshHost {
   authMethod: "key" | "ssh_config" | "password";
   keyPath?: string;
   password?: string;
+  passphrase?: string;
 }
 
 export interface SshConfigHostSuggestion {

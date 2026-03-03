@@ -28,6 +28,7 @@ fn ssh_host_crud_commands_delegate_to_core_registry() {
         auth_method: "key".to_string(),
         key_path: None,
         password: None,
+        passphrase: None,
     };
 
     let saved = upsert_ssh_host(host.clone()).expect("upsert should succeed");

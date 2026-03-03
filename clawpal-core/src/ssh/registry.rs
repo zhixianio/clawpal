@@ -130,6 +130,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: Some("~/.ssh/id_ed25519".to_string()),
             password: None,
+            passphrase: None,
         }
     }
 

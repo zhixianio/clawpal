@@ -5648,6 +5648,7 @@ pub fn migrate_legacy_instances(
                         auth_method: "ssh_config".to_string(),
                         key_path: None,
                         password: None,
+                        passphrase: None,
                     }),
                 },
             )?;
@@ -5738,7 +5739,20 @@ pub async fn ssh_connect(
         ));
         format!("No SSH host config with id: {host_id}")
     })?;
-    if let Err(error) = pool.connect(&host).await {
+    // If the host has a stored passphrase, use it directly
+    let connect_result = if let Some(ref pp) = host.passphrase {
+        if !pp.is_empty() {
+            crate::commands::logs::log_dev(format!(
+                "[dev][ssh_connect] using stored passphrase for host_id={host_id}"
+            ));
+            pool.connect_with_passphrase(&host, Some(pp.as_str())).await
+        } else {
+            pool.connect(&host).await
+        }
+    } else {
+        pool.connect(&host).await
+    };
+    if let Err(error) = connect_result {
         crate::commands::logs::log_dev(format!(
             "[dev][ssh_connect] failed host_id={} host={} user={} port={} auth_method={} error={}",
             host_id, host.host, host.username, host.port, host.auth_method, error

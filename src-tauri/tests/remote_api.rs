@@ -18,6 +18,7 @@ fn vm1_config() -> SshHostConfig {
         auth_method: "ssh_config".into(),
         key_path: None,
         password: None,
+        passphrase: None,
     }
 }
 

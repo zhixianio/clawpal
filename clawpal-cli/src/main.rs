@@ -386,6 +386,7 @@ fn run_connect_command(command: ConnectCommands) -> Result<serde_json::Value, St
                 auth_method: "key".to_string(),
                 key_path,
                 password: None,
+                passphrase: None,
             };
             runtime
                 .block_on(connect_ssh(config))
@@ -460,7 +461,7 @@ enum DoctorTarget {
     Local,
     Remote {
         id: String,
-        host: clawpal_core::instance::SshHostConfig,
+        host: Box<clawpal_core::instance::SshHostConfig>,
     },
 }
 
@@ -481,7 +482,7 @@ fn resolve_doctor_target(instance: Option<String>) -> Result<DoctorTarget, Strin
         .ok_or_else(|| format!("instance '{instance_id}' is not an SSH instance"))?;
     Ok(DoctorTarget::Remote {
         id: instance_id,
-        host,
+        host: Box::new(host),
     })
 }
 

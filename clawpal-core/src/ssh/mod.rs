@@ -623,6 +623,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let result = SshSession::connect(&cfg).await;
         assert!(result.is_err());
@@ -639,6 +640,7 @@ mod tests {
             auth_method: "password".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let result = SshSession::connect(&cfg).await;
         assert!(result.is_err());
@@ -659,6 +661,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: Some("~/.ssh/id_test".to_string()),
             password: None,
+            passphrase: None,
         };
         let resolved = resolve_target(&cfg).expect("resolve");
         assert_eq!(resolved.host, "example.com");
@@ -678,6 +681,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let session = SshSession {
             config: cfg,

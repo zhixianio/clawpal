@@ -172,6 +172,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let result = connect_ssh(config).await;
         assert!(result.is_err());

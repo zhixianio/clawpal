@@ -16,6 +16,8 @@ pub struct SshHostConfig {
     pub auth_method: String,
     pub key_path: Option<String>,
     pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase: Option<String>,
 }
 
 impl SshHostConfig {
@@ -416,6 +418,7 @@ mod tests {
                 auth_method: "key".to_string(),
                 key_path: None,
                 password: None,
+                passphrase: None,
             }),
         }
     }

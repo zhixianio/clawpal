@@ -93,6 +93,7 @@ fn ssh_registry_roundtrip_via_instance_registry() {
         auth_method: "key".to_string(),
         key_path: None,
         password: None,
+        passphrase: None,
     };
 
     ssh_registry::upsert_ssh_host(host.clone()).expect("upsert ssh host");
@@ -160,6 +161,7 @@ async fn connect_ssh_registers_remote_instance_with_fake_ssh() {
         auth_method: "key".to_string(),
         key_path: None,
         password: None,
+        passphrase: None,
     };
     let result = connect_ssh(cfg).await.expect("connect ssh");
     assert!(matches!(result.instance_type, InstanceType::RemoteSsh));
@@ -197,6 +199,7 @@ async fn connect_ssh_returns_error_when_exec_fails() {
         auth_method: "key".to_string(),
         key_path: None,
         password: None,
+        passphrase: None,
     };
     let result = connect_ssh(cfg).await;
     assert!(result.is_err());
