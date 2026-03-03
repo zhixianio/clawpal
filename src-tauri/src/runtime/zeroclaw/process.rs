@@ -433,6 +433,12 @@ fn zeroclaw_command_candidates(exe: &Path, cwd: &Path, bin_name: &str) -> Vec<Pa
     push_relative_candidate(
         &mut candidates,
         exe_dir,
+        &["..", "Resources", "resources", "zeroclaw", platform_dir],
+        bin_name,
+    );
+    push_relative_candidate(
+        &mut candidates,
+        exe_dir,
         &["resources", "zeroclaw", platform_dir],
         bin_name,
     );

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
-use crate::logging::{log_error, log_info};
+use crate::logging::log_info;
 
 /// Ensure `openclaw` and `node` are discoverable on PATH.
 /// On non-macOS platforms this is a no-op.
@@ -55,7 +55,7 @@ fn ensure_tool_paths_macos() {
     // Final status
     match find_on_path("openclaw") {
         Some(p) => log_info(&format!("openclaw found: {}", p.display())),
-        None => log_error("openclaw NOT found on PATH after fix"),
+        None => log_info("openclaw not found on PATH after fix (remote mode may still work)"),
     }
     match find_on_path("node") {
         Some(p) => log_info(&format!("node found: {}", p.display())),
