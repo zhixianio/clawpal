@@ -44,10 +44,11 @@ use crate::commands::{
     resolve_api_keys, resolve_provider_auth, restart_gateway, restore_from_backup, rollback,
     run_doctor_command, run_openclaw_upgrade, set_active_clawpal_data_dir,
     set_active_openclaw_home, set_agent_model, set_global_model, set_session_model_override,
-    set_zeroclaw_model_preference, setup_agent_identity, sftp_list_dir, sftp_read_file,
-    sftp_remove_file, sftp_write_file, ssh_connect, ssh_connect_with_passphrase, ssh_disconnect,
-    ssh_exec, ssh_status, start_watchdog, stop_watchdog, test_model_profile, trigger_cron_job,
-    uninstall_watchdog, upsert_model_profile, upsert_ssh_host,
+    set_zeroclaw_doctor_ui_preference, set_zeroclaw_model_preference, setup_agent_identity,
+    sftp_list_dir, sftp_read_file, sftp_remove_file, sftp_write_file, ssh_connect,
+    ssh_connect_with_passphrase, ssh_disconnect, ssh_exec, ssh_status, start_watchdog,
+    stop_watchdog, test_model_profile, trigger_cron_job, uninstall_watchdog, upsert_model_profile,
+    upsert_ssh_host,
 };
 use crate::doctor_commands::{
     collect_doctor_context, collect_doctor_context_remote, doctor_approve_invoke, doctor_connect,
@@ -169,6 +170,7 @@ pub fn run() {
             repair_primary_via_rescue,
             set_global_model,
             set_agent_model,
+            set_zeroclaw_doctor_ui_preference,
             set_zeroclaw_model_preference,
             list_bindings,
             list_ssh_hosts,

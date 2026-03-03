@@ -1,5 +1,5 @@
 import { forwardRef, useState } from "react";
-import type { ReactNode, ComponentPropsWithoutRef } from "react";
+import type { MouseEvent, ReactNode, ComponentPropsWithoutRef } from "react";
 import { Button } from "@/components/ui/button";
 
 interface AsyncActionButtonProps
@@ -15,12 +15,19 @@ export const AsyncActionButton = forwardRef<HTMLButtonElement, AsyncActionButton
     ref,
   ) {
     const [isLoading, setIsLoading] = useState(false);
+    const buttonProps = rest as ComponentPropsWithoutRef<typeof Button>;
+    const fallbackOnClick = buttonProps.onClick;
+    type ButtonOnClick = ComponentPropsWithoutRef<typeof Button>["onClick"];
+    type ButtonClickEvent = ButtonOnClick extends ((event: infer E) => void) ? E : MouseEvent<HTMLButtonElement>;
 
-    const handleClick = async () => {
+    const handleClick = async (event: ButtonClickEvent) => {
       if (isLoading || disabled) return;
       setIsLoading(true);
       try {
         await onClick();
+        if (fallbackOnClick) {
+          await Promise.resolve(fallbackOnClick(event));
+        }
       } finally {
         setIsLoading(false);
       }
@@ -32,8 +39,8 @@ export const AsyncActionButton = forwardRef<HTMLButtonElement, AsyncActionButton
         type="button"
         disabled={disabled || isLoading}
         {...rest}
-        onClick={() => {
-          void handleClick();
+        onClick={(event) => {
+          void handleClick(event);
         }}
       >
         {isLoading && (

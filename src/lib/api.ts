@@ -14,6 +14,8 @@ export const api = {
     invoke("get_zeroclaw_runtime_target", {}),
   setZeroclawModelPreference: (model: string | null): Promise<AppPreferences> =>
     invoke("set_zeroclaw_model_preference", { model }),
+  setZeroclawDoctorUiPreference: (showUi: boolean): Promise<AppPreferences> =>
+    invoke("set_zeroclaw_doctor_ui_preference", { showUi }),
   explainOperationError: (
     instanceId: string,
     operation: string,

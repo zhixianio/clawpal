@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { FileTextIcon, DownloadIcon } from "lucide-react";
-import { useApi, hasGuidanceEmitted } from "@/lib/use-api";
+import { buildCacheKey, hasGuidanceEmitted, subscribeToCacheKey, useApi } from "@/lib/use-api";
 import { useInstance } from "@/lib/instance-context";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
 import type {
@@ -162,6 +162,8 @@ export function Doctor({
   const [logsTab, setLogsTab] = useState<"app" | "error">("app");
   const [logsContent, setLogsContent] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const [showZeroclawDiagnosis, setShowZeroclawDiagnosis] = useState(false);
+  const [zeroclawDoctorUiLoaded, setZeroclawDoctorUiLoaded] = useState(false);
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueState, setRescueState] = useState<RescueUiState>(createInitialRescueUiState);
   const [primaryState, setPrimaryState] = useState<PrimaryRecoveryState>(createInitialPrimaryRecoveryState);
@@ -232,6 +234,11 @@ export function Doctor({
   const effectiveModel = sessionModelOverride ?? runtimeModel;
 
   const handleStartDiagnosis = async (extraContext?: string) => {
+    if (!zeroclawDoctorUiLoaded) {
+      setStartError(t("doctor.loading"));
+      return;
+    }
+
     setStartError(null);
     setDiagnosing(true);
     setStartupStage("connecting");
@@ -258,7 +265,9 @@ export function Doctor({
         setRemoteConnState("connected");
       }
 
-      await doctor.connect();
+      if (showZeroclawDiagnosis) {
+        await doctor.connect();
+      }
       setStartupStage("collecting");
       const baseContext = isRemote
         ? await ua.collectDoctorContextRemote(instanceId)
@@ -272,7 +281,15 @@ export function Doctor({
           ? "docker_local"
           : "local";
       setStartupStage("starting");
-      await doctor.startDiagnosis(context, "main", diagnosisScope, diagnosisTransport);
+      await doctor.startDiagnosis(
+        context,
+        "main",
+        diagnosisScope,
+        diagnosisTransport,
+        undefined,
+        "doctor",
+        showZeroclawDiagnosis ? "zeroclaw" : "openclaw",
+      );
     } catch (err) {
       const msg = String(err);
       setStartError(msg);
@@ -636,14 +653,14 @@ export function Doctor({
   }, [instanceId, isRemote, isConnected]);
 
   useEffect(() => {
-    if (!active || !launchGuidance) return;
+    if (!active || !launchGuidance || !zeroclawDoctorUiLoaded) return;
     const launchKey = `${launchGuidance.instanceId}:${launchGuidance.operation}:${launchGuidance.createdAt}`;
     if (lastAutoLaunchKeyRef.current === launchKey) return;
     lastAutoLaunchKeyRef.current = launchKey;
     onLaunchGuidanceConsumed?.(launchGuidance.instanceId);
     void handleStartDiagnosis(buildLaunchGuidanceContext(launchGuidance));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, launchGuidance, onLaunchGuidanceConsumed]);
+  }, [active, launchGuidance, onLaunchGuidanceConsumed, zeroclawDoctorUiLoaded]);
 
   useEffect(() => {
     if (logsOpen) fetchLog(logsSource, logsTab);
@@ -673,12 +690,47 @@ export function Doctor({
     };
   }, [ua, instanceId, isRemote]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadZeroclawDoctorUiPreference = () => {
+      ua.getAppPreferences()
+        .then((prefs) => {
+          if (!cancelled) {
+            setShowZeroclawDiagnosis(Boolean(prefs.showZeroclawDoctorUi));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setShowZeroclawDiagnosis(false);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setZeroclawDoctorUiLoaded(true);
+          }
+        });
+    };
+
+    loadZeroclawDoctorUiPreference();
+
+    const cacheKey = buildCacheKey("__global__", "getAppPreferences", []);
+    const unsubscribe = subscribeToCacheKey(cacheKey, loadZeroclawDoctorUiPreference);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [ua]);
+
   // Backups
   const refreshBackups = useCallback(() => {
     ua.listBackups().then(setBackups).catch((e) => console.error("Failed to load backups:", e));
   }, [ua]);
   useEffect(refreshBackups, [refreshBackups]);
-  const showLegacyRecoveryCards = false;
+  // Keep legacy recovery entry points visible, but keep zeroclaw-specific
+  // diagnosis UI hidden while the underlying logic remains unchanged.
+  const showLegacyRecoveryCards = true;
   const isWsl2 = instanceId.startsWith("wsl2:");
   const displayedDoctorTarget = isRemote || isDocker || isWsl2 ? instanceId : "local";
   const instanceTypeLabel = isRemote
@@ -1037,8 +1089,17 @@ export function Doctor({
                   {startupHint}
                 </div>
               )}
-              <Button onClick={() => { void handleStartDiagnosis(); }} disabled={diagnosing}>
-                {diagnosing ? t("doctor.connecting") : t("doctor.startDiagnosis")}
+              <Button
+                onClick={() => {
+                  void handleStartDiagnosis();
+                }}
+                disabled={diagnosing || !zeroclawDoctorUiLoaded}
+              >
+                {diagnosing
+                  ? t("doctor.connecting")
+                  : !zeroclawDoctorUiLoaded
+                    ? t("doctor.loading")
+                    : t("doctor.startDiagnosis")}
               </Button>
             </>
           ) : !doctor.connected && doctor.messages.length > 0 ? (
@@ -1074,39 +1135,63 @@ export function Doctor({
                   {startupHint}
                 </div>
               )}
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Badge variant="outline" className="text-xs">
-                    {t("doctor.engineZeroclaw")}
-                  </Badge>
-                  <Badge variant="outline" className="text-xs flex items-center gap-1.5">
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                    {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
-                  </Badge>
-                  <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
-                  <ModelSwitcher sessionId={doctorSessionId} defaultModel={runtimeModel} onModelChange={setSessionModelOverride} />
+              {showZeroclawDiagnosis ? (
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline" className="text-xs">
+                      {t("doctor.engineZeroclaw")}
+                    </Badge>
+                    <Badge variant="outline" className="text-xs flex items-center gap-1.5">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                      {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
+                    </Badge>
+                    <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
+                    <ModelSwitcher sessionId={doctorSessionId} defaultModel={runtimeModel} onModelChange={setSessionModelOverride} />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={doctor.fullAuto}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setFullAutoConfirmOpen(true);
+                          } else {
+                            doctor.setFullAuto(false);
+                          }
+                        }}
+                        className="accent-primary"
+                      />
+                      {t("doctor.fullAuto")}
+                    </label>
+                    <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                      {t("doctor.stopDiagnosis")}
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={doctor.fullAuto}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFullAutoConfirmOpen(true);
-                        } else {
-                          doctor.setFullAuto(false);
-                        }
-                      }}
-                      className="accent-primary"
-                    />
-                    {t("doctor.fullAuto")}
-                  </label>
-                  <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
-                    {t("doctor.stopDiagnosis")}
-                  </Button>
+              ) : (
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline" className="text-xs">
+                      {t("doctor.agentSource")}
+                    </Badge>
+                    <Badge variant="outline" className="text-xs flex items-center gap-1.5">
+                      <span className={`inline-block w-1.5 h-1.5 rounded-full ${remoteConnState === "connected" ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                      {remoteConnState === "connected"
+                        ? t("doctor.connected")
+                        : remoteConnState === "checking"
+                          ? t("doctor.connecting")
+                          : t("doctor.disconnected")}
+                    </Badge>
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{displayedDoctorTarget}</code>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                      {t("doctor.stopDiagnosis")}
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              )}
               <DoctorChat
                 messages={doctor.messages}
                 loading={doctor.loading}
