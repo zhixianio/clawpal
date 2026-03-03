@@ -286,4 +286,66 @@ mod tests {
         }
         assert!(!exists);
     }
+
+    #[test]
+    fn needs_local_image_fallback_repo_does_not_exist() {
+        let msg = "docker_pull failed (code Some(1)): repository does not exist or may require authentication";
+        assert!(needs_local_image_fallback(msg));
+    }
+
+    #[test]
+    fn needs_local_image_fallback_access_denied() {
+        let msg = "docker_pull failed: requested access to the resource is denied";
+        assert!(needs_local_image_fallback(msg));
+    }
+
+    #[test]
+    fn needs_local_image_fallback_unrelated_error() {
+        let msg = "docker_pull failed: network timeout";
+        assert!(!needs_local_image_fallback(msg));
+    }
+
+    #[test]
+    fn needs_local_image_fallback_missing_docker_pull_prefix() {
+        // Must contain "docker_pull failed" to trigger
+        let msg = "pull access denied for openclaw";
+        assert!(!needs_local_image_fallback(msg));
+    }
+
+    #[test]
+    fn compose_env_returns_expected_keys() {
+        let env = compose_env("/tmp/test-state");
+        let keys: Vec<&str> = env.iter().map(|(k, _)| *k).collect();
+        assert!(keys.contains(&"OPENCLAW_CONFIG_DIR"));
+        assert!(keys.contains(&"OPENCLAW_WORKSPACE_DIR"));
+        assert!(keys.contains(&"OPENCLAW_GATEWAY_TOKEN"));
+    }
+
+    #[test]
+    fn openclaw_state_dir_uses_home_option() {
+        let options = DockerInstallOptions {
+            home: Some("/custom/home".to_string()),
+            ..DockerInstallOptions::default()
+        };
+        let dir = openclaw_state_dir(&options);
+        assert_eq!(dir, "/custom/home/.openclaw");
+    }
+
+    #[test]
+    fn openclaw_state_dir_default() {
+        let options = DockerInstallOptions::default();
+        let dir = openclaw_state_dir(&options);
+        assert!(dir.ends_with("/.openclaw"));
+    }
+
+    #[test]
+    fn openclaw_home_expands_tilde() {
+        let options = DockerInstallOptions {
+            home: Some("~/my-openclaw".to_string()),
+            ..DockerInstallOptions::default()
+        };
+        let home = openclaw_home(&options);
+        assert!(!home.starts_with('~'));
+        assert!(home.ends_with("/my-openclaw"));
+    }
 }

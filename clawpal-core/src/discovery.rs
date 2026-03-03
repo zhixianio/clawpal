@@ -185,4 +185,170 @@ mod tests {
         let out = parse_bindings("[{\"a\":1}]").expect("parse");
         assert_eq!(out.len(), 1);
     }
+
+    #[test]
+    fn parse_guild_channels_from_accounts() {
+        let raw = r#"{
+          "channels": {
+            "discord": {
+              "accounts": {
+                "acc1": {
+                  "guilds": {
+                    "g2": {"channels": {"c2": {}, "c3": {}}}
+                  }
+                }
+              }
+            }
+          },
+          "bindings": []
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().any(|c| c.channel_id == "c2"));
+        assert!(out.iter().any(|c| c.channel_id == "c3"));
+    }
+
+    #[test]
+    fn parse_guild_channels_uses_slug_as_name() {
+        let raw = r#"{
+          "channels": {"discord": {"guilds": {"g1": {"slug": "My Server", "channels": {"c1": {}}}}}},
+          "bindings": []
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out[0].guild_name, "My Server");
+    }
+
+    #[test]
+    fn parse_guild_channels_uses_name_fallback() {
+        let raw = r#"{
+          "channels": {"discord": {"guilds": {"g1": {"name": "Named Server", "channels": {"c1": {}}}}}},
+          "bindings": []
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out[0].guild_name, "Named Server");
+    }
+
+    #[test]
+    fn parse_guild_channels_falls_back_to_guild_id() {
+        let raw = r#"{
+          "channels": {"discord": {"guilds": {"12345": {"channels": {"c1": {}}}}}},
+          "bindings": []
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out[0].guild_name, "12345");
+    }
+
+    #[test]
+    fn parse_guild_channels_skips_wildcard_channels() {
+        let raw = r#"{
+          "channels": {"discord": {"guilds": {"g1": {"channels": {"*": {}, "c1": {}}}}}},
+          "bindings": []
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].channel_id, "c1");
+    }
+
+    #[test]
+    fn parse_guild_channels_deduplicates() {
+        let raw = r#"{
+          "channels": {
+            "discord": {
+              "guilds": {"g1": {"channels": {"c1": {}}}},
+              "accounts": {"a1": {"guilds": {"g1": {"channels": {"c1": {}}}}}}
+            }
+          },
+          "bindings": []
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn parse_guild_channels_from_bindings() {
+        let raw = r#"{
+          "channels": {"discord": {}},
+          "bindings": [
+            {"match":{"channel":"discord","guildId":"g1","peer":{"id":"c1"}},"agentId":"main"},
+            {"match":{"channel":"telegram","guildId":"g2","peer":{"id":"c2"}},"agentId":"main"}
+          ]
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        // Only discord binding should be collected
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].guild_id, "g1");
+        assert_eq!(out[0].channel_id, "c1");
+    }
+
+    #[test]
+    fn parse_guild_channels_bindings_numeric_ids() {
+        let raw = r#"{
+          "channels": {},
+          "bindings": [
+            {"match":{"channel":"discord","guildId":12345,"peer":{"id":67890}},"agentId":"main"}
+          ]
+        }"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].guild_id, "12345");
+        assert_eq!(out[0].channel_id, "67890");
+    }
+
+    #[test]
+    fn parse_guild_channels_empty_config() {
+        let raw = r#"{"channels":{},"bindings":[]}"#;
+        let out = parse_guild_channels(raw).expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_guild_channels_invalid_json() {
+        let result = parse_guild_channels("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn merge_channel_bindings_no_match() {
+        let channels = vec![GuildChannel {
+            guild_id: "g1".into(),
+            guild_name: "g1".into(),
+            channel_id: "c1".into(),
+            channel_name: "c1".into(),
+        }];
+        let bindings = r#"[{"match":{"channel":"discord","guildId":"g2","peer":{"id":"c2"}},"agentId":"other"}]"#;
+        let out = merge_channel_bindings(&channels, bindings);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].agent_id.is_none());
+    }
+
+    #[test]
+    fn merge_channel_bindings_invalid_bindings() {
+        let channels = vec![GuildChannel {
+            guild_id: "g".into(),
+            guild_name: "g".into(),
+            channel_id: "c".into(),
+            channel_name: "c".into(),
+        }];
+        let out = merge_channel_bindings(&channels, "invalid json");
+        assert_eq!(out.len(), 1);
+        assert!(out[0].agent_id.is_none());
+    }
+
+    #[test]
+    fn parse_bindings_empty_array() {
+        let out = parse_bindings("[]").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_bindings_non_array() {
+        let out = parse_bindings("{}").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_bindings_invalid_json() {
+        let result = parse_bindings("not json");
+        assert!(result.is_err());
+    }
 }

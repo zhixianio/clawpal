@@ -70,4 +70,69 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].get("runId").and_then(Value::as_str), Some("2"));
     }
+
+    #[test]
+    fn parse_cron_jobs_plain_array() {
+        let raw = r#"[{"id":"j1","expr":"0 * * * *"},{"id":"j2","expr":"*/5 * * * *"}]"#;
+        let out = parse_cron_jobs(raw).expect("parse");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].get("jobId").and_then(Value::as_str), Some("j1"));
+        assert_eq!(out[1].get("jobId").and_then(Value::as_str), Some("j2"));
+    }
+
+    #[test]
+    fn parse_cron_jobs_object_map() {
+        let raw = r#"{"myJob":{"expr":"0 0 * * *"},"other":{"expr":"*/10 * * * *"}}"#;
+        let out = parse_cron_jobs(raw).expect("parse");
+        assert_eq!(out.len(), 2);
+        // Each entry should have both id and jobId
+        for job in &out {
+            assert!(job.get("jobId").is_some());
+            assert!(job.get("id").is_some());
+        }
+    }
+
+    #[test]
+    fn parse_cron_jobs_empty_input() {
+        let out = parse_cron_jobs("").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_cron_jobs_invalid_json_returns_empty() {
+        let out = parse_cron_jobs("not json at all").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_cron_runs_empty_input() {
+        let out = parse_cron_runs("").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_cron_runs_skips_empty_lines() {
+        let raw = "\n{\"runId\":\"1\"}\n\n{\"runId\":\"2\"}\n\n";
+        let out = parse_cron_runs(raw).expect("parse");
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn parse_cron_runs_reverses_order() {
+        let raw = "{\"runId\":\"first\"}\n{\"runId\":\"second\"}\n{\"runId\":\"third\"}\n";
+        let out = parse_cron_runs(raw).expect("parse");
+        assert_eq!(out[0].get("runId").and_then(Value::as_str), Some("third"));
+        assert_eq!(out[2].get("runId").and_then(Value::as_str), Some("first"));
+    }
+
+    #[test]
+    fn parse_cron_jobs_preserves_existing_job_id() {
+        // If jobId already exists, id should not overwrite it
+        let raw = r#"[{"id":"j1","jobId":"existing"}]"#;
+        let out = parse_cron_jobs(raw).expect("parse");
+        assert_eq!(
+            out[0].get("jobId").and_then(Value::as_str),
+            Some("existing")
+        );
+    }
 }

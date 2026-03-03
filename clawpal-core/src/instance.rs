@@ -424,6 +424,132 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_instance_id_segment_basic() {
+        assert_eq!(sanitize_instance_id_segment("my-server"), "my-server");
+    }
+
+    #[test]
+    fn sanitize_instance_id_segment_special_chars() {
+        assert_eq!(sanitize_instance_id_segment("vm@123.com"), "vm-123-com");
+    }
+
+    #[test]
+    fn sanitize_instance_id_segment_consecutive_dashes() {
+        assert_eq!(sanitize_instance_id_segment("a!!b"), "a-b");
+    }
+
+    #[test]
+    fn sanitize_instance_id_segment_empty() {
+        assert_eq!(sanitize_instance_id_segment(""), "remote");
+        assert_eq!(sanitize_instance_id_segment("---"), "remote");
+    }
+
+    #[test]
+    fn sanitize_instance_id_segment_whitespace() {
+        assert_eq!(sanitize_instance_id_segment("  my server  "), "my-server");
+    }
+
+    #[test]
+    fn endpoint_key_format() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "Example.COM".to_string(),
+            port: 2222,
+            username: "alice".to_string(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        assert_eq!(cfg.endpoint_key(), "alice@example.com:2222");
+    }
+
+    #[test]
+    fn ids_returns_all_ids() {
+        let mut registry = InstanceRegistry::default();
+        registry.add(sample_instance("a")).expect("add");
+        registry.add(sample_instance("b")).expect("add");
+        let mut ids = registry.ids();
+        ids.sort();
+        assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn get_returns_none_for_missing() {
+        let registry = InstanceRegistry::default();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn remove_returns_none_for_missing() {
+        let mut registry = InstanceRegistry::default();
+        assert!(registry.remove("nonexistent").is_none());
+    }
+
+    #[test]
+    fn canonical_remote_instance_id_uses_instance_id() {
+        let inst = Instance {
+            id: "ssh:custom".to_string(),
+            instance_type: InstanceType::RemoteSsh,
+            label: String::new(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: None,
+        };
+        assert_eq!(canonical_remote_instance_id(&inst), "ssh:custom");
+    }
+
+    #[test]
+    fn canonical_remote_instance_id_falls_back_to_ssh_config() {
+        let inst = Instance {
+            id: String::new(),
+            instance_type: InstanceType::RemoteSsh,
+            label: String::new(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: Some(SshHostConfig {
+                id: String::new(),
+                label: String::new(),
+                host: "my-host.com".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                auth_method: "key".to_string(),
+                key_path: None,
+                password: None,
+                passphrase: None,
+            }),
+        };
+        assert_eq!(canonical_remote_instance_id(&inst), "ssh:my-host-com");
+    }
+
+    #[test]
+    fn canonical_remote_instance_id_no_ssh_config() {
+        let inst = Instance {
+            id: String::new(),
+            instance_type: InstanceType::RemoteSsh,
+            label: String::new(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: None,
+        };
+        assert_eq!(canonical_remote_instance_id(&inst), "ssh:remote");
+    }
+
+    #[test]
+    fn normalize_instance_non_ssh_unchanged() {
+        let inst = sample_instance("local");
+        let normalized = normalize_instance(inst.clone());
+        assert_eq!(normalized.id, "local");
+    }
+
+    #[test]
+    fn registry_error_display() {
+        let err = InstanceRegistryError::DuplicateInstance("dup-id".to_string());
+        assert!(err.to_string().contains("dup-id"));
+    }
+
+    #[test]
     fn load_deduplicates_ssh_instances_by_endpoint() {
         let _guard = crate::test_support::env_lock()
             .lock()
