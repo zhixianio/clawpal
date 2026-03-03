@@ -16,6 +16,7 @@ export interface DiscordGuildChannel {
   guildName: string;
   channelId: string;
   channelName: string;
+  defaultAgentId?: string;
 }
 
 export interface RecipeParam {
@@ -435,6 +436,12 @@ export interface CronJobState {
   lastError?: string;
 }
 
+export interface CronJobDelivery {
+  mode?: string;
+  channel?: string;
+  to?: string;
+}
+
 export interface CronJob {
   jobId: string;
   name: string;
@@ -444,6 +451,7 @@ export interface CronJob {
   enabled: boolean;
   description?: string;
   state?: CronJobState;
+  delivery?: CronJobDelivery;
 }
 
 export interface CronRun {

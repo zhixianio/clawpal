@@ -64,6 +64,13 @@ pub async fn remote_list_discord_guild_channels(
                     })
                 })
         });
+    let mut guild_name_fallback_map = pool
+        .sftp_read(&host_id, "~/.clawpal/discord-guild-channels.json")
+        .await
+        .ok()
+        .map(|text| parse_discord_cache_guild_name_fallbacks(&text))
+        .unwrap_or_default();
+    guild_name_fallback_map.extend(collect_discord_config_guild_name_fallbacks(discord_cfg));
 
     let core_channels = clawpal_core::discovery::parse_guild_channels(&cfg.to_string())?;
     let mut entries: Vec<DiscordGuildChannel> = core_channels
@@ -73,6 +80,7 @@ pub async fn remote_list_discord_guild_channels(
             guild_name: c.guild_name.clone(),
             channel_id: c.channel_id.clone(),
             channel_name: c.channel_name.clone(),
+            default_agent_id: None,
         })
         .collect();
     let mut channel_ids: Vec<String> = entries.iter().map(|e| e.channel_id.clone()).collect();
@@ -105,6 +113,7 @@ pub async fn remote_list_discord_guild_channels(
                                 guild_name: guild_id.clone(),
                                 channel_id,
                                 channel_name,
+                                default_agent_id: None,
                             });
                         }
                     }
@@ -148,6 +157,7 @@ pub async fn remote_list_discord_guild_channels(
                         guild_name,
                         channel_id: channel_id.clone(),
                         channel_name: channel_id,
+                        default_agent_id: None,
                     });
                 }
             }
@@ -192,6 +202,71 @@ pub async fn remote_list_discord_guild_channels(
             for entry in &mut entries {
                 if let Some(name) = guild_name_map.get(&entry.guild_id) {
                     entry.guild_name = name.clone();
+                }
+            }
+        }
+    }
+    for entry in &mut entries {
+        if entry.guild_name == entry.guild_id {
+            if let Some(name) = guild_name_fallback_map.get(&entry.guild_id) {
+                entry.guild_name = name.clone();
+            }
+        }
+    }
+
+    // Resolve default agent per guild from account config + bindings (remote)
+    {
+        // Build account_id -> default agent_id from bindings (account-level, no peer)
+        let mut account_agent_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if let Some(bindings) = cfg.get("bindings").and_then(Value::as_array) {
+            for b in bindings {
+                let m = match b.get("match") {
+                    Some(m) => m,
+                    None => continue,
+                };
+                if m.get("channel").and_then(Value::as_str) != Some("discord") {
+                    continue;
+                }
+                let account_id = match m.get("accountId").and_then(Value::as_str) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                if m.get("peer").and_then(|p| p.get("id")).is_some() {
+                    continue;
+                } // skip channel-specific
+                if let Some(agent_id) = b.get("agentId").and_then(Value::as_str) {
+                    account_agent_map
+                        .entry(account_id.to_string())
+                        .or_insert_with(|| agent_id.to_string());
+                }
+            }
+        }
+        // Build guild_id -> default agent from account->guild mapping
+        let mut guild_default_agent: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if let Some(accounts) = discord_cfg
+            .and_then(|d| d.get("accounts"))
+            .and_then(Value::as_object)
+        {
+            for (account_id, account_val) in accounts {
+                let agent = account_agent_map
+                    .get(account_id)
+                    .cloned()
+                    .unwrap_or_else(|| account_id.clone());
+                if let Some(guilds) = account_val.get("guilds").and_then(Value::as_object) {
+                    for guild_id in guilds.keys() {
+                        guild_default_agent
+                            .entry(guild_id.clone())
+                            .or_insert(agent.clone());
+                    }
+                }
+            }
+        }
+        for entry in &mut entries {
+            if entry.default_agent_id.is_none() {
+                if let Some(agent_id) = guild_default_agent.get(&entry.guild_id) {
+                    entry.default_agent_id = Some(agent_id.clone());
                 }
             }
         }
@@ -393,6 +468,12 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
                         })
                     })
             });
+        let cache_file = paths.clawpal_dir.join("discord-guild-channels.json");
+        let mut guild_name_fallback_map = fs::read_to_string(&cache_file)
+            .ok()
+            .map(|text| parse_discord_cache_guild_name_fallbacks(&text))
+            .unwrap_or_default();
+        guild_name_fallback_map.extend(collect_discord_config_guild_name_fallbacks(discord_cfg));
 
         let mut entries: Vec<DiscordGuildChannel> = Vec::new();
         let mut channel_ids: Vec<String> = Vec::new();
@@ -431,6 +512,7 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
                             guild_name: guild_name.clone(),
                             channel_id: channel_id.clone(),
                             channel_name: channel_id.clone(),
+                            default_agent_id: None,
                         });
                     }
                 }
@@ -495,32 +577,71 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
                     guild_name: guild_id.clone(),
                     channel_id: channel_id.clone(),
                     channel_name: channel_id.clone(),
+                    default_agent_id: None,
                 });
             }
         }
 
-        // Fallback A: if we have token + guild ids, fetch channels from Discord REST directly.
-        // This avoids hard-failing when CLI rejects config due non-critical schema drift.
-        if channel_ids.is_empty() {
-            let configured_guild_ids = collect_discord_config_guild_ids(discord_cfg);
-            if let Some(token) = &bot_token {
-                for guild_id in &configured_guild_ids {
-                    if let Ok(channels) = fetch_discord_guild_channels(token, guild_id) {
-                        for (channel_id, channel_name) in channels {
-                            if entries
-                                .iter()
-                                .any(|e| e.guild_id == *guild_id && e.channel_id == channel_id)
-                            {
-                                continue;
+        // Fallback A: fetch channels from Discord REST for guilds that have no entries yet.
+        // Build a guild_id -> token mapping so each guild uses the correct bot token.
+        {
+            let mut guild_token_map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
+            // Map guilds from accounts to their respective tokens
+            if let Some(accounts) = discord_cfg
+                .and_then(|d| d.get("accounts"))
+                .and_then(Value::as_object)
+            {
+                for (_acct_id, acct_val) in accounts {
+                    let acct_token = acct_val
+                        .get("token")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    if let Some(token) = acct_token {
+                        if let Some(guilds) = acct_val.get("guilds").and_then(Value::as_object) {
+                            for guild_id in guilds.keys() {
+                                guild_token_map
+                                    .entry(guild_id.clone())
+                                    .or_insert_with(|| token.clone());
                             }
-                            channel_ids.push(channel_id.clone());
-                            entries.push(DiscordGuildChannel {
-                                guild_id: guild_id.clone(),
-                                guild_name: guild_id.clone(),
-                                channel_id,
-                                channel_name,
-                            });
                         }
+                    }
+                }
+            }
+
+            // Also map top-level guilds to the top-level bot token
+            if let Some(token) = &bot_token {
+                let configured_guild_ids = collect_discord_config_guild_ids(discord_cfg);
+                for guild_id in &configured_guild_ids {
+                    guild_token_map
+                        .entry(guild_id.clone())
+                        .or_insert_with(|| token.clone());
+                }
+            }
+
+            for (guild_id, token) in &guild_token_map {
+                // Skip guilds that already have entries from config/bindings
+                if entries.iter().any(|e| e.guild_id == *guild_id) {
+                    continue;
+                }
+                if let Ok(channels) = fetch_discord_guild_channels(token, guild_id) {
+                    for (channel_id, channel_name) in channels {
+                        if entries
+                            .iter()
+                            .any(|e| e.guild_id == *guild_id && e.channel_id == channel_id)
+                        {
+                            continue;
+                        }
+                        channel_ids.push(channel_id.clone());
+                        entries.push(DiscordGuildChannel {
+                            guild_id: guild_id.clone(),
+                            guild_name: guild_id.clone(),
+                            channel_id,
+                            channel_name,
+                            default_agent_id: None,
+                        });
                     }
                 }
             }
@@ -553,6 +674,7 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
                         guild_name,
                         channel_id: channel_id.clone(),
                         channel_name: channel_id,
+                        default_agent_id: None,
                     });
                 }
             }
@@ -604,9 +726,72 @@ pub async fn refresh_discord_guild_channels() -> Result<Vec<DiscordGuildChannel>
                 }
             }
         }
+        for entry in &mut entries {
+            if entry.guild_name == entry.guild_id {
+                if let Some(name) = guild_name_fallback_map.get(&entry.guild_id) {
+                    entry.guild_name = name.clone();
+                }
+            }
+        }
+
+        // Resolve default agent per guild from account config + bindings
+        {
+            // Build account_id -> default agent_id from bindings (account-level, no peer)
+            let mut account_agent_map: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            if let Some(bindings) = cfg.get("bindings").and_then(Value::as_array) {
+                for b in bindings {
+                    let m = match b.get("match") {
+                        Some(m) => m,
+                        None => continue,
+                    };
+                    if m.get("channel").and_then(Value::as_str) != Some("discord") {
+                        continue;
+                    }
+                    let account_id = match m.get("accountId").and_then(Value::as_str) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if m.get("peer").and_then(|p| p.get("id")).is_some() {
+                        continue;
+                    }
+                    if let Some(agent_id) = b.get("agentId").and_then(Value::as_str) {
+                        account_agent_map
+                            .entry(account_id.to_string())
+                            .or_insert_with(|| agent_id.to_string());
+                    }
+                }
+            }
+            let mut guild_default_agent: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            if let Some(accounts) = discord_cfg
+                .and_then(|d| d.get("accounts"))
+                .and_then(Value::as_object)
+            {
+                for (account_id, account_val) in accounts {
+                    let agent = account_agent_map
+                        .get(account_id)
+                        .cloned()
+                        .unwrap_or_else(|| account_id.clone());
+                    if let Some(guilds) = account_val.get("guilds").and_then(Value::as_object) {
+                        for guild_id in guilds.keys() {
+                            guild_default_agent
+                                .entry(guild_id.clone())
+                                .or_insert(agent.clone());
+                        }
+                    }
+                }
+            }
+            for entry in &mut entries {
+                if entry.default_agent_id.is_none() {
+                    if let Some(agent_id) = guild_default_agent.get(&entry.guild_id) {
+                        entry.default_agent_id = Some(agent_id.clone());
+                    }
+                }
+            }
+        }
 
         // Persist to cache
-        let cache_file = paths.clawpal_dir.join("discord-guild-channels.json");
         let json = serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())?;
         write_text(&cache_file, &json)?;
 
