@@ -269,18 +269,22 @@ jobs:
             aarch64-apple-darwin)
               SIDE_DIR="darwin-aarch64"
               OUTPUT_NAME="zeroclaw-macos-aarch64"
+              SOURCE_BIN="zeroclaw"
               ;;
             x86_64-apple-darwin)
               SIDE_DIR="darwin-x64"
               OUTPUT_NAME="zeroclaw-macos-x64"
+              SOURCE_BIN="zeroclaw"
               ;;
             x86_64-unknown-linux-gnu)
               SIDE_DIR="linux-x64"
               OUTPUT_NAME="zeroclaw-linux-x64"
+              SOURCE_BIN="zeroclaw"
               ;;
             x86_64-pc-windows-msvc)
               SIDE_DIR="windows-x64"
               OUTPUT_NAME="zeroclaw-windows-x64.exe"
+              SOURCE_BIN="zeroclaw.exe"
               ;;
             *)
               echo "Unsupported build target: ${{ matrix.target }}"
@@ -288,10 +292,7 @@ jobs:
               ;;
           esac
 
-          SOURCE="src-tauri/resources/zeroclaw/${SIDE_DIR}/$(case "${{ matrix.target }}" in
-            x86_64-pc-windows-msvc) echo zeroclaw.exe;;
-            *) echo zeroclaw;;
-          esac)"
+          SOURCE="src-tauri/resources/zeroclaw/${SIDE_DIR}/${SOURCE_BIN}"
           if [ ! -f "$SOURCE" ]; then
             echo "Zeroclaw binary not found for ${SIDE_DIR}: $SOURCE"
             exit 1
