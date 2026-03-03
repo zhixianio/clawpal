@@ -7,6 +7,7 @@ import type {
   CronJob,
   CronRun,
   CronSchedule,
+  DiscordGuildChannel,
   WatchdogStatus,
 } from "@/lib/types";
 import {
@@ -34,6 +35,17 @@ import {
 const DOW_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DOW_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 const WATCHDOG_LATE_GRACE_MS = 5 * 60 * 1000;
+
+type CronFilter = "all" | "ok" | "retrying" | "escalated" | "disabled";
+
+function computeJobFilter(job: CronJob, wdJob: { status?: string; lastScheduledAt?: string; lastRunAt?: string | null } | undefined): CronFilter {
+  if (job.enabled === false) return "disabled";
+  if (watchdogJobLikelyLate(wdJob)) return "escalated";
+  const wdStatus = wdJob?.status;
+  if (wdStatus === "retrying" || wdStatus === "pending") return "retrying";
+  if (job.state?.lastStatus === "error") return "retrying";
+  return "ok";
+}
 
 function cronToHuman(expr: string, t: TFunction, lang: string): string {
   const parts = expr.trim().split(/\s+/);
@@ -137,12 +149,14 @@ export function Cron() {
   const [wdAction, setWdAction] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastSuccess, setLastSuccess] = useState<string | null>(null);
+  const [filter, setFilter] = useState<CronFilter>("all");
+  const [channels, setChannels] = useState<DiscordGuildChannel[]>([]);
 
   const loadJobs = useCallback(() => { ua.listCronJobs().then(setJobs).catch(() => {}); }, [ua]);
   const loadWd = useCallback(() => { ua.getWatchdogStatus().then(setWatchdog).catch(() => setWatchdog(null)); }, [ua]);
   const loadRuns = useCallback((id: string) => { ua.getCronRuns(id, 10).then(r => setRuns(p => ({ ...p, [id]: r }))).catch(() => {}); }, [ua]);
 
-  useEffect(() => { loadJobs(); loadWd(); const iv = setInterval(() => { loadJobs(); loadWd(); }, 10_000); return () => clearInterval(iv); }, [loadJobs, loadWd]);
+  useEffect(() => { loadJobs(); loadWd(); ua.listDiscordGuildChannels().then(setChannels).catch(() => {}); ua.refreshDiscordGuildChannels?.().then(setChannels).catch(() => {}); const iv = setInterval(() => { loadJobs(); loadWd(); }, 10_000); return () => clearInterval(iv); }, [loadJobs, loadWd]);
   useEffect(() => { if (expandedJob) loadRuns(expandedJob); }, [expandedJob, loadRuns]);
 
   const showErr = (e: unknown) => { const msg = e instanceof Error ? e.message : String(e); setLastError(msg); setLastSuccess(null); setTimeout(() => setLastError(null), 8000); };
@@ -263,12 +277,36 @@ export function Cron() {
         </Card>
       ) : (
         <div className="space-y-1">
-          {/* Legend */}
-          <div className="flex items-center gap-4 text-[10px] text-muted-foreground px-1 pb-1">
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{t("cron.legendOk")}</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />{t("cron.legendRetrying")}</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-red-400" />{t("cron.legendEscalated")}</span>
-            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />{t("cron.legendDisabled")}</span>
+          {/* Filter bar */}
+          <div className="flex items-center gap-1.5 text-[11px] px-1 pb-1.5">
+            {([
+              { key: "all" as CronFilter, label: t("cron.filterAll"), dot: "" },
+              { key: "ok" as CronFilter, label: t("cron.legendOk"), dot: "bg-emerald-500" },
+              { key: "retrying" as CronFilter, label: t("cron.legendRetrying"), dot: "bg-yellow-500" },
+              { key: "escalated" as CronFilter, label: t("cron.legendEscalated"), dot: "bg-red-400" },
+              { key: "disabled" as CronFilter, label: t("cron.legendDisabled"), dot: "bg-muted-foreground/40" },
+            ]).map(({ key, label, dot }) => {
+              const count = key === "all" ? jobs.length : jobs.filter(j => {
+                const wdJob = watchdog?.jobs?.[j.jobId || ""];
+                return computeJobFilter(j, wdJob) === key;
+              }).length;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setFilter(f => f === key ? "all" : key)}
+                  className={cn(
+                    "flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors",
+                    filter === key
+                      ? "border-ring bg-accent text-accent-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  {dot && <span className={cn("w-1.5 h-1.5 rounded-full", dot)} />}
+                  {label}
+                  <span className="text-[10px] opacity-60">{count}</span>
+                </button>
+              );
+            })}
           </div>
           {jobs.map((job, idx) => {
             const jobId = job.jobId || String(idx);
@@ -278,6 +316,16 @@ export function Cron() {
             const wdJob = watchdog?.jobs?.[jobId];
             const wdStatus = wdJob?.status;
             const likelyLate = watchdogJobLikelyLate(wdJob);
+            const jobFilterKey = computeJobFilter(job, wdJob);
+            if (filter !== "all" && jobFilterKey !== filter) return null;
+
+            const deliveryChannelName = (() => {
+              if (!job.delivery?.to) return null;
+              const ch = channels.find(c => c.channelId === job.delivery!.to);
+              if (ch) return `#${ch.channelName}`;
+              const id = job.delivery!.to!;
+              return `#${id.slice(-4)}`;
+            })();
 
             return (
               <div key={jobId} className={cn("rounded-lg border bg-card text-card-foreground px-3 transition-colors", expanded && "ring-1 ring-ring")}>
@@ -298,15 +346,19 @@ export function Cron() {
                     {/* Name */}
                     <span className="text-sm font-medium truncate min-w-0 flex-1">{jobName}</span>
 
-                    {/* Disabled badge */}
-                    {job.enabled === false && (
-                      <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground px-1 py-0 shrink-0">{t("cron.disabled")}</Badge>
-                    )}
+                    {/* Channel */}
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 shrink-0 w-28 truncate text-right" title={deliveryChannelName || ""}>
+                      {deliveryChannelName || "—"}
+                    </span>
 
-                    {/* Delivery error hint */}
-                    {job.enabled !== false && st.lastStatus === "error" && (
-                      <span className="text-[10px] text-amber-600 dark:text-amber-400 shrink-0" title={st.lastError || ""}>{t("cron.deliveryError")}</span>
-                    )}
+                    {/* Status */}
+                    <span className="shrink-0 w-16 text-right">
+                      {job.enabled === false ? (
+                        <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground px-1 py-0">{t("cron.disabled")}</Badge>
+                      ) : st.lastStatus === "error" ? (
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400" title={st.lastError || ""}>{t("cron.deliveryError")}</span>
+                      ) : null}
+                    </span>
 
                     {/* Schedule */}
                     <span className="text-xs text-muted-foreground shrink-0 w-32 text-right truncate">

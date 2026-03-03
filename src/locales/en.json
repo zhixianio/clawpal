@@ -639,6 +639,7 @@
   "cron.status.retrying": "Retrying",
   "cron.status.escalated": "Escalated",
   "cron.disabled": "Disabled",
+  "cron.filterAll": "All",
   "cron.legendOk": "On track",
   "cron.legendRetrying": "Missed, retrying",
   "cron.legendEscalated": "Failed, needs attention",

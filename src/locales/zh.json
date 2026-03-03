@@ -639,6 +639,7 @@
   "cron.status.retrying": "重试中",
   "cron.status.escalated": "需干预",
   "cron.disabled": "已禁用",
+  "cron.filterAll": "全部",
   "cron.legendOk": "正常",
   "cron.legendRetrying": "错过，重试中",
   "cron.legendEscalated": "失败，需要关注",
