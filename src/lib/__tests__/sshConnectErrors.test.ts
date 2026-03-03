@@ -10,13 +10,14 @@ import {
 } from "../sshConnectErrors";
 
 const t = (key: string, opts: Record<string, string | number | boolean> = {}) => {
-  const text = {
+  const text: Record<string, string> = {
     "ssh.passphraseValidationFailed": "PASS_FAIL_{{host}}",
     "ssh.missingKeyFile": "MISSING_KEY_{{host}}",
     "ssh.publicKeyRejected": "PUBLIC_KEY_REJECTED_{{host}}",
+    "ssh.publicKeyAuthFailed": "PUBLIC_KEY_AUTH_FAILED_{{host}}",
     "ssh.passphraseCancelled": "CANCEL_{{host}}",
-  }[key] || key;
-  return text.replace("{{host}}", String(opts.host ?? ""));
+  };
+  return (text[key] || key).replace("{{host}}", String(opts.host ?? ""));
 };
 
 describe("sshConnectErrors", () => {
@@ -46,8 +47,15 @@ describe("sshConnectErrors", () => {
     expect(msg).toBe("MISSING_KEY_hetzner");
   });
 
-  test("maps permission-denied error to localized message", () => {
+  test("maps permission-denied error to publicKeyAuthFailed when no passphrase was submitted", () => {
     const msg = buildSshPassphraseConnectErrorMessage("public key authentication failed", "hetzner", t);
+    expect(msg).toBe("PUBLIC_KEY_AUTH_FAILED_hetzner");
+  });
+
+  test("maps permission-denied error to publicKeyRejected when passphrase was submitted", () => {
+    const msg = buildSshPassphraseConnectErrorMessage(
+      "public key authentication failed", "hetzner", t, { passphraseWasSubmitted: true },
+    );
     expect(msg).toBe("PUBLIC_KEY_REJECTED_hetzner");
   });
 

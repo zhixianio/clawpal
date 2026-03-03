@@ -281,6 +281,28 @@ fn rules_fallback(
     }
 }
 
+/// Deterministic guidance for when openclaw is not installed locally.
+/// This avoids sending the error to zeroclaw (which itself requires the binary)
+/// and prevents hallucinated diagnoses like REGISTRY_CORRUPT.
+fn local_openclaw_not_installed_guidance(operation: &str) -> GuidanceBody {
+    GuidanceBody {
+        summary: "本机未安装 OpenClaw CLI，无法执行本地实例操作。".to_string(),
+        actions: vec![
+            "前往 https://docs.openclaw.ai 按照文档安装 OpenClaw CLI。".to_string(),
+            "安装完成后重启 ClawPal 即可正常使用本地实例。".to_string(),
+            "如果只需连接远程服务器，可跳过本地安装，直接添加 SSH 远程实例。".to_string(),
+        ],
+        structured_actions: vec![GuidanceAction {
+            label: "查看安装文档".to_string(),
+            action_type: "link".to_string(),
+            tool: None,
+            args: Some("https://docs.openclaw.ai".to_string()),
+            invoke_type: None,
+            context: Some(format!("本地 openclaw 未安装，操作 {} 失败", operation)),
+        }],
+    }
+}
+
 async fn probe_remote_openclaw(
     pool: &SshConnectionPool,
     instance_id: &str,
@@ -348,6 +370,23 @@ pub async fn explain_operation_error(
     language: Option<String>,
 ) -> Result<ErrorGuidance, String> {
     let lower_error = error.to_lowercase();
+
+    // Fast path: when openclaw is not installed locally, skip the LLM call
+    // entirely and return deterministic guidance. Without the binary, zeroclaw
+    // cannot run either, so the LLM would hallucinate a wrong diagnosis
+    // (e.g. REGISTRY_CORRUPT).
+    if transport != "remote_ssh" && looks_like_openclaw_binary_missing(&lower_error) {
+        let guidance = local_openclaw_not_installed_guidance(&operation);
+        let message = compose_message(&guidance.summary, &guidance.actions);
+        return Ok(ErrorGuidance {
+            message,
+            summary: guidance.summary,
+            actions: guidance.actions,
+            structured_actions: guidance.structured_actions,
+            source: "rules".to_string(),
+        });
+    }
+
     let should_probe_openclaw =
         transport == "remote_ssh" && looks_like_openclaw_binary_missing(&lower_error);
     let probe = if should_probe_openclaw {
@@ -531,5 +570,16 @@ mod tests {
             .structured_actions
             .iter()
             .any(|a| a.action_type == "inline_fix" && a.tool.as_deref() == Some("clawpal")));
+    }
+
+    #[test]
+    fn local_not_installed_gives_install_guidance() {
+        let result = local_openclaw_not_installed_guidance("listAgents");
+        assert!(result.summary.contains("未安装"));
+        assert!(result
+            .actions
+            .iter()
+            .any(|a| a.contains("docs.openclaw.ai")));
+        assert!(result.actions.iter().any(|a| a.contains("远程")));
     }
 }

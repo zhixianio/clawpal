@@ -772,7 +772,10 @@ export function App() {
       return;
     } catch (err) {
       const raw = String(err);
-      if (host && host.authMethod !== "password" && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
+      // When host is not yet in sshHosts state (e.g. just added via upsertSshHost
+      // and state hasn't refreshed), assume non-password auth so the passphrase
+      // dialog is still shown instead of falling through to a misleading error.
+      if ((!host || host.authMethod !== "password") && SSH_PASSPHRASE_RETRY_HINT.test(raw)) {
         const passphrase = await requestPassphrase(hostLabel);
         if (passphrase !== null) {
           try {
@@ -785,7 +788,9 @@ export function App() {
             return;
           } catch (passphraseErr) {
             const passphraseRaw = String(passphraseErr);
-            const fallbackMessage = buildSshPassphraseConnectErrorMessage(passphraseRaw, hostLabel, t);
+            const fallbackMessage = buildSshPassphraseConnectErrorMessage(
+              passphraseRaw, hostLabel, t, { passphraseWasSubmitted: true },
+            );
             if (fallbackMessage) {
               throw new Error(fallbackMessage);
             }
