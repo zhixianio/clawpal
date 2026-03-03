@@ -411,7 +411,7 @@ export function useDoctorAgent() {
               role: "tool-call" as const,
               content: invoke.command,
               invoke,
-              status: (isFullAuto || isSafeAuto) ? "auto" : "pending",
+              status: (isFullAuto || isSafeAuto) ? ("auto" as const) : ("pending" as const),
             },
           ];
           persistDoctorMessages(next);
