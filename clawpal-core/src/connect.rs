@@ -177,4 +177,103 @@ mod tests {
         let result = connect_ssh(config).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn connect_docker_returns_error_for_missing_home() {
+        let result = connect_docker("/nonexistent/path/clawpal-test-12345", None, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("docker home does not exist"));
+    }
+
+    #[tokio::test]
+    async fn connect_local_returns_error_for_missing_home() {
+        let result = connect_local("/nonexistent/path/clawpal-test-12345", None, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("local home does not exist"));
+    }
+
+    #[tokio::test]
+    async fn connect_docker_uses_explicit_instance_id() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let data_dir = std::env::temp_dir().join(format!("clawpal-connect-id-{}", Uuid::new_v4()));
+        let docker_home =
+            std::env::temp_dir().join(format!("clawpal-connect-id-home-{}", Uuid::new_v4()));
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        fs::create_dir_all(&docker_home).expect("create home dir");
+        std::env::set_var("CLAWPAL_DATA_DIR", &data_dir);
+
+        let instance = connect_docker(
+            docker_home.to_str().unwrap(),
+            Some("My Docker"),
+            Some("docker:custom-id"),
+        )
+        .await
+        .expect("connect docker with explicit id");
+        assert_eq!(instance.id, "docker:custom-id");
+        assert_eq!(instance.label, "My Docker");
+    }
+
+    #[tokio::test]
+    async fn connect_local_uses_explicit_instance_id() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let data_dir = std::env::temp_dir().join(format!("clawpal-local-id-{}", Uuid::new_v4()));
+        let local_home =
+            std::env::temp_dir().join(format!("clawpal-local-id-home-{}", Uuid::new_v4()));
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        fs::create_dir_all(&local_home).expect("create home dir");
+        std::env::set_var("CLAWPAL_DATA_DIR", &data_dir);
+
+        let instance = connect_local(
+            local_home.to_str().unwrap(),
+            Some("My Local"),
+            Some("local:custom-id"),
+        )
+        .await
+        .expect("connect local with explicit id");
+        assert_eq!(instance.id, "local:custom-id");
+        assert_eq!(instance.label, "My Local");
+    }
+
+    #[test]
+    fn slug_from_home_basic() {
+        // Leading dots become hyphens, then leading hyphens are trimmed
+        assert_eq!(slug_from_home("/home/user/.openclaw"), "openclaw");
+    }
+
+    #[test]
+    fn slug_from_home_sanitizes_special_chars() {
+        let slug = slug_from_home("/path/to/my dir@123");
+        assert!(!slug.contains(' '));
+        assert!(!slug.contains('@'));
+        assert!(!slug.contains("--"));
+    }
+
+    #[test]
+    fn slug_from_home_empty_dirname_generates_uuid() {
+        // A path whose file_name() component becomes empty after sanitization
+        let slug = slug_from_home("/");
+        // Should be a UUID (36 chars with hyphens)
+        assert!(!slug.is_empty());
+    }
+
+    #[test]
+    fn connect_error_display_messages() {
+        let err = ConnectError::DockerHomeMissing("/foo".to_string());
+        assert!(err.to_string().contains("/foo"));
+
+        let err = ConnectError::Registry("io error".to_string());
+        assert!(err.to_string().contains("io error"));
+
+        let err = ConnectError::Ssh("timeout".to_string());
+        assert!(err.to_string().contains("timeout"));
+
+        let err = ConnectError::LocalHomeMissing("/bar".to_string());
+        assert!(err.to_string().contains("/bar"));
+    }
 }

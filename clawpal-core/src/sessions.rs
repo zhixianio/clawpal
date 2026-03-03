@@ -271,4 +271,106 @@ mod tests {
         assert_eq!(out[0].role, "user");
         assert_eq!(out[0].content, "hi");
     }
+
+    #[test]
+    fn parse_session_preview_handles_array_content() {
+        let raw = r#"{"type":"message","message":{"role":"assistant","content":[{"text":"Hello"},{"text":" world"}]}}"#;
+        let out = parse_session_preview(raw).expect("preview");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "assistant");
+        assert_eq!(out[0].content, "Hello\n world");
+    }
+
+    #[test]
+    fn parse_session_preview_skips_non_message_types() {
+        let raw = "{\"type\":\"metadata\",\"data\":{}}\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n";
+        let out = parse_session_preview(raw).expect("preview");
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn parse_session_preview_skips_empty_lines() {
+        let raw =
+            "\n\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"test\"}}\n\n";
+        let out = parse_session_preview(raw).expect("preview");
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn parse_session_analysis_classifies_valuable() {
+        let raw = r#"[
+          {"agent":"main","sessionId":"v","sizeBytes":5000,"messageCount":10,"userMessageCount":5,"assistantMessageCount":5,"ageDays":1,"kind":"sessions"}
+        ]"#;
+        let out = parse_session_analysis(raw).expect("parse");
+        assert_eq!(out[0].valuable_count, 1);
+        assert_eq!(out[0].empty_count, 0);
+        assert_eq!(out[0].low_value_count, 0);
+    }
+
+    #[test]
+    fn parse_session_analysis_multiple_agents() {
+        let raw = r#"[
+          {"agent":"main","sessionId":"a","sizeBytes":100,"messageCount":0,"userMessageCount":0,"assistantMessageCount":0,"ageDays":1,"kind":"sessions"},
+          {"agent":"cron","sessionId":"b","sizeBytes":5000,"messageCount":3,"userMessageCount":2,"assistantMessageCount":1,"ageDays":0.5,"kind":"sessions"}
+        ]"#;
+        let out = parse_session_analysis(raw).expect("parse");
+        assert_eq!(out.len(), 2);
+        let agents: Vec<&str> = out.iter().map(|a| a.agent.as_str()).collect();
+        assert!(agents.contains(&"main"));
+        assert!(agents.contains(&"cron"));
+    }
+
+    #[test]
+    fn parse_session_analysis_empty_array() {
+        let out = parse_session_analysis("[]").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_session_analysis_sorts_by_category_then_age() {
+        let raw = r#"[
+          {"agent":"a","sessionId":"valuable","sizeBytes":5000,"messageCount":10,"userMessageCount":5,"assistantMessageCount":5,"ageDays":1,"kind":"sessions"},
+          {"agent":"a","sessionId":"empty","sizeBytes":100,"messageCount":0,"userMessageCount":0,"assistantMessageCount":0,"ageDays":2,"kind":"sessions"}
+        ]"#;
+        let out = parse_session_analysis(raw).expect("parse");
+        assert_eq!(out[0].sessions[0].category, "empty");
+        assert_eq!(out[0].sessions[1].category, "valuable");
+    }
+
+    #[test]
+    fn filter_sessions_by_ids_keeps_unmatched() {
+        let raw = r#"{"a":{"sessionId":"s1"},"b":{"sessionId":"s2"},"c":{"sessionId":"s3"}}"#;
+        let out = filter_sessions_by_ids(raw, &["s1", "s3"]).expect("filter");
+        assert!(!out.contains("s1"));
+        assert!(out.contains("s2"));
+        assert!(!out.contains("s3"));
+    }
+
+    #[test]
+    fn filter_sessions_by_ids_empty_filter() {
+        let raw = r#"{"a":{"sessionId":"s1"}}"#;
+        let out = filter_sessions_by_ids(raw, &[]).expect("filter");
+        assert!(out.contains("s1"));
+    }
+
+    #[test]
+    fn parse_session_file_list_empty() {
+        let out = parse_session_file_list("[]").expect("parse");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_session_file_list_multiple_entries() {
+        let raw = r#"[
+          {"agent":"a","kind":"sessions","path":"a/sessions/1.jsonl","sizeBytes":42},
+          {"agent":"b","kind":"cron","path":"b/cron/2.jsonl","sizeBytes":100}
+        ]"#;
+        let out = parse_session_file_list(raw).expect("parse");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].agent, "a");
+        assert_eq!(out[0].kind, "sessions");
+        assert_eq!(out[1].agent, "b");
+        assert_eq!(out[1].kind, "cron");
+        assert_eq!(out[1].size_bytes, 100);
+    }
 }

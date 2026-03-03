@@ -85,4 +85,56 @@ mod tests {
         let out = parse_upgrade_result("openclaw 0.2.0\nfoo\nopenclaw 0.3.1");
         assert_eq!(out.detected_versions, vec!["0.2.0", "0.3.1"]);
     }
+
+    #[test]
+    fn parse_backup_list_empty_input() {
+        let out = parse_backup_list("");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_backup_list_strips_trailing_slash() {
+        let out = parse_backup_list("50\t/home/user/backup/\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "/home/user/backup");
+        assert_eq!(out[0].size_bytes, 50 * 1024);
+    }
+
+    #[test]
+    fn parse_backup_list_skips_malformed_lines() {
+        let out = parse_backup_list("no tab here\n10\t/valid\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "/valid");
+    }
+
+    #[test]
+    fn parse_backup_result_empty_input() {
+        let out = parse_backup_result("");
+        assert_eq!(out.size_bytes, 0);
+    }
+
+    #[test]
+    fn parse_backup_result_non_numeric_last_line() {
+        let out = parse_backup_result("done\ncomplete\n");
+        assert_eq!(out.size_bytes, 0);
+    }
+
+    #[test]
+    fn parse_upgrade_result_no_versions() {
+        let out = parse_upgrade_result("nothing relevant here");
+        assert!(out.detected_versions.is_empty());
+    }
+
+    #[test]
+    fn parse_upgrade_result_deduplicates() {
+        let out = parse_upgrade_result("openclaw 1.0.0\nupgraded\nopenclaw 1.0.0\nopenclaw 1.1.0");
+        assert_eq!(out.detected_versions, vec!["1.0.0", "1.1.0"]);
+    }
+
+    #[test]
+    fn parse_backup_list_zero_size() {
+        let out = parse_backup_list("0\t/empty/dir\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size_bytes, 0);
+    }
 }
