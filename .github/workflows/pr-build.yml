@@ -84,12 +84,33 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Determine if prerelease
+        id: release_flags
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *-alpha* || "$VERSION" == *-beta* || "$VERSION" == *-rc* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute build args
+        id: build_args
+        shell: bash
+        run: |
+          args="--target ${{ matrix.target }}"
+          if [ "${{ matrix.platform }}" = "windows-latest" ] && [ "${{ steps.release_flags.outputs.is_prerelease }}" = "true" ]; then
+            args+=" --bundles nsis"
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: --target ${{ matrix.target }}
+          args: ${{ steps.build_args.outputs.args }}
 
       - name: Collect build artifacts
         shell: bash
