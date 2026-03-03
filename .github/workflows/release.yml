@@ -127,11 +127,12 @@ jobs:
 
           const cargoPath = "src-tauri/Cargo.toml";
           const cargoContent = fs.readFileSync(cargoPath, "utf8");
-          const updatedCargo = cargoContent.replace(/^version = ".*"/m, `version = "${version}"`);
-          if (updatedCargo === cargoContent) {
-            console.error("Failed to update src-tauri/Cargo.toml version");
+          const cargoVersionRegex = /^version\s*=\s*".*"/m;
+          if (!cargoVersionRegex.test(cargoContent)) {
+            console.error("Failed to locate version field in src-tauri/Cargo.toml");
             process.exit(1);
           }
+          const updatedCargo = cargoContent.replace(cargoVersionRegex, `version = "${version}"`);
           fs.writeFileSync(cargoPath, updatedCargo);
           NODE
 
