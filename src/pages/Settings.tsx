@@ -648,29 +648,6 @@ export function Settings({
             {showPreferences && (
             <Card>
               <CardContent className="space-y-4">
-                <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                  <summary className="cursor-pointer text-sm font-semibold text-foreground">
-                    {t("settings.alphaFeatures")}
-                  </summary>
-                  <div className="mt-3 space-y-3">
-                    <p className="text-xs text-muted-foreground">
-                      {t("settings.alphaFeaturesDescription")}
-                    </p>
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <Label className="text-sm font-medium">{t("settings.alphaEnableZeroclawUi")}</Label>
-                      <Checkbox
-                        checked={showZeroclawDoctorUi}
-                        onCheckedChange={(checked) => handleZeroclawDoctorUiToggle(checked === true)}
-                        aria-label={t("settings.alphaEnableZeroclawUi")}
-                        className="h-5 w-5"
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {t("settings.alphaEnableZeroclawUiHint")}
-                    </p>
-                  </div>
-                </details>
-
                 {/* Version */}
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <Label className="text-sm font-semibold">{t('settings.currentVersion')}</Label>
@@ -766,77 +743,79 @@ export function Settings({
 
                 <div className="h-px bg-border" />
 
-                <div className="flex items-center gap-3 flex-wrap">
-                  <Label className="text-sm font-semibold shrink-0">{t("settings.zeroclawModel")}</Label>
-                  <div className="w-[320px] max-w-full">
-                    <Select
-                      value={zeroclawModel ? (zeroclawModelCandidates.includes(zeroclawModel) ? zeroclawModel : "__raw__") : "__none__"}
-                      onValueChange={(val) => {
-                        if (val === "__raw__") return;
-                        setZeroclawModel(val === "__none__" ? "" : val);
-                      }}
-                      disabled={zeroclawSaving}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={t("settings.zeroclawModelPlaceholder")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">
-                          <span className="text-muted-foreground">{t("home.notSet")}</span>
-                        </SelectItem>
-                        {zeroclawModel && !zeroclawModelCandidates.includes(zeroclawModel) && (
-                          <SelectItem value="__raw__">{zeroclawModel}</SelectItem>
-                        )}
-                        {zeroclawModelCandidates.map((model) => (
-                          <SelectItem key={model} value={model}>
-                            {model}
+                {showZeroclawDoctorUi && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Label className="text-sm font-semibold shrink-0">{t("settings.zeroclawModel")}</Label>
+                    <div className="w-[320px] max-w-full">
+                      <Select
+                        value={zeroclawModel ? (zeroclawModelCandidates.includes(zeroclawModel) ? zeroclawModel : "__raw__") : "__none__"}
+                        onValueChange={(val) => {
+                          if (val === "__raw__") return;
+                          setZeroclawModel(val === "__none__" ? "" : val);
+                        }}
+                        disabled={zeroclawSaving}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={t("settings.zeroclawModelPlaceholder")} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">
+                            <span className="text-muted-foreground">{t("home.notSet")}</span>
                           </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {zeroclawSaving && (
-                    <span className="text-xs text-muted-foreground">{t("settings.saving")}</span>
-                  )}
-                  {zeroclawModelCandidates.length === 0 && !zeroclawSaving && (
-                    <p className="text-xs text-muted-foreground basis-full mt-1">
-                      {onNavigateToProfiles ? (
-                        <button
-                          type="button"
-                          className="underline hover:text-foreground transition-colors"
-                          onClick={onNavigateToProfiles}
-                        >
-                          {t("settings.zeroclawNoProfilesLink")}
-                        </button>
-                      ) : (
-                        t("settings.zeroclawNoProfiles")
-                      )}
-                    </p>
-                  )}
-                  <div className="ml-auto text-right text-xs text-muted-foreground min-w-[240px]">
-                    {zeroclawUsageLoading ? (
-                      <div>{t("settings.zeroclawUsageLoading")}</div>
-                    ) : (
-                      <>
-                        <div>
-                          {t("settings.zeroclawUsageTotalTokens", {
-                            count: zeroclawUsage?.totalTokens || 0,
-                          })}
-                        </div>
-                        <div>
-                          {t("settings.zeroclawUsageCalls", {
-                            count: zeroclawUsage?.totalCalls || 0,
-                          })}
-                        </div>
-                      </>
+                          {zeroclawModel && !zeroclawModelCandidates.includes(zeroclawModel) && (
+                            <SelectItem value="__raw__">{zeroclawModel}</SelectItem>
+                          )}
+                          {zeroclawModelCandidates.map((model) => (
+                            <SelectItem key={model} value={model}>
+                              {model}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {zeroclawSaving && (
+                      <span className="text-xs text-muted-foreground">{t("settings.saving")}</span>
                     )}
-                    <div>
-                      {t("settings.zeroclawEffectiveModelLabel", {
-                        model: zeroclawTargetText,
-                      })}
+                    {zeroclawModelCandidates.length === 0 && !zeroclawSaving && (
+                      <p className="text-xs text-muted-foreground basis-full mt-1">
+                        {onNavigateToProfiles ? (
+                          <button
+                            type="button"
+                            className="underline hover:text-foreground transition-colors"
+                            onClick={onNavigateToProfiles}
+                          >
+                            {t("settings.zeroclawNoProfilesLink")}
+                          </button>
+                        ) : (
+                          t("settings.zeroclawNoProfiles")
+                        )}
+                      </p>
+                    )}
+                    <div className="ml-auto text-right text-xs text-muted-foreground min-w-[240px]">
+                      {zeroclawUsageLoading ? (
+                        <div>{t("settings.zeroclawUsageLoading")}</div>
+                      ) : (
+                        <>
+                          <div>
+                            {t("settings.zeroclawUsageTotalTokens", {
+                              count: zeroclawUsage?.totalTokens || 0,
+                            })}
+                          </div>
+                          <div>
+                            {t("settings.zeroclawUsageCalls", {
+                              count: zeroclawUsage?.totalCalls || 0,
+                            })}
+                          </div>
+                        </>
+                      )}
+                      <div>
+                        {t("settings.zeroclawEffectiveModelLabel", {
+                          model: zeroclawTargetText,
+                        })}
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </CardContent>
             </Card>
             )}
@@ -940,6 +919,35 @@ export function Settings({
                 </div>
               </CardContent>
             </Card>
+            )}
+
+            {showPreferences && (
+              <Card>
+                <CardContent>
+                  <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                    <summary className="cursor-pointer text-sm font-semibold text-foreground">
+                      {t("settings.alphaFeatures")}
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      <p className="text-xs text-muted-foreground">
+                        {t("settings.alphaFeaturesDescription")}
+                      </p>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <Label className="text-sm font-medium">{t("settings.alphaEnableZeroclawUi")}</Label>
+                        <Checkbox
+                          checked={showZeroclawDoctorUi}
+                          onCheckedChange={(checked) => handleZeroclawDoctorUiToggle(checked === true)}
+                          aria-label={t("settings.alphaEnableZeroclawUi")}
+                          className="h-5 w-5"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {t("settings.alphaEnableZeroclawUiHint")}
+                      </p>
+                    </div>
+                  </details>
+                </CardContent>
+              </Card>
             )}
           </div>
 

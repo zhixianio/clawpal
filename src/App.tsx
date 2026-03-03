@@ -19,7 +19,7 @@ import logoUrl from "./assets/logo.png";
 import { InstanceTabBar } from "./components/InstanceTabBar";
 import { InstanceContext } from "./lib/instance-context";
 import { api } from "./lib/api";
-import { invalidateGlobalReadCache } from "./lib/use-api";
+import { buildCacheKey, invalidateGlobalReadCache, subscribeToCacheKey } from "./lib/use-api";
 import { explainAndBuildGuidanceError, withGuidance } from "./lib/guidance";
 import { useFont } from "./lib/use-font";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,7 @@ type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "do
 const INSTANCE_ROUTES: Route[] = ["home", "channels", "recipes", "cron", "doctor", "history"];
 const OPEN_TABS_STORAGE_KEY = "clawpal_open_tabs";
 const WATCHDOG_LATE_GRACE_MS = 5 * 60 * 1000;
+const APP_PREFERENCES_CACHE_KEY = buildCacheKey("__global__", "getAppPreferences", []);
 
 interface ToastItem {
   id: number;
@@ -408,6 +409,7 @@ export function App() {
   const [doctorLaunchByInstance, setDoctorLaunchByInstance] = useState<Record<string, AgentGuidanceItem | null>>({});
   const [agentGuidanceOpen, setAgentGuidanceOpen] = useState(false);
   const [unreadGuidance, setUnreadGuidance] = useState(false);
+  const [showZeroclawDoctorFab, setShowZeroclawDoctorFab] = useState(false);
   const [doctorNavPulse, setDoctorNavPulse] = useState(false);
   const sshHealthFailStreakRef = useRef<Record<string, number>>({});
   const legacyMigrationDoneRef = useRef(false);
@@ -630,6 +632,31 @@ export function App() {
       window.removeEventListener("error", onGlobalError);
     };
   }, [activeInstance, resolveInstanceTransport]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadZeroclawDoctorFabPreference = () => {
+      api.getAppPreferences()
+        .then((prefs) => {
+          if (!cancelled) {
+            setShowZeroclawDoctorFab(Boolean(prefs.showZeroclawDoctorUi));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setShowZeroclawDoctorFab(false);
+          }
+        });
+    };
+
+    loadZeroclawDoctorFabPreference();
+    const unsubscribe = subscribeToCacheKey(APP_PREFERENCES_CACHE_KEY, loadZeroclawDoctorFabPreference);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   const ensureAccessForInstance = useCallback((instanceId: string) => {
     const transport = resolveInstanceTransport(instanceId);
@@ -1715,7 +1742,7 @@ export function App() {
       </div>
     )}
 
-    {agentGuidance && (
+    {showZeroclawDoctorFab && (
       <div className="fixed bottom-5 right-5 z-[60] flex flex-col items-end gap-2">
         {agentGuidanceOpen && (
           <GuidanceCard
@@ -1778,6 +1805,7 @@ export function App() {
           size="sm"
           variant={agentGuidanceOpen ? "secondary" : "default"}
           onClick={() => {
+            if (!agentGuidance) return;
             setAgentGuidanceOpen((v) => !v);
             setUnreadGuidance(false);
           }}

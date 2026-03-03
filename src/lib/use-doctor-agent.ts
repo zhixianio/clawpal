@@ -25,7 +25,116 @@ function hasAnyPrefix(value: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) => value === prefix || value.startsWith(`${prefix} `));
 }
 
+type DoctorSessionContext = {
+  instanceScope: string;
+  agentId: string;
+  domain: "doctor" | "install";
+  engine: DoctorEngineMode;
+};
+
 type DoctorEngineMode = "openclaw" | "zeroclaw";
+type DoctorSessionCache = {
+  version: number;
+  context: DoctorSessionContext;
+  messages: DoctorChatMessage[];
+  openclawSessionId?: string | null;
+  sessionKey?: string;
+  updatedAt: number;
+};
+
+const DOCTOR_CHAT_CACHE_PREFIX = "clawpal-doctor-chat-v1";
+const DOCTOR_CHAT_CACHE_MAX_MESSAGES = 220;
+const DOCTOR_CHAT_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const DOCTOR_CHAT_CACHE_VERSION = 1;
+
+function buildDoctorCacheKey(context: DoctorSessionContext): string {
+  const scope = encodeURIComponent(context.instanceScope);
+  const agent = encodeURIComponent(context.agentId);
+  return `${DOCTOR_CHAT_CACHE_PREFIX}-${context.domain}-${context.engine}-${scope}-${agent}`;
+}
+
+function sanitizeDoctorCacheMessages(rawMessages: unknown): DoctorChatMessage[] {
+  if (!Array.isArray(rawMessages)) return [];
+  return rawMessages
+    .map((raw) => {
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Partial<DoctorChatMessage> & Record<string, unknown>;
+      const role = item.role;
+      if (role !== "assistant" && role !== "user" && role !== "tool-call" && role !== "tool-result") return null;
+      const id = typeof item.id === "string" ? item.id : "";
+      if (!id) return null;
+      const content = typeof item.content === "string" ? item.content : "";
+      return {
+        id,
+        role,
+        content,
+        invoke: item.invoke && typeof item.invoke === "object" ? item.invoke as DoctorInvoke : undefined,
+        invokeResult: item.invokeResult,
+        invokeId: typeof item.invokeId === "string" ? item.invokeId : undefined,
+        status: item.status,
+        diagnosisReport: item.diagnosisReport,
+      };
+    })
+    .filter((msg): msg is DoctorChatMessage => msg !== null);
+}
+
+function loadDoctorSessionCache(context: DoctorSessionContext): DoctorSessionCache | null {
+  const key = buildDoctorCacheKey(context);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DoctorSessionCache | null;
+    if (
+      !parsed
+      || typeof parsed !== "object"
+      || parsed.version !== DOCTOR_CHAT_CACHE_VERSION
+      || typeof parsed.updatedAt !== "number"
+      || !parsed.context
+      || !parsed.context.instanceScope
+      || !parsed.context.agentId
+    ) {
+      return null;
+    }
+    if (Date.now() - parsed.updatedAt > DOCTOR_CHAT_CACHE_TTL_MS) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    const messages = sanitizeDoctorCacheMessages(parsed.messages);
+    if (messages.length === 0) return null;
+    return {
+      version: DOCTOR_CHAT_CACHE_VERSION,
+      context: parsed.context,
+      messages,
+      openclawSessionId: typeof parsed.openclawSessionId === "string" ? parsed.openclawSessionId : null,
+      sessionKey: typeof parsed.sessionKey === "string" ? parsed.sessionKey : undefined,
+      updatedAt: parsed.updatedAt,
+    };
+  } catch (error) {
+    console.warn("Failed to load doctor chat cache:", error);
+    return null;
+  }
+}
+
+function saveDoctorSessionCache(context: DoctorSessionContext, payload: {
+  messages: DoctorChatMessage[];
+  openclawSessionId?: string | null;
+  sessionKey?: string;
+}) {
+  const key = buildDoctorCacheKey(context);
+  try {
+    const next: DoctorSessionCache = {
+      version: DOCTOR_CHAT_CACHE_VERSION,
+      context,
+      messages: payload.messages,
+      openclawSessionId: payload.openclawSessionId ?? null,
+      sessionKey: payload.sessionKey,
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch (error) {
+    console.warn("Failed to persist doctor chat cache:", error);
+  }
+}
 
 function extractOpenclawText(result: Record<string, unknown>): string {
   const payloads = result.payloads;
