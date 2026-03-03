@@ -1622,6 +1622,7 @@ async fn run_clawpal_tool(
                 auth_method: "key".to_string(),
                 key_path,
                 password: None,
+                passphrase: None,
             };
             let instance = clawpal_core::connect::connect_ssh(config)
                 .await

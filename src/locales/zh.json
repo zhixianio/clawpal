@@ -80,6 +80,8 @@
   "installChat.sshAuthPassword": "密码",
   "installChat.sshKeyPath": "密钥路径",
   "installChat.sshPassword": "密码",
+  "installChat.sshPassphrase": "私钥口令",
+  "installChat.sshPassphrasePlaceholder": "若密钥未加密可留空",
   "installChat.sshLabel": "标签",
   "installChat.submit": "提交",
   "installChat.cancel": "取消",

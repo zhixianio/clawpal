@@ -80,6 +80,8 @@
   "installChat.sshAuthPassword": "Password",
   "installChat.sshKeyPath": "Key Path",
   "installChat.sshPassword": "Password",
+  "installChat.sshPassphrase": "Key Passphrase",
+  "installChat.sshPassphrasePlaceholder": "Leave empty if key is not encrypted",
   "installChat.sshLabel": "Label",
   "installChat.submit": "Submit",
   "installChat.cancel": "Cancel",

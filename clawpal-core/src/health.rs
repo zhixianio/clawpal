@@ -313,6 +313,7 @@ mod tests {
                 auth_method: "key".to_string(),
                 key_path: None,
                 password: None,
+                passphrase: None,
             }),
         };
         let status = check_instance(&instance).expect("remote health");
