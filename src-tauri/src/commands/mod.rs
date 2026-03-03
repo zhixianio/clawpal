@@ -3165,8 +3165,12 @@ fn run_provider_probe(
         .or_else(|| default_base_url_for_provider(&provider_trimmed).map(str::to_string))
         .ok_or_else(|| format!("No base URL configured for provider '{}'", provider_trimmed))?;
 
+    // Use stream:true so the provider returns HTTP headers immediately once
+    // the request is accepted, rather than waiting for the full completion.
+    // We only need the status code to verify auth + model access.
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
@@ -3187,6 +3191,7 @@ fn run_provider_probe(
         req.json(&serde_json::json!({
             "model": model_trimmed,
             "max_tokens": 1,
+            "stream": true,
             "messages": [{"role": "user", "content": "ping"}]
         }))
         .send()
@@ -3200,7 +3205,8 @@ fn run_provider_probe(
             .json(&serde_json::json!({
                 "model": model_trimmed,
                 "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1
+                "max_tokens": 1,
+                "stream": true
             }));
         if lower == "openrouter" {
             req = req
