@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import { RecipeCard } from "../components/RecipeCard";
 import type { Recipe } from "../lib/types";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
 
 export function Recipes({
   onCook,
@@ -17,34 +16,26 @@ export function Recipes({
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [source, setSource] = useState("");
   const [loadedSource, setLoadedSource] = useState<string | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(false);
 
-  const load = (nextSource: string) => {
-    setIsLoading(true);
+  const load = async (nextSource: string) => {
     const value = nextSource.trim();
-    api
-      .listRecipes(value || undefined)
-      .then((r) => {
-        setLoadedSource(value || undefined);
-        setRecipes(r);
-      })
-      .catch((e) => console.error("Failed to load recipes:", e))
-      .finally(() => setIsLoading(false));
+    try {
+      const r = await api.listRecipes(value || undefined);
+      setLoadedSource(value || undefined);
+      setRecipes(r);
+    } catch (e) {
+      console.error("Failed to load recipes:", e);
+    }
   };
 
   useEffect(() => {
-    load("");
+    void load("");
   }, []);
-
-  const onLoadSource = (event: FormEvent) => {
-    event.preventDefault();
-    load(source);
-  };
 
   return (
     <section>
       <h2 className="text-2xl font-bold mb-4">{t('recipes.title')}</h2>
-      <form onSubmit={onLoadSource} className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex items-center gap-2">
         <Label>{t('recipes.sourceLabel')}</Label>
         <Input
           value={source}
@@ -52,10 +43,10 @@ export function Recipes({
           placeholder="/path/recipes.json or https://example.com/recipes.json"
           className="w-[380px]"
         />
-        <Button type="submit" className="ml-2">
-          {isLoading ? t('recipes.loading') : t('recipes.load')}
-        </Button>
-      </form>
+        <AsyncActionButton className="ml-2" onClick={() => load(source)} loadingText={t('recipes.loading')}>
+          {t('recipes.load')}
+        </AsyncActionButton>
+      </div>
       <p className="text-sm text-muted-foreground mt-0">
         {t('recipes.loadedFrom', { source: loadedSource || t('recipes.builtinSource') })}
       </p>
