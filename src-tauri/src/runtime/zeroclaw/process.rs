@@ -705,9 +705,9 @@ pub fn get_zeroclaw_runtime_target() -> ZeroclawRuntimeTarget {
 
 fn default_model_for_provider(provider: &str) -> Option<&'static str> {
     match provider {
-        "anthropic" => Some("claude-3-7-sonnet-latest"),
+        "anthropic" => Some("claude-sonnet-4-5"),
         "openai" => Some("gpt-4o-mini"),
-        "openrouter" => Some("anthropic/claude-3.5-sonnet"),
+        "openrouter" => Some("anthropic/claude-sonnet-4-5"),
         "gemini" => Some("gemini-2.0-flash"),
         "moonshot" => Some("kimi-k2.5"),
         _ => None,
@@ -988,17 +988,17 @@ mod tests {
     #[test]
     fn preferred_model_preserves_prefix_for_openrouter() {
         let normalized =
-            normalize_model_for_provider("anthropic/claude-3.7-sonnet", Some("openrouter"));
-        assert_eq!(normalized, "anthropic/claude-3.7-sonnet");
+            normalize_model_for_provider("anthropic/claude-sonnet-4-5", Some("openrouter"));
+        assert_eq!(normalized, "anthropic/claude-sonnet-4-5");
     }
 
     #[test]
     fn preferred_model_strips_openrouter_prefix_for_openrouter_provider() {
         let normalized = normalize_model_for_provider(
-            "openrouter/anthropic/claude-3.7-sonnet",
+            "openrouter/anthropic/claude-sonnet-4-5",
             Some("openrouter"),
         );
-        assert_eq!(normalized, "anthropic/claude-3.7-sonnet");
+        assert_eq!(normalized, "anthropic/claude-sonnet-4-5");
     }
 
     #[test]
@@ -1031,13 +1031,13 @@ mod tests {
 
     #[test]
     fn preferred_model_is_ignored_when_provider_mismatches() {
-        let mut candidates = vec!["claude-3-5-sonnet-latest".to_string()];
+        let mut candidates = vec!["claude-sonnet-4-5".to_string()];
         prepend_preferred_model_candidate(
             &mut candidates,
             Some("kimi-coding/k2p5".to_string()),
             Some("anthropic"),
         );
-        assert_eq!(candidates, vec!["claude-3-5-sonnet-latest".to_string()]);
+        assert_eq!(candidates, vec!["claude-sonnet-4-5".to_string()]);
     }
 
     #[test]

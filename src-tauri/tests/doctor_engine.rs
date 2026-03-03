@@ -23,7 +23,7 @@ fn parse_engine_rejects_openclaw_and_unknown() {
 
 #[test]
 fn classify_model_not_found_error() {
-    let msg = r#"Anthropic API error (404 Not Found): {"type":"error","error":{"type":"not_found_error","message":"model: claude-3-5-sonnet-latest"}}"#;
+    let msg = r#"Anthropic API error (404 Not Found): {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet-4-5"}}"#;
     assert_eq!(classify_engine_error(msg), "MODEL_UNAVAILABLE");
 }
 
