@@ -845,4 +845,385 @@ mod tests {
         let bindings = candidate["bindings"].as_array().expect("bindings");
         assert!(bindings.iter().any(|b| b["agentId"] == "main"));
     }
+
+    // --- Template patch coverage ---
+
+    #[test]
+    fn build_candidate_set_global_model() {
+        let current = json!({"agents":{"defaults":{}}});
+        let mut params = serde_json::Map::new();
+        params.insert("model".into(), json!("anthropic/claude-opus-4-5"));
+        let (candidate, changes) =
+            build_candidate_config(&current, "set-global-model", &params).expect("build");
+        assert_eq!(
+            candidate
+                .pointer("/agents/defaults/model")
+                .and_then(Value::as_str),
+            Some("anthropic/claude-opus-4-5")
+        );
+        assert!(!changes.is_empty());
+    }
+
+    #[test]
+    fn build_candidate_set_agent_model() {
+        // set-agent-model uses dot-path agents.list.{agentId}.model (object-style list)
+        let current = json!({"agents":{"list":{"main":{}}}});
+        let mut params = serde_json::Map::new();
+        params.insert("agentId".into(), json!("main"));
+        params.insert("model".into(), json!("openai/gpt-4o"));
+        let (candidate, _) =
+            build_candidate_config(&current, "set-agent-model", &params).expect("build");
+        assert_eq!(
+            candidate.pointer("/agents/list/main/model"),
+            Some(&json!("openai/gpt-4o"))
+        );
+    }
+
+    #[test]
+    fn build_candidate_enable_channel() {
+        let current = json!({"channels":{"discord":{"enabled":false}}});
+        let mut params = serde_json::Map::new();
+        params.insert("channelPath".into(), json!("channels.discord"));
+        let (candidate, _) =
+            build_candidate_config(&current, "enable-channel", &params).expect("build");
+        assert_eq!(
+            candidate.pointer("/channels/discord/enabled"),
+            Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn build_candidate_disable_channel() {
+        let current = json!({"channels":{"telegram":{"enabled":true}}});
+        let mut params = serde_json::Map::new();
+        params.insert("channelPath".into(), json!("channels.telegram"));
+        let (candidate, _) =
+            build_candidate_config(&current, "disable-channel", &params).expect("build");
+        assert_eq!(
+            candidate.pointer("/channels/telegram/enabled"),
+            Some(&json!(false))
+        );
+    }
+
+    #[test]
+    fn build_candidate_delete_channel() {
+        let current = json!({"channels":{"discord":{"token":"x"},"telegram":{"token":"y"}}});
+        let mut params = serde_json::Map::new();
+        params.insert("channelPath".into(), json!("channels.discord"));
+        let (candidate, _) =
+            build_candidate_config(&current, "delete-channel", &params).expect("build");
+        assert!(candidate.pointer("/channels/discord").is_none());
+        assert!(candidate.pointer("/channels/telegram").is_some());
+    }
+
+    #[test]
+    fn build_candidate_set_channel_model() {
+        let current = json!({"channels":{"discord":{}}});
+        let mut params = serde_json::Map::new();
+        params.insert("channelPath".into(), json!("channels.discord"));
+        params.insert("model".into(), json!("test/model"));
+        let (candidate, _) =
+            build_candidate_config(&current, "set-channel-model", &params).expect("build");
+        assert_eq!(
+            candidate.pointer("/channels/discord/model"),
+            Some(&json!("test/model"))
+        );
+    }
+
+    #[test]
+    fn build_candidate_set_channel_model_remove() {
+        let current = json!({"channels":{"discord":{"model":"old"}}});
+        let mut params = serde_json::Map::new();
+        params.insert("channelPath".into(), json!("channels.discord"));
+        // No model param → delete
+        let (candidate, _) =
+            build_candidate_config(&current, "set-channel-model", &params).expect("build");
+        assert!(candidate.pointer("/channels/discord/model").is_none());
+    }
+
+    #[test]
+    fn build_candidate_update_channel_config() {
+        let current = json!({"channels":{"discord":{}}});
+        let mut params = serde_json::Map::new();
+        params.insert("channelPath".into(), json!("channels.discord"));
+        params.insert("type".into(), json!("discord"));
+        params.insert("mode".into(), json!("allowlist"));
+        params.insert("model".into(), json!("test/model"));
+        params.insert("allowlist".into(), json!(["user1", "user2"]));
+        let (candidate, _) =
+            build_candidate_config(&current, "update-channel-config", &params).expect("build");
+        assert_eq!(
+            candidate.pointer("/channels/discord/type"),
+            Some(&json!("discord"))
+        );
+        assert_eq!(
+            candidate.pointer("/channels/discord/mode"),
+            Some(&json!("allowlist"))
+        );
+    }
+
+    #[test]
+    fn build_candidate_set_binding_agent() {
+        let current = json!({"bindings":[{"channel":"discord","agentId":"old"}]});
+        let mut params = serde_json::Map::new();
+        params.insert("index".into(), json!(0_u64));
+        params.insert("agentId".into(), json!("new-agent"));
+        let (candidate, _) =
+            build_candidate_config(&current, "set-binding-agent", &params).expect("build");
+        assert_eq!(
+            candidate.pointer("/bindings/0/agentId"),
+            Some(&json!("new-agent"))
+        );
+    }
+
+    #[test]
+    fn build_candidate_add_binding() {
+        let current = json!({"bindings":[]});
+        let mut params = serde_json::Map::new();
+        params.insert("channel".into(), json!("telegram"));
+        params.insert("agentId".into(), json!("main"));
+        params.insert("pattern".into(), json!("*"));
+        let (candidate, _) =
+            build_candidate_config(&current, "add-binding", &params).expect("build");
+        let bindings = candidate["bindings"].as_array().expect("bindings");
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0]["channel"], "telegram");
+        assert_eq!(bindings[0]["pattern"], "*");
+    }
+
+    #[test]
+    fn build_candidate_add_binding_creates_array() {
+        let current = json!({});
+        let mut params = serde_json::Map::new();
+        params.insert("channel".into(), json!("discord"));
+        params.insert("agentId".into(), json!("main"));
+        let (candidate, _) =
+            build_candidate_config(&current, "add-binding", &params).expect("build");
+        assert!(candidate["bindings"].is_array());
+    }
+
+    #[test]
+    fn build_candidate_unknown_template_errors() {
+        let current = json!({});
+        let params = serde_json::Map::new();
+        let result = build_candidate_config(&current, "nonexistent-template", &params);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown patch template"));
+    }
+
+    // --- read_model_value ---
+
+    #[test]
+    fn read_model_value_string() {
+        assert_eq!(
+            read_model_value(&json!("anthropic/claude-3")),
+            Some("anthropic/claude-3".to_string())
+        );
+    }
+
+    #[test]
+    fn read_model_value_object_primary() {
+        assert_eq!(
+            read_model_value(&json!({"primary": "gpt-4o"})),
+            Some("gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn read_model_value_object_name() {
+        assert_eq!(
+            read_model_value(&json!({"name": "claude-3"})),
+            Some("claude-3".to_string())
+        );
+    }
+
+    #[test]
+    fn read_model_value_object_provider_id() {
+        assert_eq!(
+            read_model_value(&json!({"provider": "openai", "id": "gpt-4o"})),
+            Some("openai/gpt-4o".to_string())
+        );
+    }
+
+    #[test]
+    fn read_model_value_object_default_field() {
+        assert_eq!(
+            read_model_value(&json!({"default": "fallback-model"})),
+            Some("fallback-model".to_string())
+        );
+    }
+
+    #[test]
+    fn read_model_value_null_returns_none() {
+        assert_eq!(read_model_value(&json!(null)), None);
+    }
+
+    #[test]
+    fn read_model_value_number_returns_none() {
+        assert_eq!(read_model_value(&json!(42)), None);
+    }
+
+    // --- collect_change_paths ---
+
+    #[test]
+    fn collect_change_paths_no_changes() {
+        let a = json!({"x":1,"y":"two"});
+        let changes = collect_change_paths(&a, &a);
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn collect_change_paths_added_key() {
+        let before = json!({"a":1});
+        let after = json!({"a":1,"b":2});
+        let changes = collect_change_paths(&before, &after);
+        assert!(changes.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn collect_change_paths_removed_key() {
+        let before = json!({"a":1,"b":2});
+        let after = json!({"a":1});
+        let changes = collect_change_paths(&before, &after);
+        assert!(changes.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn collect_change_paths_nested_change() {
+        let before = json!({"a":{"b":{"c":1}}});
+        let after = json!({"a":{"b":{"c":2}}});
+        let changes = collect_change_paths(&before, &after);
+        assert!(changes.contains(&"a.b.c".to_string()));
+    }
+
+    #[test]
+    fn collect_change_paths_type_change() {
+        let before = json!({"a":"string"});
+        let after = json!({"a":42});
+        let changes = collect_change_paths(&before, &after);
+        assert!(changes.contains(&"a".to_string()));
+    }
+
+    // --- format_config_diff ---
+
+    #[test]
+    fn format_config_diff_no_changes() {
+        let a = json!({"x":1});
+        assert_eq!(format_config_diff(&a, &a), "No changes");
+    }
+
+    // --- channel node ---
+
+    #[test]
+    fn collect_channel_nodes_detects_dm() {
+        let config = json!({
+            "channels": {
+                "discord": {
+                    "dm": {"mode": "open"}
+                }
+            }
+        });
+        let nodes = collect_channel_nodes(&config);
+        assert!(nodes.iter().any(|n| n.path.ends_with(".dm")));
+    }
+
+    #[test]
+    fn collect_channel_nodes_detects_guild_structure() {
+        let config = json!({
+            "channels": {
+                "discord": {
+                    "guilds": {
+                        "12345": {
+                            "channels": {
+                                "67890": {"model": "test"}
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let nodes = collect_channel_nodes(&config);
+        let guild_node = nodes.iter().find(|n| n.path.contains("guilds.12345"));
+        assert!(guild_node.is_some());
+    }
+
+    #[test]
+    fn collect_channel_nodes_empty_config() {
+        let nodes = collect_channel_nodes(&json!({}));
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn resolve_channel_mode_merges_policies() {
+        let mut obj = serde_json::Map::new();
+        obj.insert("mode".into(), json!("allowlist"));
+        obj.insert("dmPolicy".into(), json!("open"));
+        obj.insert("groupPolicy".into(), json!("closed"));
+        let mode = resolve_channel_mode(&obj);
+        let mode_str = mode.unwrap();
+        assert!(mode_str.contains("allowlist"));
+        assert!(mode_str.contains("open"));
+        assert!(mode_str.contains("closed"));
+    }
+
+    #[test]
+    fn collect_channel_allowlist_deduplicates() {
+        let mut obj = serde_json::Map::new();
+        obj.insert("allowlist".into(), json!(["user1", "user2"]));
+        obj.insert("allowFrom".into(), json!(["user2", "user3"]));
+        let list = collect_channel_allowlist(&obj);
+        assert_eq!(list.len(), 3);
+    }
+
+    // --- parse_snapshot_filename edge cases ---
+
+    #[test]
+    fn parse_snapshot_filename_short_filename() {
+        assert!(parse_snapshot_filename("invalid").is_none());
+    }
+
+    #[test]
+    fn parse_snapshot_filename_non_numeric_ts() {
+        assert!(parse_snapshot_filename("abc-source.json").is_none());
+    }
+
+    // --- create_agent with no initial list ---
+
+    #[test]
+    fn build_candidate_create_agent_no_list() {
+        let current = json!({});
+        let mut params = serde_json::Map::new();
+        params.insert("agentId".into(), json!("fresh-agent"));
+        let (candidate, _) =
+            build_candidate_config(&current, "create-agent", &params).expect("build");
+        assert!(candidate.pointer("/agents/list").is_some());
+    }
+
+    // --- extract_model_bindings edge cases ---
+
+    #[test]
+    fn extract_model_bindings_alternate_default_path() {
+        // agents.default.model (instead of agents.defaults.model)
+        let config = json!({"agents":{"default":{"model":"alt-model"}}});
+        let bindings = extract_model_bindings(&config);
+        let global = bindings.iter().find(|b| b.scope == "global").unwrap();
+        assert_eq!(global.model_value.as_deref(), Some("alt-model"));
+    }
+
+    #[test]
+    fn extract_model_bindings_nested_channels() {
+        let config = json!({
+            "channels": {
+                "discord": {
+                    "guilds": {
+                        "123": {"model": "guild-model"}
+                    }
+                }
+            }
+        });
+        let bindings = extract_model_bindings(&config);
+        assert!(bindings
+            .iter()
+            .any(|b| b.scope == "channel" && b.model_value.as_deref() == Some("guild-model")));
+    }
 }

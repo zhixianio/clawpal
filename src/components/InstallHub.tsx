@@ -618,7 +618,7 @@ export function InstallHub({
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        {t("doctor.appLog")} / {t("doctor.errorLog")} / {t("doctor.gatewayLogs")} 来源：{diagnosticTargetLabel}
+        {t("doctor.appLog")} / {t("doctor.errorLog")} / {t("doctor.gatewayLogs")} {t("doctor.source")} {diagnosticTargetLabel}
       </p>
       {diagnosticsLoading && (
         <p className="text-xs text-muted-foreground animate-pulse">loading…</p>
@@ -739,6 +739,7 @@ export function InstallHub({
         });
       }
       setDiagnosticHostId(targetHostId);
+      setMode("failed");
       setRunError(guidanceError ? t("doctor.failed") : errorText);
       setRunErrorHasGuidance(guidanceError);
       void refreshDiagnostics(targetHostId);
@@ -780,6 +781,7 @@ export function InstallHub({
     } catch (e) {
       const errorText = e instanceof Error ? e.message : String(e);
       const guidanceError = hasGuidanceEmitted(e) || isAlreadyExplainedGuidanceError(errorText);
+      setMode("failed");
       setRunError(guidanceError ? t("doctor.failed") : errorText);
       setRunErrorHasGuidance(guidanceError);
       void refreshDiagnostics(null);
@@ -836,6 +838,7 @@ export function InstallHub({
     } catch (e) {
       const errorText = e instanceof Error ? e.message : String(e);
       const guidanceError = hasGuidanceEmitted(e) || isAlreadyExplainedGuidanceError(errorText);
+      setMode("failed");
       setRunError(guidanceError ? t("doctor.failed") : errorText);
       setRunErrorHasGuidance(guidanceError);
       void refreshDiagnostics(null);

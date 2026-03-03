@@ -179,4 +179,99 @@ mod tests {
         let issues = precheck_instance_state(&inst);
         assert!(issues.is_empty());
     }
+
+    #[test]
+    fn precheck_auth_detects_missing_model() {
+        let profiles = vec![ModelProfile {
+            id: "bad".into(),
+            name: "Bad".into(),
+            provider: "anthropic".into(),
+            model: "".into(),
+            auth_ref: String::new(),
+            api_key: None,
+            base_url: None,
+            description: None,
+            enabled: true,
+        }];
+        let issues = precheck_auth(&profiles);
+        assert!(issues.iter().any(|i| i.code == "AUTH_MISCONFIGURED"));
+    }
+
+    #[test]
+    fn precheck_auth_multiple_profiles() {
+        let profiles = vec![
+            ModelProfile {
+                id: "good".into(),
+                name: "Good".into(),
+                provider: "anthropic".into(),
+                model: "claude-3".into(),
+                auth_ref: String::new(),
+                api_key: None,
+                base_url: None,
+                description: None,
+                enabled: true,
+            },
+            ModelProfile {
+                id: "bad".into(),
+                name: "Bad".into(),
+                provider: "".into(),
+                model: "".into(),
+                auth_ref: String::new(),
+                api_key: None,
+                base_url: None,
+                description: None,
+                enabled: true,
+            },
+        ];
+        let issues = precheck_auth(&profiles);
+        assert_eq!(issues.len(), 1);
+    }
+
+    #[test]
+    fn precheck_auth_empty_profiles() {
+        let issues = precheck_auth(&[]);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn precheck_registry_valid_json_passes() {
+        let dir = std::env::temp_dir().join(format!("precheck-valid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("instances.json");
+        std::fs::write(&path, r#"{"instances":[]}"#).unwrap();
+        let issues = precheck_registry(&path);
+        assert!(issues.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn precheck_instance_state_local_with_existing_home() {
+        let home = std::env::temp_dir().join(format!("precheck-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let inst = Instance {
+            id: "local".into(),
+            instance_type: InstanceType::Local,
+            label: "Local".into(),
+            openclaw_home: Some(home.to_string_lossy().to_string()),
+            clawpal_data_dir: None,
+            ssh_host_config: None,
+        };
+        let issues = precheck_instance_state(&inst);
+        assert!(issues.is_empty());
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn precheck_instance_state_no_home_dir_local() {
+        let inst = Instance {
+            id: "local".into(),
+            instance_type: InstanceType::Local,
+            label: "Local".into(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: None,
+        };
+        let issues = precheck_instance_state(&inst);
+        assert!(issues.is_empty());
+    }
 }

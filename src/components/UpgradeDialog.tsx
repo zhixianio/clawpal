@@ -41,6 +41,18 @@ export function UpgradeDialog({
   const [loading, setLoading] = useState(false);
   const [showLog, setShowLog] = useState(false);
 
+  const IndeterminateProgress = ({ label }: { label: string }) => (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 text-sm">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <span>{label}</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div className="h-full w-1/3 animate-[upgrade-indeterminate_1.2s_linear_infinite] rounded-full bg-primary" />
+      </div>
+    </div>
+  );
+
   const reset = () => {
     setStep("confirm");
     setBackupName("");
@@ -148,10 +160,7 @@ export function UpgradeDialog({
         {step === "backup" && (
           <div className="space-y-3">
             {loading && (
-              <div className="flex items-center gap-2 text-sm">
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <span>{t('upgrade.creatingBackup')}</span>
-              </div>
+              <IndeterminateProgress label={t('upgrade.creatingBackup')} />
             )}
             {error && (
               <div className="text-sm text-destructive">{error}</div>
@@ -167,10 +176,7 @@ export function UpgradeDialog({
               </p>
             )}
             {loading && (
-              <div className="flex items-center gap-2 text-sm">
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <span>{t('upgrade.runningUpgrade')}</span>
-              </div>
+              <IndeterminateProgress label={t('upgrade.runningUpgrade')} />
             )}
             {error && (
               <div className="text-sm text-destructive">{error}</div>
@@ -237,6 +243,12 @@ export function UpgradeDialog({
             <Button onClick={() => handleClose(false)}>{t('upgrade.close')}</Button>
           )}
         </DialogFooter>
+        <style>{`
+          @keyframes upgrade-indeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+          }
+        `}</style>
       </DialogContent>
     </Dialog>
   );

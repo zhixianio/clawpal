@@ -368,6 +368,8 @@ pub struct DiscordGuildChannel {
     pub guild_name: String,
     pub channel_id: String,
     pub channel_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2325,9 +2327,77 @@ fn collect_discord_config_guild_ids(discord_cfg: Option<&Value>) -> Vec<String> 
     guild_ids
 }
 
+fn collect_discord_config_guild_name_fallbacks(
+    discord_cfg: Option<&Value>,
+) -> HashMap<String, String> {
+    let mut guild_names = HashMap::new();
+
+    if let Some(guilds) = discord_cfg
+        .and_then(|d| d.get("guilds"))
+        .and_then(Value::as_object)
+    {
+        for (guild_id, guild_val) in guilds {
+            let guild_name = guild_val
+                .get("slug")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if let Some(name) = guild_name {
+                guild_names.entry(guild_id.clone()).or_insert(name);
+            }
+        }
+    }
+
+    if let Some(accounts) = discord_cfg
+        .and_then(|d| d.get("accounts"))
+        .and_then(Value::as_object)
+    {
+        for account in accounts.values() {
+            if let Some(guilds) = account.get("guilds").and_then(Value::as_object) {
+                for (guild_id, guild_val) in guilds {
+                    let guild_name = guild_val
+                        .get("slug")
+                        .and_then(Value::as_str)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    if let Some(name) = guild_name {
+                        guild_names.entry(guild_id.clone()).or_insert(name);
+                    }
+                }
+            }
+        }
+    }
+
+    guild_names
+}
+
+fn collect_discord_cache_guild_name_fallbacks(
+    entries: &[DiscordGuildChannel],
+) -> HashMap<String, String> {
+    let mut guild_names = HashMap::new();
+    for entry in entries {
+        let name = entry.guild_name.trim();
+        if name.is_empty() || name == entry.guild_id {
+            continue;
+        }
+        guild_names
+            .entry(entry.guild_id.clone())
+            .or_insert_with(|| name.to_string());
+    }
+    guild_names
+}
+
+fn parse_discord_cache_guild_name_fallbacks(cache_json: &str) -> HashMap<String, String> {
+    let entries: Vec<DiscordGuildChannel> = serde_json::from_str(cache_json).unwrap_or_default();
+    collect_discord_cache_guild_name_fallbacks(&entries)
+}
+
 #[cfg(test)]
 mod discord_directory_parse_tests {
-    use super::parse_directory_group_channel_ids;
+    use super::{
+        parse_directory_group_channel_ids, parse_discord_cache_guild_name_fallbacks,
+        DiscordGuildChannel,
+    };
 
     #[test]
     fn parse_directory_groups_extracts_channel_ids() {
@@ -2349,6 +2419,37 @@ mod discord_directory_parse_tests {
         let stdout = "not json";
         let ids = parse_directory_group_channel_ids(stdout);
         assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn parse_discord_cache_guild_name_fallbacks_uses_non_id_names() {
+        let payload = vec![
+            DiscordGuildChannel {
+                guild_id: "1".into(),
+                guild_name: "Guild One".into(),
+                channel_id: "11".into(),
+                channel_name: "chan-1".into(),
+                default_agent_id: None,
+            },
+            DiscordGuildChannel {
+                guild_id: "1".into(),
+                guild_name: "1".into(),
+                channel_id: "12".into(),
+                channel_name: "chan-2".into(),
+                default_agent_id: None,
+            },
+            DiscordGuildChannel {
+                guild_id: "2".into(),
+                guild_name: "2".into(),
+                channel_id: "21".into(),
+                channel_name: "chan-3".into(),
+                default_agent_id: None,
+            },
+        ];
+        let text = serde_json::to_string(&payload).expect("serialize payload");
+        let fallbacks = parse_discord_cache_guild_name_fallbacks(&text);
+        assert_eq!(fallbacks.get("1"), Some(&"Guild One".to_string()));
+        assert!(!fallbacks.contains_key("2"));
     }
 }
 
@@ -2666,11 +2767,14 @@ fn query_openclaw_latest_npm() -> Result<Option<String>, String> {
     Ok(version)
 }
 
+const DISCORD_REST_USER_AGENT: &str = "DiscordBot (https://openclaw.ai, 1.0)";
+
 /// Fetch a Discord guild name via the Discord REST API using a bot token.
 fn fetch_discord_guild_name(bot_token: &str, guild_id: &str) -> Result<String, String> {
     let url = format!("https://discord.com/api/v10/guilds/{guild_id}");
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent(DISCORD_REST_USER_AGENT)
         .build()
         .map_err(|e| format!("Discord HTTP client error: {e}"))?;
     let resp = client
@@ -2697,7 +2801,8 @@ fn fetch_discord_guild_channels(
 ) -> Result<Vec<(String, String)>, String> {
     let url = format!("https://discord.com/api/v10/guilds/{guild_id}/channels");
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent(DISCORD_REST_USER_AGENT)
         .build()
         .map_err(|e| format!("Discord HTTP client error: {e}"))?;
     let resp = client
@@ -2726,6 +2831,11 @@ fn fetch_discord_guild_channels(
             .and_then(Value::as_str)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        // Filter out categories (type 4), voice channels (type 2), and stage channels (type 13)
+        let channel_type = item.get("type").and_then(Value::as_u64).unwrap_or(0);
+        if channel_type == 4 || channel_type == 2 || channel_type == 13 {
+            continue;
+        }
         if let (Some(id), Some(name)) = (id, name) {
             if !out.iter().any(|(existing_id, _)| *existing_id == id) {
                 out.push((id, name));
@@ -3165,26 +3275,37 @@ fn run_provider_probe(
         .or_else(|| default_base_url_for_provider(&provider_trimmed).map(str::to_string))
         .ok_or_else(|| format!("No base URL configured for provider '{}'", provider_trimmed))?;
 
+    // Use stream:true so the provider returns HTTP headers immediately once
+    // the request is accepted, rather than waiting for the full completion.
+    // We only need the status code to verify auth + model access.
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
     let lower = provider_trimmed.to_ascii_lowercase();
+    let auth_kind = infer_auth_kind(&provider_trimmed, api_key.trim(), InternalAuthKind::ApiKey);
     let response = if lower == "anthropic" {
         let url = format!("{}/messages", resolved_base);
-        client
+        let mut req = client
             .post(&url)
-            .header("x-api-key", api_key.trim())
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&serde_json::json!({
-                "model": model_trimmed,
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}]
-            }))
-            .send()
-            .map_err(|e| format!("Provider request failed: {e}"))?
+            .header("content-type", "application/json");
+        req = match auth_kind {
+            InternalAuthKind::Authorization => {
+                req.header("Authorization", format!("Bearer {}", api_key.trim()))
+            }
+            InternalAuthKind::ApiKey => req.header("x-api-key", api_key.trim()),
+        };
+        req.json(&serde_json::json!({
+            "model": model_trimmed,
+            "max_tokens": 1,
+            "stream": true,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .map_err(|e| format!("Provider request failed: {e}"))?
     } else {
         let url = format!("{}/chat/completions", resolved_base);
         let mut req = client
@@ -3194,7 +3315,8 @@ fn run_provider_probe(
             .json(&serde_json::json!({
                 "model": model_trimmed,
                 "messages": [{"role": "user", "content": "ping"}],
-                "max_tokens": 1
+                "max_tokens": 1,
+                "stream": true
             }));
         if lower == "openrouter" {
             req = req
@@ -5648,6 +5770,7 @@ pub fn migrate_legacy_instances(
                         auth_method: "ssh_config".to_string(),
                         key_path: None,
                         password: None,
+                        passphrase: None,
                     }),
                 },
             )?;
@@ -5738,7 +5861,20 @@ pub async fn ssh_connect(
         ));
         format!("No SSH host config with id: {host_id}")
     })?;
-    if let Err(error) = pool.connect(&host).await {
+    // If the host has a stored passphrase, use it directly
+    let connect_result = if let Some(ref pp) = host.passphrase {
+        if !pp.is_empty() {
+            crate::commands::logs::log_dev(format!(
+                "[dev][ssh_connect] using stored passphrase for host_id={host_id}"
+            ));
+            pool.connect_with_passphrase(&host, Some(pp.as_str())).await
+        } else {
+            pool.connect(&host).await
+        }
+    } else {
+        pool.connect(&host).await
+    };
+    if let Err(error) = connect_result {
         crate::commands::logs::log_dev(format!(
             "[dev][ssh_connect] failed host_id={} host={} user={} port={} auth_method={} error={}",
             host_id, host.host, host.username, host.port, host.auth_method, error

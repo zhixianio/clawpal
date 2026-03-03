@@ -37,6 +37,7 @@ export function SshFormWidget({
   );
   const [keyPath, setKeyPath] = useState(defaults?.keyPath ?? "");
   const [password, setPassword] = useState(defaults?.password ?? "");
+  const [passphrase, setPassphrase] = useState(defaults?.passphrase ?? "");
   const [label, setLabel] = useState(defaults?.label ?? "");
   const [selectedSshConfigAlias, setSelectedSshConfigAlias] = useState(
     SSH_CONFIG_MANUAL_ALIAS,
@@ -71,6 +72,7 @@ export function SshFormWidget({
     setPort(String(preset.port ?? 22));
     setKeyPath(preset.identityFile ?? "");
     setPassword("");
+    setPassphrase("");
     setAuthMethod("ssh_config");
     setLabel(preset.hostAlias);
   };
@@ -88,6 +90,7 @@ export function SshFormWidget({
       authMethod,
       keyPath: authMethod === "key" ? keyPath.trim() : undefined,
       password: authMethod === "password" ? password : undefined,
+      passphrase: authMethod !== "password" && passphrase ? passphrase : undefined,
     });
   };
 
@@ -185,6 +188,18 @@ export function SshFormWidget({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
+            className="h-8 text-sm"
+          />
+        </div>
+      )}
+      {authMethod !== "password" && (
+        <div className="space-y-1">
+          <label className="text-xs font-medium">{t("installChat.sshPassphrase")}</label>
+          <Input
+            type="password"
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            placeholder={t("installChat.sshPassphrasePlaceholder")}
             className="h-8 text-sm"
           />
         </div>

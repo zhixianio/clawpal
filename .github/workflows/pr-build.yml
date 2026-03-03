@@ -1,0 +1,195 @@
+name: PR Build
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS-ARM64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux-x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows-x64
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.label }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Disable code signing for PR build
+        shell: bash
+        run: |
+          node << 'EOF'
+          const fs = require("fs");
+          const conf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+          conf.bundle.createUpdaterArtifacts = false;
+          if (conf.bundle.macOS) conf.bundle.macOS.signingIdentity = "-";
+          fs.writeFileSync("src-tauri/tauri.conf.json", JSON.stringify(conf, null, 2));
+          EOF
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.target }}
+
+      - name: Collect build artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          find "$BUNDLE_DIR" -type f \( \
+            -name "*.dmg" -o \
+            -name "*.deb" -o \
+            -name "*.AppImage" -o \
+            -name "*.msi" -o \
+            -name "*.exe" -o \
+            -name "*.rpm" \
+          \) -exec cp {} artifacts/ \; 2>/dev/null || true
+
+          # Include portable exe on Windows
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            PORTABLE="src-tauri/target/${{ matrix.target }}/release/clawpal.exe"
+            [ -f "$PORTABLE" ] && cp "$PORTABLE" "artifacts/ClawPal_portable.exe"
+          fi
+
+          echo "### Collected artifacts:"
+          ls -lh artifacts/ || echo "No artifacts found"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawpal-${{ matrix.label }}
+          path: artifacts/*
+          retention-days: 7
+          if-no-files-found: warn
+
+  comment:
+    needs: build
+    # Skip comment for fork PRs — their GITHUB_TOKEN is read-only
+    if: >-
+      always()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post or update PR comment with download links
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- pr-build-artifacts -->';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const sha = context.payload.pull_request.head.sha.substring(0, 7);
+            const prNumber = context.payload.pull_request.number;
+
+            // List artifacts uploaded by this workflow run
+            const { data: { artifacts } } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+
+            let body = `${marker}\n## 📦 PR Build Artifacts\n\n`;
+
+            if (artifacts.length === 0) {
+              body += `⚠️ No build artifacts were produced. Check the [workflow run](${runUrl}) for details.\n`;
+            } else {
+              body += `| Platform | Download | Size |\n|----------|----------|------|\n`;
+
+              for (const a of artifacts) {
+                const sizeMB = (a.size_in_bytes / (1024 * 1024)).toFixed(1);
+                const label = a.name.replace('clawpal-', '');
+                body += `| ${label} | [📥 ${a.name}](${runUrl}/artifacts/${a.id}) | ${sizeMB} MB |\n`;
+              }
+            }
+
+            body += `\n---\n`;
+            body += `> 🔨 Built from \`${sha}\` · [View workflow run](${runUrl})\n`;
+            body += `> ⚠️ **Unsigned development builds** — for testing only\n`;
+
+            // Paginate all comments to reliably find the marker (default page is only 30)
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const existing = comments.find(c => c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated existing comment #${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+              core.info('Created new build artifacts comment');
+            }

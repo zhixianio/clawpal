@@ -705,9 +705,9 @@ fn pick_zeroclaw_provider(env_pairs: &[(String, String)]) -> Option<&'static str
 fn default_model_for_provider(provider: &str) -> Option<&'static str> {
     match provider {
         // Avoid openrouter-style model ids when talking to Anthropic directly.
-        "anthropic" => Some("claude-3-5-sonnet-latest"),
+        "anthropic" => Some("claude-sonnet-4-5"),
         "openai" => Some("gpt-4o-mini"),
-        "openrouter" => Some("anthropic/claude-3.5-sonnet"),
+        "openrouter" => Some("anthropic/claude-sonnet-4-5"),
         _ => None,
     }
 }

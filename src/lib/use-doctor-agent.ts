@@ -25,6 +25,142 @@ function hasAnyPrefix(value: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) => value === prefix || value.startsWith(`${prefix} `));
 }
 
+type DoctorSessionContext = {
+  instanceScope: string;
+  agentId: string;
+  domain: "doctor" | "install";
+  engine: DoctorEngineMode;
+};
+
+type DoctorEngineMode = "openclaw" | "zeroclaw";
+type DoctorSessionCache = {
+  version: number;
+  context: DoctorSessionContext;
+  messages: DoctorChatMessage[];
+  openclawSessionId?: string | null;
+  sessionKey?: string;
+  updatedAt: number;
+};
+
+const DOCTOR_CHAT_CACHE_PREFIX = "clawpal-doctor-chat-v1";
+const DOCTOR_CHAT_CACHE_MAX_MESSAGES = 220;
+const DOCTOR_CHAT_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const DOCTOR_CHAT_CACHE_VERSION = 1;
+
+function buildDoctorCacheKey(context: DoctorSessionContext): string {
+  const scope = encodeURIComponent(context.instanceScope);
+  const agent = encodeURIComponent(context.agentId);
+  return `${DOCTOR_CHAT_CACHE_PREFIX}-${context.domain}-${context.engine}-${scope}-${agent}`;
+}
+
+function sanitizeDoctorCacheMessages(rawMessages: unknown): DoctorChatMessage[] {
+  if (!Array.isArray(rawMessages)) return [];
+  return rawMessages
+    .map((raw) => {
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Partial<DoctorChatMessage> & Record<string, unknown>;
+      const role = item.role;
+      if (role !== "assistant" && role !== "user" && role !== "tool-call" && role !== "tool-result") return null;
+      const id = typeof item.id === "string" ? item.id : "";
+      if (!id) return null;
+      const content = typeof item.content === "string" ? item.content : "";
+      return {
+        id,
+        role,
+        content,
+        invoke: item.invoke && typeof item.invoke === "object" ? item.invoke as DoctorInvoke : undefined,
+        invokeResult: item.invokeResult,
+        invokeId: typeof item.invokeId === "string" ? item.invokeId : undefined,
+        status: item.status,
+        diagnosisReport: item.diagnosisReport,
+      };
+    })
+    .filter((msg): msg is DoctorChatMessage => msg !== null);
+}
+
+function loadDoctorSessionCache(context: DoctorSessionContext): DoctorSessionCache | null {
+  const key = buildDoctorCacheKey(context);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DoctorSessionCache | null;
+    if (
+      !parsed
+      || typeof parsed !== "object"
+      || parsed.version !== DOCTOR_CHAT_CACHE_VERSION
+      || typeof parsed.updatedAt !== "number"
+      || !parsed.context
+      || !parsed.context.instanceScope
+      || !parsed.context.agentId
+    ) {
+      return null;
+    }
+    if (Date.now() - parsed.updatedAt > DOCTOR_CHAT_CACHE_TTL_MS) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    const messages = sanitizeDoctorCacheMessages(parsed.messages);
+    if (messages.length === 0) return null;
+    return {
+      version: DOCTOR_CHAT_CACHE_VERSION,
+      context: parsed.context,
+      messages,
+      openclawSessionId: typeof parsed.openclawSessionId === "string" ? parsed.openclawSessionId : null,
+      sessionKey: typeof parsed.sessionKey === "string" ? parsed.sessionKey : undefined,
+      updatedAt: parsed.updatedAt,
+    };
+  } catch (error) {
+    console.warn("Failed to load doctor chat cache:", error);
+    return null;
+  }
+}
+
+function saveDoctorSessionCache(context: DoctorSessionContext, payload: {
+  messages: DoctorChatMessage[];
+  openclawSessionId?: string | null;
+  sessionKey?: string;
+}) {
+  const key = buildDoctorCacheKey(context);
+  try {
+    const next: DoctorSessionCache = {
+      version: DOCTOR_CHAT_CACHE_VERSION,
+      context,
+      messages: payload.messages,
+      openclawSessionId: payload.openclawSessionId ?? null,
+      sessionKey: payload.sessionKey,
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(key, JSON.stringify(next));
+  } catch (error) {
+    console.warn("Failed to persist doctor chat cache:", error);
+  }
+}
+
+function extractOpenclawText(result: Record<string, unknown>): string {
+  const payloads = result.payloads;
+  if (Array.isArray(payloads)) {
+    const text = payloads
+      .map((item) => (item as { text?: string }).text)
+      .filter((v): v is string => typeof v === "string" && v.length > 0)
+      .join("\n");
+    if (text) return text;
+  }
+  const text = result.text;
+  if (typeof text === "string") return text;
+  const content = result.content;
+  if (typeof content === "string") return content;
+  return "";
+}
+
+function extractOpenclawSessionId(result: Record<string, unknown>): string | undefined {
+  const meta = result.meta as Record<string, unknown> | undefined;
+  if (!meta || typeof meta !== "object") return;
+  const agentMeta = meta.agentMeta as Record<string, unknown> | undefined;
+  if (!agentMeta || typeof agentMeta !== "object") return;
+  const rawSessionId = agentMeta.sessionId;
+  return typeof rawSessionId === "string" ? rawSessionId.trim() || undefined : undefined;
+}
+
 function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "install"): boolean {
   if (domain !== "doctor") return false;
   const args = normalizeInvokeArgs(invoke);
@@ -86,6 +222,9 @@ export function useDoctorAgent() {
   const targetRef = useRef("local");
   const instanceScopeRef = useRef("local");
   const domainRef = useRef<"doctor" | "install">("doctor");
+  const instanceTransportRef = useRef<"local" | "docker_local" | "remote_ssh">("local");
+  const engineRef = useRef<DoctorEngineMode>("zeroclaw");
+  const openclawSessionIdRef = useRef<string | undefined>(undefined);
   // Last connection params for reconnect
   const wasConnectedRef = useRef(false);
 
@@ -382,69 +521,151 @@ export function useDoctorAgent() {
       instanceTransport: "local" | "docker_local" | "remote_ssh" = "local",
       systemPrompt?: string,
       domain: "doctor" | "install" = "doctor",
+      engine: DoctorEngineMode = "zeroclaw",
     ) => {
-    agentIdRef.current = agentId;
-    const scope = (instanceScope ?? targetRef.current ?? "local").trim() || "local";
-    const executionTarget = instanceTransport === "remote_ssh" ? scope : "local";
-    targetRef.current = executionTarget;
-    instanceScopeRef.current = scope;
-    setTargetState(executionTarget);
-    domainRef.current = domain;
-    setLoading(true);
-    setMessages([]);
-    setPendingInvokes(new Map());
-    streamingRef.current = "";
-    streamEndedRef.current = false;
-    // Fresh session key per diagnosis — no inherited stale state
-    sessionKeyRef.current = `agent:${agentId}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
-    sessionActiveRef.current = true;
-    try {
-      const scope = instanceScopeRef.current;
-      let prompt: string;
-      if (systemPrompt) {
-        prompt = systemPrompt;
-      } else {
-        const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
-        const transportLine =
-          instanceTransport === "docker_local"
-            ? `Current target transport is docker_local (instance: ${scope}).`
-            : instanceTransport === "remote_ssh"
-              ? `Current target transport is remote_ssh (instance: ${scope}).`
-              : "Current target transport is local.";
-        prompt = renderPromptTemplate(doctorStartPromptTemplate(), {
-          "{{language}}": lang,
-          "{{transport_line}}": transportLine,
-          "{{context}}": context,
-        });
+      agentIdRef.current = agentId;
+      const scope = (instanceScope ?? targetRef.current ?? "local").trim() || "local";
+      const executionTarget = instanceTransport === "remote_ssh" ? scope : "local";
+      targetRef.current = executionTarget;
+      instanceScopeRef.current = scope;
+      setTargetState(executionTarget);
+      domainRef.current = domain;
+      instanceTransportRef.current = instanceTransport;
+      engineRef.current = domain === "install" ? "zeroclaw" : engine;
+      setLoading(true);
+      setError(null);
+      setMessages([]);
+      setPendingInvokes(new Map());
+      streamingRef.current = "";
+      streamEndedRef.current = false;
+      // Fresh session key per diagnosis — no inherited stale state
+      sessionKeyRef.current = `agent:${agentId}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
+      openclawSessionIdRef.current = undefined;
+      sessionActiveRef.current = engineRef.current === "zeroclaw";
+      try {
+        const scope = instanceScopeRef.current;
+        let prompt: string;
+        if (systemPrompt) {
+          prompt = systemPrompt;
+        } else {
+          const lang = i18n.language?.startsWith("zh") ? "Chinese (简体中文)" : "English";
+          const transportLine =
+            instanceTransport === "docker_local"
+              ? `Current target transport is docker_local (instance: ${scope}).`
+              : instanceTransport === "remote_ssh"
+                ? `Current target transport is remote_ssh (instance: ${scope}).`
+                : "Current target transport is local.";
+          prompt = renderPromptTemplate(doctorStartPromptTemplate(), {
+            "{{language}}": lang,
+            "{{transport_line}}": transportLine,
+            "{{context}}": context,
+          });
+        }
+        if (domain === "install") {
+          await api.installStartSession(prompt, sessionKeyRef.current, agentId, scope);
+        } else if (engineRef.current === "zeroclaw") {
+          await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId, scope);
+        } else {
+          const chatMessageId = nextMsgId();
+          setConnected(true);
+          setBridgeConnected(false);
+          const sessionKeyForRequest = sessionKeyRef.current;
+          try {
+            const currentSessionId = openclawSessionIdRef.current ?? sessionKeyRef.current;
+            const response = instanceTransportRef.current === "remote_ssh"
+              ? await api.remoteChatViaOpenclaw(scope, agentId, prompt, currentSessionId)
+              : await api.chatViaOpenclaw(agentId, prompt, currentSessionId);
+            if (
+              sessionKeyRef.current !== sessionKeyForRequest
+              || engineRef.current !== "openclaw"
+            ) {
+              return;
+            }
+            const assistantText = extractOpenclawText(response as Record<string, unknown>);
+            const restoredSessionId = extractOpenclawSessionId(response as Record<string, unknown>);
+            if (restoredSessionId) {
+              openclawSessionIdRef.current = restoredSessionId;
+            }
+            if (!assistantText) {
+              throw new Error("No text returned from openclaw diagnosis");
+            }
+            setMessages((prev) => [...prev, {
+              id: chatMessageId,
+              role: "assistant",
+              content: assistantText,
+            }]);
+            setLoading(false);
+          } catch (err) {
+            if (
+              sessionKeyRef.current !== sessionKeyForRequest
+              || engineRef.current !== "openclaw"
+            ) {
+              return;
+            }
+            setConnected(false);
+            throw err;
+          }
+        }
+      } catch (err) {
+        setError(`Start diagnosis failed: ${err}`);
+        setLoading(false);
       }
-      if (domain === "install") {
-        await api.installStartSession(prompt, sessionKeyRef.current, agentId, scope);
-      } else {
-        await api.doctorStartDiagnosis(prompt, sessionKeyRef.current, agentId, scope);
-      }
-    } catch (err) {
-      setError(`Start diagnosis failed: ${err}`);
-      setLoading(false);
-    }
-  }, []);
+    }, []);
 
   const sendMessage = useCallback(async (message: string) => {
     setLoading(true);
     streamingRef.current = "";
     setMessages((prev) => [...prev, { id: nextMsgId(), role: "user", content: message }]);
+    const sessionKeyForRequest = sessionKeyRef.current;
+    const engineForRequest = engineRef.current;
     try {
       if (domainRef.current === "install") {
         await api.installSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
+      } else if (engineRef.current === "openclaw") {
+        const currentSessionId = openclawSessionIdRef.current ?? sessionKeyRef.current;
+        const response = instanceTransportRef.current === "remote_ssh"
+          ? await api.remoteChatViaOpenclaw(
+            instanceScopeRef.current,
+            agentIdRef.current,
+            message,
+            currentSessionId,
+          )
+          : await api.chatViaOpenclaw(agentIdRef.current, message, currentSessionId);
+        if (
+          sessionKeyRef.current !== sessionKeyForRequest
+          || engineRef.current !== "openclaw"
+        ) {
+          return;
+        }
+        const assistantText = extractOpenclawText(response as Record<string, unknown>);
+        const restoredSessionId = extractOpenclawSessionId(response as Record<string, unknown>);
+        if (restoredSessionId) {
+          openclawSessionIdRef.current = restoredSessionId;
+        }
+        if (!assistantText) {
+          throw new Error("No text returned from openclaw diagnosis");
+        }
+        setMessages((prev) => [...prev, { id: nextMsgId(), role: "assistant", content: assistantText }]);
+        setLoading(false);
       } else {
         await api.doctorSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
       }
     } catch (err) {
+      if (
+        sessionKeyRef.current !== sessionKeyForRequest
+        || engineRef.current !== engineForRequest
+      ) {
+        return;
+      }
       setError(`Send message failed: ${err}`);
       setLoading(false);
     }
   }, []);
 
   const approveInvoke = useCallback(async (invokeId: string) => {
+    if (domainRef.current === "doctor" && engineRef.current === "openclaw") {
+      return;
+    }
     setMessages((prev) =>
       prev.map((m) => {
         if (m.invoke?.id === invokeId && m.role === "tool-call") {
@@ -477,6 +698,9 @@ export function useDoctorAgent() {
   }, []);
 
   const rejectInvoke = useCallback(async (invokeId: string, reason = "User rejected") => {
+    if (domainRef.current === "doctor" && engineRef.current === "openclaw") {
+      return;
+    }
     setPendingInvokes((prev) => {
       const next = new Map(prev);
       next.delete(invokeId);
@@ -506,6 +730,8 @@ export function useDoctorAgent() {
     setApprovedPatterns(new Set());
     streamingRef.current = "";
     streamEndedRef.current = false;
+    openclawSessionIdRef.current = undefined;
+    sessionKeyRef.current = `agent:${agentIdRef.current}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
   }, []);
 
   return {

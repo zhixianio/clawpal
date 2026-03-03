@@ -623,6 +623,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let result = SshSession::connect(&cfg).await;
         assert!(result.is_err());
@@ -639,6 +640,7 @@ mod tests {
             auth_method: "password".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let result = SshSession::connect(&cfg).await;
         assert!(result.is_err());
@@ -659,6 +661,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: Some("~/.ssh/id_test".to_string()),
             password: None,
+            passphrase: None,
         };
         let resolved = resolve_target(&cfg).expect("resolve");
         assert_eq!(resolved.host, "example.com");
@@ -678,6 +681,7 @@ mod tests {
             auth_method: "key".to_string(),
             key_path: None,
             password: None,
+            passphrase: None,
         };
         let session = SshSession {
             config: cfg,
@@ -689,5 +693,229 @@ mod tests {
         assert!(joined.contains("BatchMode=yes"));
         assert!(joined.contains("ServerAliveInterval="));
         assert!(joined.contains("ServerAliveCountMax="));
+    }
+
+    #[test]
+    fn legacy_args_include_identity_file_when_set() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            auth_method: "key".to_string(),
+            key_path: Some("~/.ssh/my_key".to_string()),
+            password: None,
+            passphrase: None,
+        };
+        let session = SshSession {
+            config: cfg,
+            backend: Backend::Legacy,
+        };
+        let args = session.legacy_common_ssh_args();
+        assert!(args.contains(&"-i".to_string()));
+        assert!(args.contains(&"~/.ssh/my_key".to_string()));
+    }
+
+    #[test]
+    fn legacy_args_omit_identity_file_when_empty() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            auth_method: "key".to_string(),
+            key_path: Some("   ".to_string()),
+            password: None,
+            passphrase: None,
+        };
+        let session = SshSession {
+            config: cfg,
+            backend: Backend::Legacy,
+        };
+        let args = session.legacy_common_ssh_args();
+        assert!(!args.contains(&"-i".to_string()));
+    }
+
+    #[test]
+    fn legacy_destination_with_username() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "myhost.com".to_string(),
+            port: 22,
+            username: "deploy".to_string(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        let session = SshSession {
+            config: cfg,
+            backend: Backend::Legacy,
+        };
+        assert_eq!(session.legacy_destination(), "deploy@myhost.com");
+    }
+
+    #[test]
+    fn legacy_destination_without_username() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "myhost.com".to_string(),
+            port: 22,
+            username: String::new(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        let session = SshSession {
+            config: cfg,
+            backend: Backend::Legacy,
+        };
+        assert_eq!(session.legacy_destination(), "myhost.com");
+    }
+
+    #[test]
+    fn legacy_destination_whitespace_username() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "myhost.com".to_string(),
+            port: 22,
+            username: "   ".to_string(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        let session = SshSession {
+            config: cfg,
+            backend: Backend::Legacy,
+        };
+        // trim().is_empty() → falls through to just host
+        assert_eq!(session.legacy_destination(), "myhost.com");
+    }
+
+    #[test]
+    fn legacy_args_use_custom_port() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "example.com".to_string(),
+            port: 2222,
+            username: "user".to_string(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        let session = SshSession {
+            config: cfg,
+            backend: Backend::Legacy,
+        };
+        let args = session.legacy_common_ssh_args();
+        let port_idx = args.iter().position(|a| a == "-p").expect("-p flag");
+        assert_eq!(args[port_idx + 1], "2222");
+    }
+
+    #[test]
+    fn resolve_target_defaults_port_zero_to_22() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "example.com".to_string(),
+            port: 0,
+            username: "alice".to_string(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        let resolved = resolve_target(&cfg).expect("resolve");
+        assert_eq!(resolved.port, 22);
+    }
+
+    #[test]
+    fn resolve_target_falls_back_username_from_env() {
+        let cfg = SshHostConfig {
+            id: "ssh:test".to_string(),
+            label: "Test".to_string(),
+            host: "example.com".to_string(),
+            port: 22,
+            username: String::new(),
+            auth_method: "key".to_string(),
+            key_path: None,
+            password: None,
+            passphrase: None,
+        };
+        let resolved = resolve_target(&cfg).expect("resolve");
+        // Should fall back to $USER / $USERNAME / "root" — just ensure it's not empty
+        assert!(!resolved.username.is_empty());
+    }
+
+    #[test]
+    fn shell_escape_handles_simple_string() {
+        assert_eq!(shell_escape("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_escape_handles_single_quotes() {
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_escape_handles_spaces_and_special() {
+        assert_eq!(shell_escape("my file (1)"), "'my file (1)'");
+    }
+
+    #[test]
+    fn ssh_error_display_messages() {
+        let e = SshError::Connect("timeout".to_string());
+        assert!(e.to_string().contains("timeout"));
+
+        let e = SshError::Auth("bad key".to_string());
+        assert!(e.to_string().contains("bad key"));
+
+        let e = SshError::Channel("closed".to_string());
+        assert!(e.to_string().contains("closed"));
+
+        let e = SshError::CommandFailed("exit 1".to_string());
+        assert!(e.to_string().contains("exit 1"));
+
+        let e = SshError::InvalidConfig("empty".to_string());
+        assert!(e.to_string().contains("empty"));
+
+        let e = SshError::Sftp("io error".to_string());
+        assert!(e.to_string().contains("io error"));
+    }
+
+    #[test]
+    fn candidate_key_paths_returns_explicit_path_only() {
+        let target = ResolvedTarget {
+            host: "example.com".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            key_path: Some("/custom/key".to_string()),
+        };
+        let paths = candidate_key_paths(&target);
+        assert_eq!(paths, vec!["/custom/key"]);
+    }
+
+    #[test]
+    fn candidate_key_paths_returns_defaults_when_no_explicit() {
+        let target = ResolvedTarget {
+            host: "example.com".to_string(),
+            port: 22,
+            username: "alice".to_string(),
+            key_path: None,
+        };
+        let paths = candidate_key_paths(&target);
+        // Should include id_ed25519 and id_rsa at minimum (may be empty if no home dir)
+        for p in &paths {
+            assert!(p.contains("id_ed25519") || p.contains("id_rsa"));
+        }
     }
 }

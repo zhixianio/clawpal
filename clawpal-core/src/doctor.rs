@@ -840,10 +840,70 @@ if [ -n \"$first\" ]; then printf \"%s\" \"$first\"; else printf \"%s\" \"$root/
 }
 
 pub fn remote_gateway_error_log_tail_script(lines: usize) -> String {
-    format!(
-        "tail -{} \"${{OPENCLAW_STATE_DIR:-${{OPENCLAW_HOME:-$HOME/.openclaw}}}}/logs/gateway.err.log\" 2>/dev/null || echo ''",
-        lines
-    )
+    remote_gateway_log_tail_script(lines, "gateway.err")
+}
+
+pub fn remote_gateway_log_tail_script(lines: usize, filename: &str) -> String {
+    let file = filename.trim_start_matches(".log");
+    let mut script = String::new();
+    script.push_str(
+        "gateway_data_root=\"${CLAWPAL_DATA_DIR:-${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}}\"; ",
+    );
+    script.push_str("log_path=\"$gateway_data_root/logs/");
+    script.push_str(file);
+    script.push_str(".log\"; ");
+    script.push_str("for base in ");
+    script.push_str("\"$gateway_data_root\" ");
+    script.push_str("\"$gateway_data_root/.openclaw\" ");
+    script.push_str("\"$gateway_data_root/.clawpal\" ");
+    script.push_str("\"$OPENCLAW_STATE_DIR\" ");
+    script.push_str("\"$OPENCLAW_STATE_DIR/.openclaw\" ");
+    script.push_str("\"$OPENCLAW_STATE_DIR/.clawpal\" ");
+    script.push_str("\"$OPENCLAW_HOME\" ");
+    script.push_str("\"$OPENCLAW_HOME/.openclaw\" ");
+    script.push_str("\"$OPENCLAW_HOME/.clawpal\" ");
+    script.push_str("\"$HOME/.openclaw\" ");
+    script.push_str("\"$HOME/.clawpal\"; ");
+    script.push_str("do ");
+    script.push_str("candidate=\"$base/logs/");
+    script.push_str(file);
+    script.push_str(".log\"; ");
+    script.push_str("[ -f \"$candidate\" ] && log_path=\"$candidate\" && break; ");
+    script.push_str("done; ");
+    script.push_str("tail -");
+    script.push_str(&lines.to_string());
+    script.push_str(" \"$log_path\" 2>/dev/null || echo ''");
+    script
+}
+
+pub fn remote_clawpal_log_tail_script(lines: usize, filename: &str) -> String {
+    let file = filename.trim_start_matches(".log");
+    let mut script = String::new();
+    script.push_str(
+        "clawpal_data_root=\"${CLAWPAL_DATA_DIR:-${OPENCLAW_STATE_DIR:-${OPENCLAW_HOME:-$HOME/.openclaw}}}\"; ",
+    );
+    script.push_str("log_path=\"$clawpal_data_root/logs/");
+    script.push_str(file);
+    script.push_str(".log\"; ");
+    script.push_str("for base in ");
+    script.push_str("\"$clawpal_data_root\" ");
+    script.push_str("\"$clawpal_data_root/.clawpal\" ");
+    script.push_str("\"$OPENCLAW_STATE_DIR\" ");
+    script.push_str("\"$OPENCLAW_STATE_DIR/.clawpal\" ");
+    script.push_str("\"$OPENCLAW_HOME\" ");
+    script.push_str("\"$OPENCLAW_HOME/.clawpal\" ");
+    script.push_str("\"$HOME/.openclaw/.clawpal\" ");
+    script.push_str("\"$HOME/.clawpal\"; ");
+    script.push_str("do ");
+    script.push_str("candidate=\"$base/logs/");
+    script.push_str(file);
+    script.push_str(".log\"; ");
+    script.push_str("[ -f \"$candidate\" ] && log_path=\"$candidate\" && break; ");
+    script.push_str("done; ");
+    script.push_str("tail -");
+    script.push_str(&lines.to_string());
+    script.push_str(" \"$log_path\" 2>/dev/null || echo ''");
+    script
 }
 
 pub fn remote_openclaw_fix_find_dir_script() -> &'static str {
@@ -1303,6 +1363,27 @@ mod tests {
         let script = remote_gateway_error_log_tail_script(100);
         assert!(script.contains("tail -100"));
         assert!(script.contains("gateway.err.log"));
+    }
+
+    #[test]
+    fn remote_gateway_log_tail_script_supports_generic_log_file() {
+        let script = remote_gateway_log_tail_script(77, "gateway");
+        assert!(script.contains("tail -77"));
+        assert!(script.contains("gateway.log"));
+        assert!(script.contains("OPENCLAW_STATE_DIR"));
+        assert!(script.contains("\"$gateway_data_root/.openclaw\""));
+        assert!(script.contains("for base in"));
+    }
+
+    #[test]
+    fn remote_clawpal_log_tail_script_uses_clawpal_data_root() {
+        let script = remote_clawpal_log_tail_script(64, "app");
+        assert!(script.contains("tail -64"));
+        assert!(script.contains("CLAWPAL_DATA_DIR"));
+        assert!(script.contains("OPENCLAW_STATE_DIR"));
+        assert!(script.contains(".clawpal/logs/app.log"));
+        assert!(script.contains("/.clawpal/logs/app.log"));
+        assert!(script.contains("for base in"));
     }
 
     #[test]

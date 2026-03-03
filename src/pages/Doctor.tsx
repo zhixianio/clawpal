@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
-import { useApi, hasGuidanceEmitted } from "@/lib/use-api";
+import { FileTextIcon, DownloadIcon } from "lucide-react";
+import { toast } from "sonner";
+import { buildCacheKey, hasGuidanceEmitted, subscribeToCacheKey, useApi } from "@/lib/use-api";
+import { api } from "@/lib/api";
 import { useInstance } from "@/lib/instance-context";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
 import type {
@@ -39,6 +42,7 @@ import { DoctorChat } from "@/components/DoctorChat";
 import { TokenBadge } from "@/components/TokenBadge";
 import { ModelSwitcher } from "@/components/ModelSwitcher";
 import { SessionAnalysisPanel } from "@/components/SessionAnalysisPanel";
+import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
 import type { BackupInfo } from "@/lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
 
@@ -148,6 +152,8 @@ export function Doctor({
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
   const [backingUp, setBackingUp] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
+  const [deletingBackupName, setDeletingBackupName] = useState<string | null>(null);
+  const [fadingOutBackupName, setFadingOutBackupName] = useState<string | null>(null);
 
   // Full-auto confirmation dialog
   const [fullAutoConfirmOpen, setFullAutoConfirmOpen] = useState(false);
@@ -158,10 +164,33 @@ export function Doctor({
   const [logsTab, setLogsTab] = useState<"app" | "error">("app");
   const [logsContent, setLogsContent] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState("");
+  const [showZeroclawDiagnosis, setShowZeroclawDiagnosis] = useState(false);
+  const [zeroclawDoctorUiLoaded, setZeroclawDoctorUiLoaded] = useState(false);
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueState, setRescueState] = useState<RescueUiState>(createInitialRescueUiState);
   const [primaryState, setPrimaryState] = useState<PrimaryRecoveryState>(createInitialPrimaryRecoveryState);
+  const [activeDiagnosisEngine, setActiveDiagnosisEngine] = useState<"openclaw" | "zeroclaw" | null>(null);
   const lastAutoLaunchKeyRef = useRef<string | null>(null);
+  const agentSourceLabel = showZeroclawDiagnosis
+    ? t("doctor.engineZeroclaw")
+    : t("installChat.letAiHelp");
+  const diagnosisEngine = showZeroclawDiagnosis ? "zeroclaw" : "openclaw";
+  const activeSourceLabel = activeDiagnosisEngine
+    ? activeDiagnosisEngine === "zeroclaw"
+      ? t("doctor.engineZeroclaw")
+      : t("installChat.letAiHelp")
+    : agentSourceLabel;
+  const letAiConnectionState: "checking" | "connected" | "disconnected" =
+    activeDiagnosisEngine === "openclaw"
+      ? (diagnosing || startupStage !== "idle")
+        ? "checking"
+        : doctor.connected
+          ? "connected"
+          : "disconnected"
+      : doctor.connected
+        ? "connected"
+        : "disconnected";
 
   const {
     activating: rescueActivating,
@@ -179,7 +208,6 @@ export function Doctor({
     checkResult: primaryCheckResult,
     checkError: primaryCheckError,
     repairing: primaryRepairing,
-    repairingIssueId: primaryRepairingIssueId,
     repairResult: primaryRepairResult,
     repairError: primaryRepairError,
   } = primaryState;
@@ -198,6 +226,7 @@ export function Doctor({
   useEffect(() => {
     doctor.reset();
     doctor.disconnect();
+    setActiveDiagnosisEngine(null);
     setRescueState(createInitialRescueUiState());
     setPrimaryState(createInitialPrimaryRecoveryState());
     doctor.setTarget(isRemote ? instanceId : "local");
@@ -228,7 +257,17 @@ export function Doctor({
   // Effective model: session override takes priority over global runtime model.
   const effectiveModel = sessionModelOverride ?? runtimeModel;
 
-  const handleStartDiagnosis = async (extraContext?: string) => {
+  const handleStartDiagnosis = async (
+    extraContext?: string,
+    overrideEngine?: "zeroclaw" | "openclaw"
+  ) => {
+    const engine = overrideEngine ?? diagnosisEngine;
+    if (engine === "zeroclaw" && !zeroclawDoctorUiLoaded) {
+      setStartError(t("doctor.loading"));
+      return;
+    }
+
+    setActiveDiagnosisEngine(engine);
     setStartError(null);
     setDiagnosing(true);
     setStartupStage("connecting");
@@ -255,7 +294,9 @@ export function Doctor({
         setRemoteConnState("connected");
       }
 
-      await doctor.connect();
+      if (engine === "zeroclaw") {
+        await doctor.connect();
+      }
       setStartupStage("collecting");
       const baseContext = isRemote
         ? await ua.collectDoctorContextRemote(instanceId)
@@ -269,10 +310,19 @@ export function Doctor({
           ? "docker_local"
           : "local";
       setStartupStage("starting");
-      await doctor.startDiagnosis(context, "main", diagnosisScope, diagnosisTransport);
+      await doctor.startDiagnosis(
+        context,
+        "main",
+        diagnosisScope,
+        diagnosisTransport,
+        undefined,
+        "doctor",
+        engine,
+      );
     } catch (err) {
       const msg = String(err);
       setStartError(msg);
+      setActiveDiagnosisEngine(null);
       if (isRemote) {
         setRemoteConnState("disconnected");
       }
@@ -293,31 +343,63 @@ export function Doctor({
   const handleStopDiagnosis = async () => {
     await doctor.disconnect();
     doctor.reset();
+    setActiveDiagnosisEngine(null);
   };
 
   // Logs helpers
   const fetchLog = (source: "clawpal" | "gateway", which: "app" | "error") => {
     setLogsLoading(true);
+    setLogsError("");
     const fn = source === "clawpal"
-      ? (which === "app" ? ua.readAppLog : ua.readErrorLog)
+      ? (which === "app" ? api.readAppLog : api.readErrorLog)
       : (which === "app" ? ua.readGatewayLog : ua.readGatewayErrorLog);
     fn(200)
       .then((text) => {
-        setLogsContent(text);
+        setLogsContent(text.trim() ? text : t("doctor.noLogs"));
         setTimeout(() => {
           if (logsContentRef.current) {
             logsContentRef.current.scrollTop = logsContentRef.current.scrollHeight;
           }
         }, 50);
       })
-      .catch(() => setLogsContent(""))
+      .catch((error) => {
+        const text = error instanceof Error ? error.message : String(error);
+        setLogsContent("");
+        setLogsError(text || t("doctor.noLogs"));
+      })
       .finally(() => setLogsLoading(false));
   };
 
   const openLogs = (source: "clawpal" | "gateway") => {
     setLogsSource(source);
     setLogsTab("app");
+    setLogsContent("");
+    setLogsError("");
     setLogsOpen(true);
+  };
+
+  const exportLogs = () => {
+    try {
+      const content = logsContent || logsError || t("doctor.noLogs");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `${logsSource}-${logsTab}-${timestamp}.log`;
+      const blob = new Blob([content], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.style.display = "none";
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 0);
+      toast.success(t("doctor.exportLogsSuccess", { filename }));
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      toast.error(t("doctor.exportLogsFailed", { error: text }));
+    }
   };
 
   const refreshRescueStatus = async (isCancelled?: () => boolean) => {
@@ -618,14 +700,14 @@ export function Doctor({
   }, [instanceId, isRemote, isConnected]);
 
   useEffect(() => {
-    if (!active || !launchGuidance) return;
+    if (!active || !launchGuidance || !zeroclawDoctorUiLoaded) return;
     const launchKey = `${launchGuidance.instanceId}:${launchGuidance.operation}:${launchGuidance.createdAt}`;
     if (lastAutoLaunchKeyRef.current === launchKey) return;
     lastAutoLaunchKeyRef.current = launchKey;
     onLaunchGuidanceConsumed?.(launchGuidance.instanceId);
     void handleStartDiagnosis(buildLaunchGuidanceContext(launchGuidance));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, launchGuidance, onLaunchGuidanceConsumed]);
+  }, [active, launchGuidance, onLaunchGuidanceConsumed, zeroclawDoctorUiLoaded]);
 
   useEffect(() => {
     if (logsOpen) fetchLog(logsSource, logsTab);
@@ -655,12 +737,47 @@ export function Doctor({
     };
   }, [ua, instanceId, isRemote]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadZeroclawDoctorUiPreference = () => {
+      ua.getAppPreferences()
+        .then((prefs) => {
+          if (!cancelled) {
+            setShowZeroclawDiagnosis(Boolean(prefs.showZeroclawDoctorUi));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setShowZeroclawDiagnosis(false);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setZeroclawDoctorUiLoaded(true);
+          }
+        });
+    };
+
+    loadZeroclawDoctorUiPreference();
+
+    const cacheKey = buildCacheKey("__global__", "getAppPreferences", []);
+    const unsubscribe = subscribeToCacheKey(cacheKey, loadZeroclawDoctorUiPreference);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [ua]);
+
   // Backups
   const refreshBackups = useCallback(() => {
     ua.listBackups().then(setBackups).catch((e) => console.error("Failed to load backups:", e));
   }, [ua]);
   useEffect(refreshBackups, [refreshBackups]);
-  const showLegacyRecoveryCards = false;
+  // Keep legacy recovery entry points visible, but keep zeroclaw-specific
+  // diagnosis UI hidden while the underlying logic remains unchanged.
+  const showLegacyRecoveryCards = true;
   const isWsl2 = instanceId.startsWith("wsl2:");
   const displayedDoctorTarget = isRemote || isDocker || isWsl2 ? instanceId : "local";
   const instanceTypeLabel = isRemote
@@ -675,436 +792,487 @@ export function Doctor({
   return (
     <section>
       <h2 className="text-2xl font-bold mb-4">{t("doctor.title")}</h2>
-
-      {showLegacyRecoveryCards && <Card className="mb-4 gap-2 py-4">
-        <CardHeader className="pb-0">
-          <CardTitle className="text-base">{t("doctor.rescueBotTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-sm text-muted-foreground">{t("doctor.rescueBotHint")}</p>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleActivateRescueBot}
-                disabled={
-                  rescueActivating
-                  || rescueDeactivating
-                  || rescueUnsetting
-                  || rescueStatusChecking
-                  || (isRemote && !isConnected)
-                }
-              >
-                {rescueActivating ? t("doctor.activatingRescueBot") : t("doctor.activateRescueBot")}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleDeactivateRescueBot}
-                disabled={
-                  rescueActivating
-                  || rescueDeactivating
-                  || rescueUnsetting
-                  || rescueStatusChecking
-                  || rescueConfigured !== true
-                  || (isRemote && !isConnected)
-                }
-              >
-                {rescueDeactivating ? t("doctor.deactivatingRescueBot") : t("doctor.deactivateRescueBot")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleUnsetRescueBot}
-                disabled={
-                  rescueActivating
-                  || rescueDeactivating
-                  || rescueUnsetting
-                  || rescueStatusChecking
-                  || rescueConfigured !== true
-                  || (isRemote && !isConnected)
-                }
-              >
-                {rescueUnsetting ? t("doctor.unsettingRescueBot") : t("doctor.unsetRescueBot")}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  void refreshRescueStatus();
-                }}
-                disabled={
-                  rescueActivating
-                  || rescueDeactivating
-                  || rescueUnsetting
-                  || rescueStatusChecking
-                  || (isRemote && !isConnected)
-                }
-              >
-                {rescueStatusChecking ? t("doctor.rescueBotChecking") : t("doctor.refresh")}
-              </Button>
-            </div>
-          </div>
-          {rescueMessage && (
-            <div
-              className={`mt-3 rounded-md border px-3 py-2 text-sm ${
-                rescueMessageTone === "error"
-                  ? "border-destructive/40 bg-destructive/10 text-destructive"
-                  : rescueMessageTone === "success"
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                    : "border-border/50 bg-muted/40 text-muted-foreground"
-              }`}
-            >
-              <div>{rescueMessage}</div>
-              {rescueMessageTone === "error" && (
-                <div className="mt-2">
+      <div className="flex flex-col">
+        {showZeroclawDiagnosis && (
+          <Card className="gap-2 py-4 mb-4">
+            <CardHeader className="pb-0">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <CardTitle className="text-base">{t("doctor.engineZeroclaw")}</CardTitle>
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  <span className="text-xs text-muted-foreground">{t("doctor.targetExecutionLabel")}</span>
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{displayedDoctorTarget}</code>
+                  <Badge variant="outline" className="text-[10px]">{instanceTypeLabel}</Badge>
+                  {isRemote && (
+                    <Badge
+                      variant={remoteConnState === "disconnected" ? "destructive" : "outline"}
+                      className="text-[10px]"
+                    >
+                      {remoteConnState === "checking"
+                        ? t("doctor.connecting")
+                        : remoteConnState === "connected"
+                          ? t("doctor.connected")
+                          : t("doctor.disconnected")}
+                    </Badge>
+                  )}
+                  {isPureLocal && (
+                    <span className="text-[11px] text-amber-700 dark:text-amber-300">
+                      {t("doctor.targetExecutionLocalWarning")}
+                    </span>
+                  )}
+                  <Button variant="outline" size="sm" onClick={() => openLogs("clawpal")}>
+                    <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
+                    {t("doctor.clawpalLogs")}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
-                    {t("doctor.viewGatewayLogs")}
+                    <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
+                    {t("doctor.gatewayLogs")}
                   </Button>
                 </div>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>}
-
-      {showLegacyRecoveryCards && <Card className="mb-4 gap-2 py-4">
-        <CardHeader className="pb-0">
-          <CardTitle className="text-base">{t("doctor.primaryRecoveryTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <p className="text-sm text-muted-foreground">{t("doctor.primaryRecoveryHint")}</p>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleCheckPrimaryViaRescue}
-                disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
-              >
-                {primaryCheckLoading
-                  ? t("doctor.primaryChecking")
-                  : t("doctor.primaryCheckNow")}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleRepairPrimaryViaRescue}
-                disabled={
-                  primaryCheckLoading
-                  || primaryRepairing
-                  || !primaryCheckResult
-                  || (isRemote && !isConnected)
-                }
-              >
-                {primaryRepairing
-                  ? t("doctor.primaryRepairing")
-                  : t("doctor.primaryRepairNow", { count: countSafeFixableIssues(primaryCheckResult) })}
-              </Button>
-            </div>
-          </div>
-          {primaryCheckError && (
-            <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              <div>{primaryCheckError}</div>
-              <div className="mt-2">
-                <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
-                  {t("doctor.viewGatewayLogs")}
-                </Button>
               </div>
-            </div>
-          )}
-          {primaryRepairError && (
-            <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              <div>{primaryRepairError}</div>
-              <div className="mt-2">
-                <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
-                  {t("doctor.viewGatewayLogs")}
-                </Button>
-              </div>
-            </div>
-          )}
-          {primaryCheckResult && (
-            <div className="mt-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="text-sm">
-                  {t("doctor.primaryCheckedAt", { time: formatCheckedAt(primaryCheckResult.checkedAt) })}
-                </div>
-                <Badge
-                  variant={primaryCheckResult.status === "healthy" ? "outline" : "destructive"}
-                  className={primaryCheckResult.status === "healthy" ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : undefined}
-                >
-                  {primaryStatusLabel(primaryCheckResult.status)}
-                </Badge>
-              </div>
-              <div className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {t("doctor.primaryChecks")}
-              </div>
-              <div className="mt-2 grid gap-2">
-                {primaryCheckResult.checks.map((check) => (
-                  <div key={check.id} className="rounded-md border border-border/50 bg-background/60 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm">{check.title}</div>
-                        {!check.ok && check.id === "rescue.profile.configured" && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 px-2 text-[11px]"
-                            onClick={handleActivateRescueBot}
-                            disabled={
-                              rescueActivating
-                              || rescueDeactivating
-                              || rescueUnsetting
-                              || rescueStatusChecking
-                              || (isRemote && !isConnected)
-                            }
-                          >
-                            {rescueActivating ? t("doctor.activatingRescueBot") : t("doctor.activateRescueBot")}
-                          </Button>
-                        )}
-                        {!check.ok && check.id.startsWith("primary.") && countSafeFixableIssues(primaryCheckResult) > 0 && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 px-2 text-[11px]"
-                            onClick={handleRepairPrimaryViaRescue}
-                            disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
-                          >
-                            {primaryRepairing ? t("doctor.primaryRepairing") : t("doctor.primaryQuickFix")}
-                          </Button>
-                        )}
-                      </div>
-                      <Badge variant={check.ok ? "outline" : "destructive"} className="text-[10px]">
-                        {check.ok ? t("doctor.primaryCheckPass") : t("doctor.primaryCheckFail")}
-                      </Badge>
+            </CardHeader>
+            <CardContent>
+              {!doctor.connected && doctor.messages.length === 0 ? (
+                <>
+                  {startError && (
+                    <div className="mb-3 text-sm text-destructive">{startError}</div>
+                  )}
+                  {doctor.error && (
+                    <div className="mb-3 text-sm text-destructive">{doctor.error}</div>
+                  )}
+                  {startupHint && (
+                    <div className="mb-3 text-sm text-muted-foreground animate-pulse">
+                      {startupHint}
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{check.detail}</div>
+                  )}
+                  <Button
+                    onClick={() => {
+                      void handleStartDiagnosis(undefined, "zeroclaw");
+                    }}
+                    disabled={diagnosing || !zeroclawDoctorUiLoaded}
+                  >
+                    {diagnosing
+                      ? t("doctor.connecting")
+                      : t("doctor.startDiagnosis")}
+                  </Button>
+                </>
+              ) : !doctor.connected && doctor.messages.length > 0 ? (
+                <>
+                  <div className="flex items-center justify-between mb-3 p-2 rounded-md bg-destructive/10 border border-destructive/20">
+                    <span className="text-sm text-destructive">
+                      {doctor.error || t("doctor.disconnected")}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" onClick={() => doctor.reconnect()}>
+                        {t("doctor.reconnect")}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                        {t("doctor.stopDiagnosis")}
+                      </Button>
+                    </div>
                   </div>
-                ))}
-              </div>
-              <div className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {t("doctor.primaryIssues")}
-              </div>
-              {primaryCheckResult.issues.length === 0 ? (
-                <div className="mt-2 text-sm text-emerald-700 dark:text-emerald-300">
-                  {t("doctor.primaryNoIssues")}
-                </div>
+                  <DoctorChat
+                    messages={doctor.messages}
+                    loading={false}
+                    error={null}
+                    connected={false}
+                    onSendMessage={doctor.sendMessage}
+                    onApproveInvoke={doctor.approveInvoke}
+                    onRejectInvoke={doctor.rejectInvoke}
+                  />
+                </>
               ) : (
-                <div className="mt-2 grid gap-2">
-                  {primaryCheckResult.issues.map((issue) => (
-                    <div key={issue.id} className="rounded-md border border-destructive/30 bg-destructive/5 p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <div className="text-sm">{issue.message}</div>
-                          {issue.source === "primary" && issue.autoFixable && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-2 text-[11px]"
-                              onClick={() => {
-                                void handleRepairPrimaryIssue(issue);
-                              }}
-                              disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
-                            >
-                              {primaryRepairing && primaryRepairingIssueId === issue.id
-                                ? t("doctor.primaryIssueFixing")
-                                : t("doctor.primaryIssueFix")}
-                            </Button>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Badge variant="outline" className="text-[10px]">
-                            {issue.source === "rescue"
-                              ? t("doctor.primaryIssueSourceRescue")
-                              : t("doctor.primaryIssueSourcePrimary")}
-                          </Badge>
-                          <Badge variant={issue.severity === "error" ? "destructive" : "outline"} className="text-[10px]">
-                            {issue.severity}
-                          </Badge>
-                        </div>
-                      </div>
-                      {issue.fixHint && (
-                        <div className="mt-1 text-xs text-muted-foreground">{issue.fixHint}</div>
-                      )}
+                <>
+                  {startupHint && (
+                    <div className="mb-3 text-sm text-muted-foreground animate-pulse">
+                      {startupHint}
                     </div>
-                  ))}
-                </div>
+                  )}
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className="text-xs">
+                        {activeSourceLabel}
+                      </Badge>
+                      <Badge variant="outline" className="text-xs flex items-center gap-1.5">
+                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                        {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
+                      </Badge>
+                      <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
+                      <ModelSwitcher sessionId={doctorSessionId} defaultModel={runtimeModel} onModelChange={setSessionModelOverride} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={doctor.fullAuto}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setFullAutoConfirmOpen(true);
+                            } else {
+                              doctor.setFullAuto(false);
+                            }
+                          }}
+                          className="accent-primary"
+                        />
+                        {t("doctor.fullAuto")}
+                      </label>
+                      <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                        {t("doctor.stopDiagnosis")}
+                      </Button>
+                    </div>
+                  </div>
+                  <DoctorChat
+                    messages={doctor.messages}
+                    loading={doctor.loading}
+                    error={doctor.error}
+                    connected={doctor.connected}
+                    onSendMessage={doctor.sendMessage}
+                    onApproveInvoke={doctor.approveInvoke}
+                    onRejectInvoke={doctor.rejectInvoke}
+                  />
+                </>
               )}
-              {primaryRepairResult && (
-                <div className="mt-4 rounded-md border border-border/60 bg-background/70 p-3">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    {t("doctor.primaryRepairSummary")}
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                    <Badge variant="outline">
-                      {t("doctor.primaryRepairSelected", { count: primaryRepairResult.selectedIssueIds.length })}
-                    </Badge>
-                    <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
-                      {t("doctor.primaryRepairApplied", { count: primaryRepairResult.appliedIssueIds.length })}
-                    </Badge>
-                    <Badge variant="outline">
-                      {t("doctor.primaryRepairSkipped", { count: primaryRepairResult.skippedIssueIds.length })}
-                    </Badge>
-                    <Badge variant={primaryRepairResult.failedIssueIds.length > 0 ? "destructive" : "outline"}>
-                      {t("doctor.primaryRepairFailedCount", { count: primaryRepairResult.failedIssueIds.length })}
-                    </Badge>
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">
-                    {t("doctor.primaryRecheckedAt", { time: formatCheckedAt(primaryRepairResult.after.checkedAt) })}
-                  </div>
-                  <div className="mt-3 grid gap-2">
-                    {primaryRepairResult.steps.map((step) => (
-                      <div key={step.id} className="rounded-md border border-border/50 bg-muted/20 p-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-sm">{step.title}</div>
-                          <Badge variant={step.ok ? "outline" : "destructive"} className="text-[10px]">
-                            {step.ok ? t("doctor.primaryCheckPass") : t("doctor.primaryCheckFail")}
-                          </Badge>
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">{step.detail}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>}
+            </CardContent>
+          </Card>
+        )}
 
-      <Card className="gap-2 py-4">
-        <CardHeader className="pb-0">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <CardTitle className="text-base">{t("doctor.agentSource")}</CardTitle>
-            <div className="flex items-center gap-2 flex-wrap justify-end">
-              <span className="text-xs text-muted-foreground">{t("doctor.targetExecutionLabel")}</span>
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{displayedDoctorTarget}</code>
-              <Badge variant="outline" className="text-[10px]">{instanceTypeLabel}</Badge>
-              {isRemote && (
+        <Card className="gap-2 py-4 mb-4">
+          <CardHeader className="pb-0">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <CardTitle className="text-base">{t("installChat.letAiHelp")}</CardTitle>
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                <span className="text-xs text-muted-foreground">{t("doctor.targetExecutionLabel")}</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{displayedDoctorTarget}</code>
+                <Badge variant="outline" className="text-[10px]">{instanceTypeLabel}</Badge>
                 <Badge
-                  variant={remoteConnState === "disconnected" ? "destructive" : "outline"}
+                  variant={letAiConnectionState === "disconnected" ? "destructive" : "outline"}
                   className="text-[10px]"
                 >
-                  {remoteConnState === "checking"
+                  {letAiConnectionState === "checking"
                     ? t("doctor.connecting")
-                    : remoteConnState === "connected"
+                    : letAiConnectionState === "connected"
                       ? t("doctor.connected")
                       : t("doctor.disconnected")}
                 </Badge>
-              )}
-              {isPureLocal && (
-                <span className="text-[11px] text-amber-700 dark:text-amber-300">
-                  {t("doctor.targetExecutionLocalWarning")}
-                </span>
-              )}
-              <Button variant="ghost" size="sm" onClick={() => openLogs("clawpal")}>
-                {t("doctor.clawpalLogs")}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => openLogs("gateway")}>
-                {t("doctor.gatewayLogs")}
-              </Button>
+                {isPureLocal && (
+                  <span className="text-[11px] text-amber-700 dark:text-amber-300">
+                    {t("doctor.targetExecutionLocalWarning")}
+                  </span>
+                )}
+                <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                  <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
+                  {t("doctor.gatewayLogs")}
+                </Button>
+              </div>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {!doctor.connected && doctor.messages.length === 0 ? (
-            <>
-              {startError && (
-                <div className="mb-3 text-sm text-destructive">{startError}</div>
-              )}
-              {doctor.error && (
-                <div className="mb-3 text-sm text-destructive">{doctor.error}</div>
-              )}
-              {startupHint && (
-                <div className="mb-3 text-sm text-muted-foreground animate-pulse">
-                  {startupHint}
-                </div>
-              )}
-              <Button onClick={() => { void handleStartDiagnosis(); }} disabled={diagnosing}>
-                {diagnosing ? t("doctor.connecting") : t("doctor.startDiagnosis")}
-              </Button>
-            </>
-          ) : !doctor.connected && doctor.messages.length > 0 ? (
-            <>
-              {/* Disconnected mid-session — show chat with reconnect banner */}
-              <div className="flex items-center justify-between mb-3 p-2 rounded-md bg-destructive/10 border border-destructive/20">
-                <span className="text-sm text-destructive">
-                  {doctor.error || t("doctor.disconnected")}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" onClick={() => doctor.reconnect()}>
-                    {t("doctor.reconnect")}
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
-                    {t("doctor.stopDiagnosis")}
-                  </Button>
-                </div>
-              </div>
-              <DoctorChat
-                messages={doctor.messages}
-                loading={false}
-                error={null}
-                connected={false}
-                onSendMessage={doctor.sendMessage}
-                onApproveInvoke={doctor.approveInvoke}
-                onRejectInvoke={doctor.rejectInvoke}
-              />
-            </>
-          ) : (
-            <>
-              {startupHint && (
-                <div className="mb-3 text-sm text-muted-foreground animate-pulse">
-                  {startupHint}
-                </div>
-              )}
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Badge variant="outline" className="text-xs">
-                    {t("doctor.engineZeroclaw")}
-                  </Badge>
-                  <Badge variant="outline" className="text-xs flex items-center gap-1.5">
-                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                    {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
-                  </Badge>
-                  <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
-                  <ModelSwitcher sessionId={doctorSessionId} defaultModel={runtimeModel} onModelChange={setSessionModelOverride} />
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={doctor.fullAuto}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFullAutoConfirmOpen(true);
-                        } else {
-                          doctor.setFullAuto(false);
-                        }
-                      }}
-                      className="accent-primary"
-                    />
-                    {t("doctor.fullAuto")}
-                  </label>
-                  <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
-                    {t("doctor.stopDiagnosis")}
-                  </Button>
-                </div>
-              </div>
-              <DoctorChat
-                messages={doctor.messages}
-                loading={doctor.loading}
-                error={doctor.error}
-                connected={doctor.connected}
-                onSendMessage={doctor.sendMessage}
-                onApproveInvoke={doctor.approveInvoke}
-                onRejectInvoke={doctor.rejectInvoke}
-              />
-            </>
-          )}
-        </CardContent>
-      </Card>
+          </CardHeader>
+          <CardContent>
+            <Button
+              onClick={() => {
+                void handleStartDiagnosis(undefined, "openclaw");
+              }}
+              disabled={diagnosing}
+              variant={showZeroclawDiagnosis ? "outline" : "default"}
+            >
+              {diagnosing
+                ? t("doctor.connecting")
+                : t("installChat.letAiHelp")}
+            </Button>
+          </CardContent>
+        </Card>
 
+        {showLegacyRecoveryCards && (
+          <Card className="mb-4 gap-2 py-4">
+            <CardHeader className="pb-0">
+              <CardTitle className="text-base">{t("doctor.rescueBotTitle")}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-sm text-muted-foreground">{t("doctor.rescueBotHint")}</p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleActivateRescueBot}
+                    disabled={
+                      rescueActivating
+                      || rescueDeactivating
+                      || rescueUnsetting
+                      || rescueStatusChecking
+                      || (isRemote && !isConnected)
+                    }
+                  >
+                    {rescueActivating ? t("doctor.activatingRescueBot") : t("doctor.activateRescueBot")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleDeactivateRescueBot}
+                    disabled={
+                      rescueActivating
+                      || rescueDeactivating
+                      || rescueUnsetting
+                      || rescueStatusChecking
+                      || rescueConfigured !== true
+                      || (isRemote && !isConnected)
+                    }
+                  >
+                    {rescueDeactivating ? t("doctor.deactivatingRescueBot") : t("doctor.deactivateRescueBot")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleUnsetRescueBot}
+                    disabled={
+                      rescueActivating
+                      || rescueDeactivating
+                      || rescueUnsetting
+                      || rescueStatusChecking
+                      || rescueConfigured !== true
+                      || (isRemote && !isConnected)
+                    }
+                  >
+                    {rescueUnsetting ? t("doctor.unsettingRescueBot") : t("doctor.unsetRescueBot")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void refreshRescueStatus();
+                    }}
+                    disabled={
+                      rescueActivating
+                      || rescueDeactivating
+                      || rescueUnsetting
+                      || rescueStatusChecking
+                      || (isRemote && !isConnected)
+                    }
+                  >
+                    {rescueStatusChecking ? t("doctor.rescueBotChecking") : t("doctor.refresh")}
+                  </Button>
+                </div>
+              </div>
+              {rescueMessage && (
+                <div
+                  className={`mt-3 rounded-md border px-3 py-2 text-sm ${
+                    rescueMessageTone === "error"
+                      ? "border-destructive/40 bg-destructive/10 text-destructive"
+                      : rescueMessageTone === "success"
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : "border-border/50 bg-muted/40 text-muted-foreground"
+                  }`}
+                >
+                  <div>{rescueMessage}</div>
+                  {rescueMessageTone === "error" && (
+                    <div className="mt-2">
+                      <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                        {t("doctor.viewGatewayLogs")}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {rescueConfigured === true && (
+                <div className="border-t border-border/50 mt-4 pt-4">
+                  <h3 className="text-sm font-medium text-foreground/80 mb-2">{t("doctor.primaryRecoveryTitle")}</h3>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <p className="text-sm text-muted-foreground">{t("doctor.primaryRecoveryHint")}</p>
+                    <div className="flex items-center gap-2">
+                      <AsyncActionButton
+                        variant="default"
+                        size="sm"
+                        onClick={handleCheckPrimaryViaRescue}
+                        loadingText={t("doctor.primaryChecking")}
+                        disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
+                      >
+                        {t("doctor.primaryCheckNow")}
+                      </AsyncActionButton>
+                      <AsyncActionButton
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleRepairPrimaryViaRescue}
+                        loadingText={t("doctor.primaryRepairing")}
+                        disabled={
+                          primaryCheckLoading
+                          || primaryRepairing
+                          || !primaryCheckResult
+                          || (isRemote && !isConnected)
+                        }
+                      >
+                        {t("doctor.primaryRepairNow", { count: countSafeFixableIssues(primaryCheckResult) })}
+                      </AsyncActionButton>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {primaryCheckError && (
+                <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  <div>{primaryCheckError}</div>
+                  <div className="mt-2">
+                    <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                      {t("doctor.viewGatewayLogs")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {primaryRepairError && (
+                <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  <div>{primaryRepairError}</div>
+                  <div className="mt-2">
+                    <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                      {t("doctor.viewGatewayLogs")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {primaryCheckResult && (
+                <div className="mt-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="text-sm">
+                      {t("doctor.primaryCheckedAt", { time: formatCheckedAt(primaryCheckResult.checkedAt) })}
+                    </div>
+                    <Badge
+                      variant={primaryCheckResult.status === "healthy" ? "outline" : "destructive"}
+                      className={primaryCheckResult.status === "healthy" ? "border-emerald-500/40 text-emerald-700 dark:text-emerald-300" : undefined}
+                    >
+                      {primaryStatusLabel(primaryCheckResult.status)}
+                    </Badge>
+                  </div>
+                  <div className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("doctor.primaryChecks")}
+                  </div>
+                  <div className="mt-2 grid gap-2">
+                    {primaryCheckResult.checks.map((check) => (
+                      <div key={check.id} className="rounded-md border border-border/50 bg-background/60 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <div className="text-sm">{check.title}</div>
+                            {!check.ok && check.id === "rescue.profile.configured" && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[11px]"
+                                onClick={handleActivateRescueBot}
+                                disabled={
+                                  rescueActivating
+                                  || rescueDeactivating
+                                  || rescueUnsetting
+                                  || rescueStatusChecking
+                                  || (isRemote && !isConnected)
+                                }
+                              >
+                                {rescueActivating ? t("doctor.activatingRescueBot") : t("doctor.activateRescueBot")}
+                              </Button>
+                            )}
+                            {!check.ok && check.id.startsWith("primary.") && countSafeFixableIssues(primaryCheckResult) > 0 && (
+                              <AsyncActionButton
+                                variant="outline"
+                                size="sm"
+                                className="h-6 px-2 text-[11px]"
+                                onClick={handleRepairPrimaryViaRescue}
+                                loadingText={t("doctor.primaryRepairing")}
+                                disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
+                              >
+                                {t("doctor.primaryQuickFix")}
+                              </AsyncActionButton>
+                            )}
+                          </div>
+                          <Badge variant={check.ok ? "outline" : "destructive"} className="text-[10px]">
+                            {check.ok ? t("doctor.primaryCheckPass") : t("doctor.primaryCheckFail")}
+                          </Badge>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">{check.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("doctor.primaryIssues")}
+                  </div>
+                  {primaryCheckResult.issues.length === 0 ? (
+                    <div className="mt-2 text-sm text-emerald-700 dark:text-emerald-300">
+                      {t("doctor.primaryNoIssues")}
+                    </div>
+                  ) : (
+                    <div className="mt-2 grid gap-2">
+                      {primaryCheckResult.issues.map((issue) => (
+                        <div key={issue.id} className="rounded-md border border-destructive/30 bg-destructive/5 p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm">{issue.message}</div>
+                              {issue.source === "primary" && issue.autoFixable && (
+                                <AsyncActionButton
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-6 px-2 text-[11px]"
+                                  onClick={() => handleRepairPrimaryIssue(issue)}
+                                  loadingText={t("doctor.primaryIssueFixing")}
+                                  disabled={primaryCheckLoading || primaryRepairing || (isRemote && !isConnected)}
+                                >
+                                  {t("doctor.primaryIssueFix")}
+                                </AsyncActionButton>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Badge variant="outline" className="text-[10px]">
+                                {issue.source === "rescue"
+                                  ? t("doctor.primaryIssueSourceRescue")
+                                  : t("doctor.primaryIssueSourcePrimary")}
+                              </Badge>
+                              <Badge variant={issue.severity === "error" ? "destructive" : "outline"} className="text-[10px]">
+                                {issue.severity}
+                              </Badge>
+                            </div>
+                          </div>
+                          {issue.fixHint && (
+                            <div className="mt-1 text-xs text-muted-foreground">{issue.fixHint}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {primaryRepairResult && (
+                    <div className="mt-4 rounded-md border border-border/60 bg-background/70 p-3">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        {t("doctor.primaryRepairSummary")}
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="outline">
+                          {t("doctor.primaryRepairSelected", { count: primaryRepairResult.selectedIssueIds.length })}
+                        </Badge>
+                        <Badge variant="outline" className="border-emerald-500/40 text-emerald-700 dark:text-emerald-300">
+                          {t("doctor.primaryRepairApplied", { count: primaryRepairResult.appliedIssueIds.length })}
+                        </Badge>
+                        <Badge variant="outline">
+                          {t("doctor.primaryRepairSkipped", { count: primaryRepairResult.skippedIssueIds.length })}
+                        </Badge>
+                        <Badge variant={primaryRepairResult.failedIssueIds.length > 0 ? "destructive" : "outline"}>
+                          {t("doctor.primaryRepairFailedCount", { count: primaryRepairResult.failedIssueIds.length })}
+                        </Badge>
+                      </div>
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        {t("doctor.primaryRecheckedAt", { time: formatCheckedAt(primaryRepairResult.after.checkedAt) })}
+                      </div>
+                      <div className="mt-3 grid gap-2">
+                        {primaryRepairResult.steps.map((step) => (
+                          <div key={step.id} className="rounded-md border border-border/50 bg-muted/20 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm">{step.title}</div>
+                              <Badge variant={step.ok ? "outline" : "destructive"} className="text-[10px]">
+                                {step.ok ? t("doctor.primaryCheckPass") : t("doctor.primaryCheckFail")}
+                              </Badge>
+                            </div>
+                            <div className="mt-1 text-xs text-muted-foreground">{step.detail}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+ 
       {/* Full-Auto Confirmation */}
       <Dialog open={fullAutoConfirmOpen} onOpenChange={setFullAutoConfirmOpen}>
         <DialogContent className="sm:max-w-md">
@@ -1134,7 +1302,7 @@ export function Doctor({
               {logsSource === "clawpal" ? t("doctor.clawpalLogs") : t("doctor.gatewayLogs")}
             </DialogTitle>
           </DialogHeader>
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 flex-wrap mb-2">
             <Button
               variant={logsTab === "app" ? "default" : "outline"}
               size="sm"
@@ -1157,7 +1325,21 @@ export function Doctor({
             >
               {t("doctor.refreshLogs")}
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportLogs}
+              disabled={logsLoading}
+            >
+              <DownloadIcon className="h-3.5 w-3.5 mr-1.5" />
+              {t("doctor.exportLogs")}
+            </Button>
           </div>
+          {logsError && (
+            <p className="mb-2 text-xs text-destructive">
+              {t("doctor.logReadFailed", { error: logsError })}
+            </p>
+          )}
           <pre
             ref={logsContentRef}
             className="flex-1 min-h-[300px] max-h-[60vh] overflow-auto rounded-md border bg-muted p-3 text-xs font-mono whitespace-pre-wrap break-all"
@@ -1209,7 +1391,14 @@ export function Doctor({
         ) : (
           <div className="space-y-2">
             {backups.map((backup) => (
-              <Card key={backup.name}>
+              <Card
+                key={backup.name}
+                className={`overflow-hidden transition-all duration-300 ease-out ${
+                  fadingOutBackupName === backup.name
+                    ? "opacity-0 max-h-0"
+                    : "opacity-100 max-h-40"
+                }`}
+              >
                 <CardContent className="flex items-center justify-between">
                   <div>
                     <div className="font-medium text-sm">{backup.name}</div>
@@ -1225,6 +1414,7 @@ export function Doctor({
                       <Button
                         size="sm"
                         variant="outline"
+                        disabled={deletingBackupName != null}
                         onClick={() => ua.openUrl(backup.path)}
                       >
                         {t("home.show")}
@@ -1232,7 +1422,7 @@ export function Doctor({
                     )}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button size="sm" variant="outline">
+                        <Button size="sm" variant="outline" disabled={deletingBackupName != null}>
                           {t("home.restore")}
                         </Button>
                       </AlertDialogTrigger>
@@ -1259,7 +1449,11 @@ export function Doctor({
                     </AlertDialog>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button size="sm" variant="destructive">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={deletingBackupName != null || fadingOutBackupName === backup.name}
+                        >
                           {t("home.delete")}
                         </Button>
                       </AlertDialogTrigger>
@@ -1272,18 +1466,34 @@ export function Doctor({
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
-                          <AlertDialogAction
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            onClick={() => {
-                              ua.deleteBackup(backup.name)
-                                .then(() => {
+                          <AlertDialogAction asChild>
+                            <AsyncActionButton
+                              variant="destructive"
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              loadingText={t("home.deleting")}
+                              disabled={deletingBackupName != null}
+                              onClick={async () => {
+                                setDeletingBackupName(backup.name);
+                                try {
+                                  await ua.deleteBackup(backup.name);
+                                  setFadingOutBackupName(backup.name);
                                   setBackupMessage(t("home.deletedBackup", { name: backup.name }));
-                                  refreshBackups();
-                                })
-                                .catch((e) => { if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.deleteBackupFailed", { error: String(e) })); });
-                            }}
-                          >
-                            {t("home.delete")}
+                                  setTimeout(() => {
+                                    setBackups((prev) => prev?.filter((b) => b.name !== backup.name) ?? null);
+                                    setFadingOutBackupName((prev) => (prev === backup.name ? null : prev));
+                                    refreshBackups();
+                                  }, 350);
+                                } catch (e) {
+                                  if (!hasGuidanceEmitted(e)) {
+                                    setBackupMessage(t("home.deleteBackupFailed", { error: String(e) }));
+                                  }
+                                } finally {
+                                  setDeletingBackupName(null);
+                                }
+                              }}
+                            >
+                              {t("home.delete")}
+                            </AsyncActionButton>
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>

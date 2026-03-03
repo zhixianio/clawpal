@@ -18,6 +18,7 @@ export function buildSshPassphraseConnectErrorMessage(
   rawError: string,
   hostLabel: string,
   t: SshTranslate,
+  options?: { passphraseWasSubmitted?: boolean },
 ): string | null {
   if (SSH_PASSPHRASE_REJECT_HINT.test(rawError)) {
     return t("ssh.passphraseValidationFailed", { host: hostLabel });
@@ -26,7 +27,11 @@ export function buildSshPassphraseConnectErrorMessage(
     return t("ssh.missingKeyFile", { host: hostLabel });
   }
   if (SSH_PUBLIC_KEY_PERMISSION_HINT.test(rawError)) {
-    return t("ssh.publicKeyRejected", { host: hostLabel });
+    // Distinguish between "passphrase was entered but key still rejected"
+    // and "no passphrase was ever entered, auth simply failed".
+    return options?.passphraseWasSubmitted
+      ? t("ssh.publicKeyRejected", { host: hostLabel })
+      : t("ssh.publicKeyAuthFailed", { host: hostLabel });
   }
   return null;
 }

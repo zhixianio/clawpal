@@ -1,6 +1,7 @@
 import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GuidanceAction } from "../lib/types";
+import { useTranslation } from "react-i18next";
 
 export interface AgentGuidanceItem {
   message: string;
@@ -34,11 +35,12 @@ export function GuidanceCard({
   onDoctorHandoff,
   onInlineFix,
 }: GuidanceCardProps) {
+  const { t } = useTranslation();
   return (
     <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card shadow-xl p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">小龙虾建议</div>
+          <div className="text-sm font-semibold">{t("doctor.guidanceCardTitle")}</div>
           <div className="text-xs text-muted-foreground">
             {instanceLabel} · {guidance.operation}
           </div>
@@ -85,7 +87,7 @@ export function GuidanceCard({
             size="sm"
             onClick={() => onDoctorHandoff()}
           >
-            打开 Doctor
+            {t("doctor.openDoctor")}
           </Button>
         )}
         <Button
@@ -93,14 +95,14 @@ export function GuidanceCard({
           variant="outline"
           onClick={onDismiss}
         >
-          稍后处理
+          {t("doctor.handleLater")}
         </Button>
         <Button
           size="sm"
           variant="outline"
           onClick={onResolve}
         >
-          标记已解决
+          {t("doctor.markResolved")}
         </Button>
       </div>
     </div>

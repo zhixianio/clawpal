@@ -112,7 +112,21 @@ impl OpenclawCli {
             }
         }
 
-        let output = cmd.output()?;
+        // Retry once on ETXTBSY (errno 26, "Text file busy"). This transient
+        // error can occur when the binary was just written/updated (e.g. during
+        // npm install or in tests under llvm-cov instrumentation).
+        let output = match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                Command::new(&self.bin)
+                    .args(args)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .envs(env.iter().flat_map(|m| m.iter()))
+                    .output()?
+            }
+            other => other?,
+        };
         Ok(CliOutput {
             stdout: String::from_utf8_lossy(&output.stdout)
                 .trim_end()
@@ -248,5 +262,85 @@ mod tests {
         };
         let value = parse_json_output(&output).expect("parse");
         assert_eq!(value["a"], 1);
+    }
+
+    #[test]
+    fn parse_json_output_extracts_array() {
+        let output = CliOutput {
+            stdout: "some noise\n[{\"x\":1},{\"x\":2}]\nmore noise".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let value = parse_json_output(&output).expect("parse");
+        assert!(value.is_array());
+        assert_eq!(value.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn parse_json_output_returns_error_on_nonzero_exit() {
+        let output = CliOutput {
+            stdout: String::new(),
+            stderr: "command not found".to_string(),
+            exit_code: 1,
+        };
+        let err = parse_json_output(&output).unwrap_err();
+        match err {
+            OpenclawError::CommandFailed { exit_code, details } => {
+                assert_eq!(exit_code, 1);
+                assert!(details.contains("command not found"));
+            }
+            _ => panic!("expected CommandFailed"),
+        }
+    }
+
+    #[test]
+    fn parse_json_output_uses_stdout_when_stderr_empty() {
+        let output = CliOutput {
+            stdout: "some error output".to_string(),
+            stderr: String::new(),
+            exit_code: 2,
+        };
+        let err = parse_json_output(&output).unwrap_err();
+        assert!(err.to_string().contains("some error output"));
+    }
+
+    #[test]
+    fn parse_json_output_no_json_returns_error() {
+        let output = CliOutput {
+            stdout: "just plain text without any json".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let err = parse_json_output(&output).unwrap_err();
+        assert!(matches!(err, OpenclawError::NoJson(_)));
+    }
+
+    #[test]
+    fn parse_json_output_nested_json() {
+        let output = CliOutput {
+            stdout: "{\"a\":{\"b\":{\"c\":42}}}".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let value = parse_json_output(&output).expect("parse");
+        assert_eq!(value["a"]["b"]["c"], 42);
+    }
+
+    #[test]
+    fn cli_output_default_fields() {
+        let cli = OpenclawCli::with_bin("echo");
+        assert_eq!(cli.bin, "echo");
+    }
+
+    #[test]
+    fn openclaw_error_display() {
+        let err = OpenclawError::NoJson("no brackets".to_string());
+        assert!(err.to_string().contains("no json"));
+
+        let err = OpenclawError::CommandFailed {
+            exit_code: 42,
+            details: "bad".to_string(),
+        };
+        assert!(err.to_string().contains("42"));
     }
 }

@@ -187,6 +187,7 @@ fn count_agents(value: &Value) -> u32 {
 mod tests {
     use super::*;
     use crate::instance::{Instance, InstanceType, SshHostConfig};
+    use serde_json::json;
     use uuid::Uuid;
 
     #[cfg(unix)]
@@ -269,6 +270,82 @@ mod tests {
     }
 
     #[test]
+    fn count_agents_array() {
+        assert_eq!(count_agents(&json!([{"id":"a"},{"id":"b"}])), 2);
+    }
+
+    #[test]
+    fn count_agents_wrapped() {
+        assert_eq!(count_agents(&json!({"agents":[{"id":"a"}]})), 1);
+    }
+
+    #[test]
+    fn count_agents_object_fallback() {
+        // agents exists but is not an array → returns 1
+        assert_eq!(count_agents(&json!({"agents":{"id":"main"}})), 1);
+    }
+
+    #[test]
+    fn count_agents_empty() {
+        assert_eq!(count_agents(&json!({})), 0);
+        assert_eq!(count_agents(&json!([])), 0);
+    }
+
+    #[test]
+    fn parse_active_agents_nonzero_exit() {
+        let output = CliOutput {
+            stdout: "error".to_string(),
+            stderr: String::new(),
+            exit_code: 1,
+        };
+        assert_eq!(parse_active_agents(&output).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_active_agents_valid_json() {
+        let output = CliOutput {
+            stdout: "[{\"id\":\"a\"},{\"id\":\"b\"}]".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        assert_eq!(parse_active_agents(&output).unwrap(), 2);
+    }
+
+    #[test]
+    fn shell_escape_simple() {
+        assert_eq!(shell_escape("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_escape_quotes() {
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn health_error_display() {
+        let e = HealthError::MissingSshConfig("my-instance".to_string());
+        assert!(e.to_string().contains("my-instance"));
+
+        let e = HealthError::Command("timeout".to_string());
+        assert!(e.to_string().contains("timeout"));
+    }
+
+    #[test]
+    fn check_remote_ssh_fails_without_ssh_config() {
+        let instance = Instance {
+            id: "ssh:no-config".to_string(),
+            instance_type: InstanceType::RemoteSsh,
+            label: "No Config".to_string(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: None,
+        };
+        let result = check_instance(&instance);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing ssh"));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn check_instance_remote_ssh_path_works_with_fake_ssh() {
         use std::os::unix::fs::PermissionsExt;
@@ -313,6 +390,7 @@ mod tests {
                 auth_method: "key".to_string(),
                 key_path: None,
                 password: None,
+                passphrase: None,
             }),
         };
         let status = check_instance(&instance).expect("remote health");

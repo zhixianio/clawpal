@@ -34,7 +34,7 @@ pub async fn remote_read_app_log(
     lines: Option<usize>,
 ) -> Result<String, String> {
     let n = clamp_lines(lines);
-    let cmd = format!("tail -n {n} ~/.clawpal/logs/app.log 2>/dev/null || echo ''");
+    let cmd = clawpal_core::doctor::remote_clawpal_log_tail_script(n, "app");
     log_debug(&format!(
         "remote_read_app_log start host_id={host_id} lines={n} cmd={cmd}"
     ));
@@ -54,7 +54,7 @@ pub async fn remote_read_error_log(
     lines: Option<usize>,
 ) -> Result<String, String> {
     let n = clamp_lines(lines);
-    let cmd = format!("tail -n {n} ~/.clawpal/logs/error.log 2>/dev/null || echo ''");
+    let cmd = clawpal_core::doctor::remote_clawpal_log_tail_script(n, "error");
     log_debug(&format!(
         "remote_read_error_log start host_id={host_id} lines={n} cmd={cmd}"
     ));
@@ -74,7 +74,7 @@ pub async fn remote_read_gateway_log(
     lines: Option<usize>,
 ) -> Result<String, String> {
     let n = clamp_lines(lines);
-    let cmd = format!("tail -n {n} ~/.openclaw/logs/gateway.log 2>/dev/null || echo ''");
+    let cmd = clawpal_core::doctor::remote_gateway_log_tail_script(n, "gateway");
     log_debug(&format!(
         "remote_read_gateway_log start host_id={host_id} lines={n} cmd={cmd}"
     ));
@@ -94,7 +94,7 @@ pub async fn remote_read_gateway_error_log(
     lines: Option<usize>,
 ) -> Result<String, String> {
     let n = clamp_lines(lines);
-    let cmd = format!("tail -n {n} ~/.openclaw/logs/gateway.err.log 2>/dev/null || echo ''");
+    let cmd = clawpal_core::doctor::remote_gateway_error_log_tail_script(n);
     log_debug(&format!(
         "remote_read_gateway_error_log start host_id={host_id} lines={n} cmd={cmd}"
     ));
