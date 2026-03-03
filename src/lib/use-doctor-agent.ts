@@ -460,11 +460,18 @@ export function useDoctorAgent() {
           const chatMessageId = nextMsgId();
           setConnected(true);
           setBridgeConnected(false);
+          const sessionKeyForRequest = sessionKeyRef.current;
           try {
             const currentSessionId = openclawSessionIdRef.current ?? sessionKeyRef.current;
             const response = instanceTransportRef.current === "remote_ssh"
               ? await api.remoteChatViaOpenclaw(scope, agentId, prompt, currentSessionId)
               : await api.chatViaOpenclaw(agentId, prompt, currentSessionId);
+            if (
+              sessionKeyRef.current !== sessionKeyForRequest
+              || engineRef.current !== "openclaw"
+            ) {
+              return;
+            }
             const assistantText = extractOpenclawText(response as Record<string, unknown>);
             const restoredSessionId = extractOpenclawSessionId(response as Record<string, unknown>);
             if (restoredSessionId) {
@@ -480,6 +487,12 @@ export function useDoctorAgent() {
             }]);
             setLoading(false);
           } catch (err) {
+            if (
+              sessionKeyRef.current !== sessionKeyForRequest
+              || engineRef.current !== "openclaw"
+            ) {
+              return;
+            }
             setConnected(false);
             throw err;
           }
@@ -494,6 +507,8 @@ export function useDoctorAgent() {
     setLoading(true);
     streamingRef.current = "";
     setMessages((prev) => [...prev, { id: nextMsgId(), role: "user", content: message }]);
+    const sessionKeyForRequest = sessionKeyRef.current;
+    const engineForRequest = engineRef.current;
     try {
       if (domainRef.current === "install") {
         await api.installSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
@@ -507,6 +522,12 @@ export function useDoctorAgent() {
             currentSessionId,
           )
           : await api.chatViaOpenclaw(agentIdRef.current, message, currentSessionId);
+        if (
+          sessionKeyRef.current !== sessionKeyForRequest
+          || engineRef.current !== "openclaw"
+        ) {
+          return;
+        }
         const assistantText = extractOpenclawText(response as Record<string, unknown>);
         const restoredSessionId = extractOpenclawSessionId(response as Record<string, unknown>);
         if (restoredSessionId) {
@@ -521,6 +542,12 @@ export function useDoctorAgent() {
         await api.doctorSendMessage(message, sessionKeyRef.current, agentIdRef.current, instanceScopeRef.current);
       }
     } catch (err) {
+      if (
+        sessionKeyRef.current !== sessionKeyForRequest
+        || engineRef.current !== engineForRequest
+      ) {
+        return;
+      }
       setError(`Send message failed: ${err}`);
       setLoading(false);
     }
@@ -595,6 +622,7 @@ export function useDoctorAgent() {
     streamingRef.current = "";
     streamEndedRef.current = false;
     openclawSessionIdRef.current = undefined;
+    sessionKeyRef.current = `agent:${agentIdRef.current}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
   }, []);
 
   return {

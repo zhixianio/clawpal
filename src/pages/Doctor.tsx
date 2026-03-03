@@ -163,6 +163,7 @@ export function Doctor({
   const [logsContent, setLogsContent] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
   const [showZeroclawDiagnosis, setShowZeroclawDiagnosis] = useState(false);
+  const [zeroclawDoctorUiLoaded, setZeroclawDoctorUiLoaded] = useState(false);
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueState, setRescueState] = useState<RescueUiState>(createInitialRescueUiState);
   const [primaryState, setPrimaryState] = useState<PrimaryRecoveryState>(createInitialPrimaryRecoveryState);
@@ -647,14 +648,14 @@ export function Doctor({
   }, [instanceId, isRemote, isConnected]);
 
   useEffect(() => {
-    if (!active || !launchGuidance) return;
+    if (!active || !launchGuidance || !zeroclawDoctorUiLoaded) return;
     const launchKey = `${launchGuidance.instanceId}:${launchGuidance.operation}:${launchGuidance.createdAt}`;
     if (lastAutoLaunchKeyRef.current === launchKey) return;
     lastAutoLaunchKeyRef.current = launchKey;
     onLaunchGuidanceConsumed?.(launchGuidance.instanceId);
     void handleStartDiagnosis(buildLaunchGuidanceContext(launchGuidance));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, launchGuidance, onLaunchGuidanceConsumed]);
+  }, [active, launchGuidance, onLaunchGuidanceConsumed, zeroclawDoctorUiLoaded]);
 
   useEffect(() => {
     if (logsOpen) fetchLog(logsSource, logsTab);
@@ -697,6 +698,11 @@ export function Doctor({
         .catch(() => {
           if (!cancelled) {
             setShowZeroclawDiagnosis(false);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setZeroclawDoctorUiLoaded(true);
           }
         });
     };
