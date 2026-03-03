@@ -323,6 +323,7 @@
   "doctor.errorLog": "错误日志",
   "doctor.noLogs": "暂无日志记录。",
   "doctor.refreshLogs": "刷新",
+  "doctor.exportLogs": "导出",
   "doctor.agentSource": "Doctor Claw 诊断助手",
   "doctor.engineZeroclaw": "Doctor Claw",
   "doctor.sshRemote": "SSH 远程",

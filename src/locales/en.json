@@ -323,6 +323,7 @@
   "doctor.errorLog": "Error Log",
   "doctor.noLogs": "No log entries yet.",
   "doctor.refreshLogs": "Refresh",
+  "doctor.exportLogs": "Export",
   "doctor.agentSource": "Doctor Claw Assistant",
   "doctor.engineZeroclaw": "Doctor Claw",
   "doctor.sshRemote": "SSH Remote",

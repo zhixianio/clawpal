@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
+import { FileTextIcon, DownloadIcon } from "lucide-react";
 import { useApi, hasGuidanceEmitted } from "@/lib/use-api";
 import { useInstance } from "@/lib/instance-context";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
@@ -318,6 +319,21 @@ export function Doctor({
     setLogsSource(source);
     setLogsTab("app");
     setLogsOpen(true);
+  };
+
+  const exportLogs = () => {
+    if (!logsContent) return;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `${logsSource}-${logsTab}-${timestamp}.log`;
+    const blob = new Blob([logsContent], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const refreshRescueStatus = async (isCancelled?: () => boolean) => {
@@ -998,10 +1014,12 @@ export function Doctor({
                   {t("doctor.targetExecutionLocalWarning")}
                 </span>
               )}
-              <Button variant="ghost" size="sm" onClick={() => openLogs("clawpal")}>
+              <Button variant="outline" size="sm" onClick={() => openLogs("clawpal")}>
+                <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
                 {t("doctor.clawpalLogs")}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => openLogs("gateway")}>
+              <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
                 {t("doctor.gatewayLogs")}
               </Button>
             </div>
@@ -1156,6 +1174,15 @@ export function Doctor({
               disabled={logsLoading}
             >
               {t("doctor.refreshLogs")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportLogs}
+              disabled={!logsContent}
+            >
+              <DownloadIcon className="h-3.5 w-3.5 mr-1.5" />
+              {t("doctor.exportLogs")}
             </Button>
           </div>
           <pre
