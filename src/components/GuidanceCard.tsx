@@ -8,6 +8,7 @@ export interface AgentGuidanceItem {
   summary: string;
   actions: string[];
   structuredActions?: GuidanceAction[];
+  preferredEngine?: "openclaw" | "zeroclaw";
   source: string;
   operation: string;
   instanceId: string;

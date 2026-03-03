@@ -47,6 +47,12 @@ import { SessionAnalysisPanel } from "@/components/SessionAnalysisPanel";
 import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
 import type { BackupInfo } from "@/lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
+import {
+  hasZeroclawSession as hasZeroclawSessionState,
+  resolveEngineConnectionState,
+  shouldDisableOpenclawStart,
+  shouldDisableZeroclawStart,
+} from "@/lib/doctor-dual-engine";
 
 type RescueMessageTone = "info" | "success" | "error";
 
@@ -76,6 +82,7 @@ interface DoctorLaunchGuidance {
   message: string;
   summary: string;
   actions: string[];
+  preferredEngine?: "openclaw" | "zeroclaw";
   operation: string;
   instanceId: string;
   transport: string;
@@ -141,15 +148,18 @@ export function Doctor({
   const { t } = useTranslation();
   const ua = useApi();
   const { instanceId, isDocker, isRemote, isConnected } = useInstance();
-  const doctor = useDoctorAgent();
+  const zeroclawDoctor = useDoctorAgent();
+  const openclawDoctor = useDoctorAgent({ enableBridgeEvents: false });
   const [runtimeModel, setRuntimeModel] = useState<string | undefined>(undefined);
   const [sessionModelOverride, setSessionModelOverride] = useState<string | undefined>(undefined);
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [remoteConnState, setRemoteConnState] = useState<"checking" | "connected" | "disconnected">("checking");
 
-  const [diagnosing, setDiagnosing] = useState(false);
-  const [startupStage, setStartupStage] = useState<"idle" | "connecting" | "collecting" | "starting">("idle");
-  const [startError, setStartError] = useState<string | null>(null);
+  const [zeroclawDiagnosing, setZeroclawDiagnosing] = useState(false);
+  const [zeroclawStartupStage, setZeroclawStartupStage] = useState<"idle" | "connecting" | "collecting" | "starting">("idle");
+  const [zeroclawStartError, setZeroclawStartError] = useState<string | null>(null);
+  const [openclawDiagnosing, setOpenclawDiagnosing] = useState(false);
+  const [openclawStartError, setOpenclawStartError] = useState<string | null>(null);
 
   // Backups state
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
@@ -174,28 +184,18 @@ export function Doctor({
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueState, setRescueState] = useState<RescueUiState>(createInitialRescueUiState);
   const [primaryState, setPrimaryState] = useState<PrimaryRecoveryState>(createInitialPrimaryRecoveryState);
-  const [activeDiagnosisEngine, setActiveDiagnosisEngine] = useState<"openclaw" | "zeroclaw" | null>(null);
   const lastAutoLaunchKeyRef = useRef<string | null>(null);
   const lastDoctorTargetKeyRef = useRef<string | null>(null);
-  const agentSourceLabel = showZeroclawDiagnosis
-    ? t("doctor.engineZeroclaw")
-    : t("installChat.letAiHelp");
-  const diagnosisEngine = showZeroclawDiagnosis ? "zeroclaw" : "openclaw";
-  const activeSourceLabel = activeDiagnosisEngine
-    ? activeDiagnosisEngine === "zeroclaw"
-      ? t("doctor.engineZeroclaw")
-      : t("installChat.letAiHelp")
-    : agentSourceLabel;
-  const letAiConnectionState: "checking" | "connected" | "disconnected" =
-    activeDiagnosisEngine === "openclaw"
-      ? (diagnosing || startupStage !== "idle")
-        ? "checking"
-        : doctor.connected
-          ? "connected"
-          : "disconnected"
-      : doctor.connected
-        ? "connected"
-        : "disconnected";
+  const letAiConnectionState = resolveEngineConnectionState({
+    diagnosing: openclawDiagnosing,
+    connected: openclawDoctor.connected,
+  });
+  const isZeroclawStarting = zeroclawDiagnosing;
+  const isOpenclawStarting = openclawDiagnosing;
+  const hasZeroclawSession = hasZeroclawSessionState({
+    connected: zeroclawDoctor.connected,
+    messageCount: zeroclawDoctor.messages.length,
+  });
 
   const {
     activating: rescueActivating,
@@ -239,37 +239,48 @@ export function Doctor({
       lastDoctorTargetKeyRef.current
       && lastDoctorTargetKeyRef.current !== targetKey
     ) {
-      doctor.reset();
-      void doctor.disconnect();
-      setActiveDiagnosisEngine(null);
+      zeroclawDoctor.reset();
+      openclawDoctor.reset();
+      void zeroclawDoctor.disconnect();
+      void openclawDoctor.disconnect();
+      setZeroclawDiagnosing(false);
+      setOpenclawDiagnosing(false);
+      setZeroclawStartupStage("idle");
+      setZeroclawStartError(null);
+      setOpenclawStartError(null);
       setRescueState(createInitialRescueUiState());
       setPrimaryState(createInitialPrimaryRecoveryState());
     }
     lastDoctorTargetKeyRef.current = targetKey;
 
-    doctor.setTarget(isRemote ? instanceId : "local");
-    const restored = doctor.restoreFromCache({
+    const target = isRemote ? instanceId : "local";
+    zeroclawDoctor.setTarget(target);
+    openclawDoctor.setTarget(target);
+
+    zeroclawDoctor.restoreFromCache({
       agentId: "main",
       instanceScope: restoreScope,
       domain: "doctor",
       engine: "zeroclaw",
     });
-    if (!restored) {
-      doctor.restoreFromCache({
-        agentId: "main",
-        instanceScope: restoreScope,
-        domain: "doctor",
-        engine: "openclaw",
-      });
-    }
+    openclawDoctor.restoreFromCache({
+      agentId: "main",
+      instanceScope: restoreScope,
+      domain: "doctor",
+      engine: "openclaw",
+    });
   }, [
-    doctor.disconnect,
-    doctor.reset,
-    doctor.restoreFromCache,
-    doctor.setTarget,
+    openclawDoctor.disconnect,
+    openclawDoctor.reset,
+    openclawDoctor.restoreFromCache,
+    openclawDoctor.setTarget,
     instanceId,
     isDocker,
     isRemote,
+    zeroclawDoctor.disconnect,
+    zeroclawDoctor.reset,
+    zeroclawDoctor.restoreFromCache,
+    zeroclawDoctor.setTarget,
   ]);
 
   // Fetch runtime target model for TokenBadge / ModelSwitcher.
@@ -330,16 +341,20 @@ export function Doctor({
     extraContext?: string,
     overrideEngine?: "zeroclaw" | "openclaw"
   ) => {
-    const engine = overrideEngine ?? diagnosisEngine;
+    const engine = overrideEngine ?? "zeroclaw";
+    const doctorForEngine = engine === "zeroclaw" ? zeroclawDoctor : openclawDoctor;
     if (engine === "zeroclaw" && !zeroclawDoctorUiLoaded) {
-      setStartError(t("doctor.loading"));
+      setZeroclawStartError(t("doctor.loading"));
       return;
     }
-
-    setActiveDiagnosisEngine(engine);
-    setStartError(null);
-    setDiagnosing(true);
-    setStartupStage("connecting");
+    if (engine === "zeroclaw") {
+      setZeroclawStartError(null);
+      setZeroclawDiagnosing(true);
+      setZeroclawStartupStage("connecting");
+    } else {
+      setOpenclawStartError(null);
+      setOpenclawDiagnosing(true);
+    }
     try {
       if (isRemote && !instanceId.trim()) {
         throw new Error(t("doctor.targetUnavailable"));
@@ -364,9 +379,9 @@ export function Doctor({
       }
 
       if (engine === "zeroclaw") {
-        await doctor.connect();
+        await zeroclawDoctor.connect();
+        setZeroclawStartupStage("collecting");
       }
-      setStartupStage("collecting");
       const baseContext = isRemote
         ? await ua.collectDoctorContextRemote(instanceId)
         : await ua.collectDoctorContext();
@@ -378,8 +393,10 @@ export function Doctor({
         : isDocker
           ? "docker_local"
           : "local";
-      setStartupStage("starting");
-      await doctor.startDiagnosis(
+      if (engine === "zeroclaw") {
+        setZeroclawStartupStage("starting");
+      }
+      await doctorForEngine.startDiagnosis(
         context,
         "main",
         diagnosisScope,
@@ -390,29 +407,44 @@ export function Doctor({
       );
     } catch (err) {
       const msg = String(err);
-      setStartError(msg);
-      setActiveDiagnosisEngine(null);
+      if (engine === "zeroclaw") {
+        setZeroclawStartError(msg);
+      } else {
+        setOpenclawStartError(msg);
+      }
       if (isRemote) {
         setRemoteConnState("disconnected");
       }
     } finally {
-      setDiagnosing(false);
-      setStartupStage("idle");
+      if (engine === "zeroclaw") {
+        setZeroclawDiagnosing(false);
+        setZeroclawStartupStage("idle");
+      } else {
+        setOpenclawDiagnosing(false);
+      }
     }
   };
 
-  const startupHint = diagnosing && doctor.messages.length === 0
-    ? (startupStage === "collecting"
+  const startupHint = isZeroclawStarting && zeroclawDoctor.messages.length === 0
+    ? (zeroclawStartupStage === "collecting"
       ? t("doctor.startupCollecting")
-      : startupStage === "starting"
+      : zeroclawStartupStage === "starting"
         ? t("doctor.startupStarting")
         : t("doctor.startupConnecting"))
     : null;
 
-  const handleStopDiagnosis = async () => {
-    await doctor.disconnect();
-    doctor.reset();
-    setActiveDiagnosisEngine(null);
+  const handleStopDiagnosis = async (engine: "zeroclaw" | "openclaw" = "zeroclaw") => {
+    const doctorForEngine = engine === "zeroclaw" ? zeroclawDoctor : openclawDoctor;
+    await doctorForEngine.disconnect();
+    doctorForEngine.reset();
+    if (engine === "zeroclaw") {
+      setZeroclawDiagnosing(false);
+      setZeroclawStartupStage("idle");
+      setZeroclawStartError(null);
+    } else {
+      setOpenclawDiagnosing(false);
+      setOpenclawStartError(null);
+    }
   };
 
   // Logs helpers
@@ -774,8 +806,9 @@ export function Doctor({
     const launchKey = `${launchGuidance.instanceId}:${launchGuidance.operation}:${launchGuidance.createdAt}`;
     if (lastAutoLaunchKeyRef.current === launchKey) return;
     lastAutoLaunchKeyRef.current = launchKey;
+    const launchEngine = launchGuidance.preferredEngine ?? "openclaw";
     onLaunchGuidanceConsumed?.(launchGuidance.instanceId);
-    void handleStartDiagnosis(buildLaunchGuidanceContext(launchGuidance));
+    void handleStartDiagnosis(buildLaunchGuidanceContext(launchGuidance), launchEngine);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, launchGuidance, onLaunchGuidanceConsumed, zeroclawDoctorUiLoaded]);
 
@@ -857,6 +890,7 @@ export function Doctor({
       : isWsl2
         ? t("doctor.targetTypeWsl2")
         : t("doctor.targetTypeLocal");
+  const activeSourceLabel = t("doctor.engineZeroclaw");
   const isPureLocal = !isRemote && !isDocker && !isWsl2;
 
   return (
@@ -901,13 +935,13 @@ export function Doctor({
               </div>
             </CardHeader>
             <CardContent>
-              {!doctor.connected && doctor.messages.length === 0 ? (
+              {!hasZeroclawSession ? (
                 <>
-                  {startError && (
-                    <div className="mb-3 text-sm text-destructive">{startError}</div>
+                  {zeroclawStartError && (
+                    <div className="mb-3 text-sm text-destructive">{zeroclawStartError}</div>
                   )}
-                  {doctor.error && (
-                    <div className="mb-3 text-sm text-destructive">{doctor.error}</div>
+                  {zeroclawDoctor.error && (
+                    <div className="mb-3 text-sm text-destructive">{zeroclawDoctor.error}</div>
                   )}
                   {startupHint && (
                     <div className="mb-3 text-sm text-muted-foreground animate-pulse">
@@ -918,36 +952,41 @@ export function Doctor({
                     onClick={() => {
                       void handleStartDiagnosis(undefined, "zeroclaw");
                     }}
-                    disabled={diagnosing || !zeroclawDoctorUiLoaded}
+                    disabled={shouldDisableZeroclawStart({
+                      diagnosing: isZeroclawStarting,
+                      doctorUiLoaded: zeroclawDoctorUiLoaded,
+                    })}
                   >
-                    {diagnosing
+                    {isZeroclawStarting
                       ? t("doctor.connecting")
                       : t("doctor.startDiagnosis")}
                   </Button>
                 </>
-              ) : !doctor.connected && doctor.messages.length > 0 ? (
+              ) : !zeroclawDoctor.connected && zeroclawDoctor.messages.length > 0 ? (
                 <>
                   <div className="flex items-center justify-between mb-3 p-2 rounded-md bg-destructive/10 border border-destructive/20">
                     <span className="text-sm text-destructive">
-                      {doctor.error || t("doctor.disconnected")}
+                      {zeroclawDoctor.error || t("doctor.disconnected")}
                     </span>
                     <div className="flex items-center gap-2">
-                      <Button size="sm" onClick={() => doctor.reconnect()}>
+                      <Button size="sm" onClick={() => zeroclawDoctor.reconnect()}>
                         {t("doctor.reconnect")}
                       </Button>
-                      <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                      <Button variant="outline" size="sm" onClick={() => {
+                        void handleStopDiagnosis("zeroclaw");
+                      }}>
                         {t("doctor.stopDiagnosis")}
                       </Button>
                     </div>
                   </div>
                   <DoctorChat
-                    messages={doctor.messages}
+                    messages={zeroclawDoctor.messages}
                     loading={false}
                     error={null}
                     connected={false}
-                    onSendMessage={doctor.sendMessage}
-                    onApproveInvoke={doctor.approveInvoke}
-                    onRejectInvoke={doctor.rejectInvoke}
+                    onSendMessage={zeroclawDoctor.sendMessage}
+                    onApproveInvoke={zeroclawDoctor.approveInvoke}
+                    onRejectInvoke={zeroclawDoctor.rejectInvoke}
                   />
                 </>
               ) : (
@@ -963,8 +1002,8 @@ export function Doctor({
                         {activeSourceLabel}
                       </Badge>
                       <Badge variant="outline" className="text-xs flex items-center gap-1.5">
-                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                        {doctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
+                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${zeroclawDoctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+                        {zeroclawDoctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
                       </Badge>
                       <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
                       <ModelSwitcher
@@ -978,31 +1017,33 @@ export function Doctor({
                       <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
                         <input
                           type="checkbox"
-                          checked={doctor.fullAuto}
+                          checked={zeroclawDoctor.fullAuto}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setFullAutoConfirmOpen(true);
                             } else {
-                              doctor.setFullAuto(false);
+                              zeroclawDoctor.setFullAuto(false);
                             }
                           }}
                           className="accent-primary"
                         />
                         {t("doctor.fullAuto")}
                       </label>
-                      <Button variant="outline" size="sm" onClick={handleStopDiagnosis}>
+                      <Button variant="outline" size="sm" onClick={() => {
+                        void handleStopDiagnosis("zeroclaw");
+                      }}>
                         {t("doctor.stopDiagnosis")}
                       </Button>
                     </div>
                   </div>
                   <DoctorChat
-                    messages={doctor.messages}
-                    loading={doctor.loading}
-                    error={doctor.error}
-                    connected={doctor.connected}
-                    onSendMessage={doctor.sendMessage}
-                    onApproveInvoke={doctor.approveInvoke}
-                    onRejectInvoke={doctor.rejectInvoke}
+                    messages={zeroclawDoctor.messages}
+                    loading={zeroclawDoctor.loading}
+                    error={zeroclawDoctor.error}
+                    connected={zeroclawDoctor.connected}
+                    onSendMessage={zeroclawDoctor.sendMessage}
+                    onApproveInvoke={zeroclawDoctor.approveInvoke}
+                    onRejectInvoke={zeroclawDoctor.rejectInvoke}
                   />
                 </>
               )}
@@ -1041,14 +1082,20 @@ export function Doctor({
             </div>
           </CardHeader>
           <CardContent>
+            {openclawStartError && (
+              <div className="mb-3 text-sm text-destructive">{openclawStartError}</div>
+            )}
+            {openclawDoctor.error && (
+              <div className="mb-3 text-sm text-destructive">{openclawDoctor.error}</div>
+            )}
             <Button
               onClick={() => {
                 void handleStartDiagnosis(undefined, "openclaw");
               }}
-              disabled={diagnosing}
+              disabled={shouldDisableOpenclawStart({ diagnosing: isOpenclawStarting })}
               variant={showZeroclawDiagnosis ? "outline" : "default"}
             >
-              {diagnosing
+              {isOpenclawStarting
                 ? t("doctor.connecting")
                 : t("installChat.letAiHelp")}
             </Button>
@@ -1360,7 +1407,7 @@ export function Doctor({
               {t("doctor.cancel")}
             </Button>
             <Button variant="destructive" size="sm" onClick={() => {
-              doctor.setFullAuto(true);
+              zeroclawDoctor.setFullAuto(true);
               setFullAutoConfirmOpen(false);
             }}>
               {t("doctor.fullAutoConfirm")}

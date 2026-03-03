@@ -33,6 +33,9 @@ type DoctorSessionContext = {
 };
 
 type DoctorEngineMode = "openclaw" | "zeroclaw";
+type UseDoctorAgentOptions = {
+  enableBridgeEvents?: boolean;
+};
 type DoctorSessionCache = {
   version: number;
   context: DoctorSessionContext;
@@ -213,7 +216,8 @@ function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "instal
   return false;
 }
 
-export function useDoctorAgent() {
+export function useDoctorAgent(options: UseDoctorAgentOptions = {}) {
+  const enableBridgeEvents = options.enableBridgeEvents ?? true;
   const [connected, setConnected] = useState(false);
   const [bridgeConnected, setBridgeConnected] = useState(false);
   const [messages, setMessages] = useState<DoctorChatMessage[]>([]);
@@ -284,6 +288,7 @@ export function useDoctorAgent() {
 
 
   useEffect(() => {
+    if (!enableBridgeEvents) return;
     let disposed = false;
     const unlistenFns: Array<() => void> = [];
     const bind = async <T,>(event: string, handler: Parameters<typeof listen<T>>[1]) => {
@@ -584,10 +589,11 @@ export function useDoctorAgent() {
       const restored = restoreDoctorMessagesFromCache(context);
       const restoredMessages = restored?.messages ?? [];
       const restoredSessionId = restored?.openclawSessionId;
-      if (restoredMessages.length > 0) {
-        setMessages(restoredMessages);
-        persistDoctorMessages(restoredMessages);
-      }
+      // Always replace message state with the target-engine cache snapshot.
+      // This prevents stale messages from another engine from lingering when
+      // there is no cache for the current engine/scope.
+      setMessages(restoredMessages);
+      persistDoctorMessages(restoredMessages);
       openclawSessionIdRef.current = restoredSessionId ?? undefined;
       if (restored?.sessionKey) {
         sessionKeyRef.current = restored.sessionKey;

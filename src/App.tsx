@@ -1774,6 +1774,7 @@ export function App() {
                 ...prev,
                 [agentGuidance.instanceId]: {
                   ...agentGuidance,
+                  preferredEngine: "openclaw",
                   rawError: context || agentGuidance.rawError,
                 },
               }));
@@ -1799,6 +1800,7 @@ export function App() {
                     ...prev,
                     [agentGuidance.instanceId]: {
                       ...agentGuidance,
+                      preferredEngine: "openclaw",
                       rawError: sa.context || agentGuidance.rawError,
                     },
                   }));
