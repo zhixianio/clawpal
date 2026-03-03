@@ -331,7 +331,7 @@
   "doctor.refreshLogs": "Refresh",
   "doctor.exportLogs": "Export",
   "doctor.agentSource": "Doctor Claw Assistant",
-  "doctor.engineZeroclaw": "Doctor Claw",
+  "doctor.engineZeroclaw": "Doctor Diagnosis Assistant",
   "doctor.sshRemote": "SSH Remote",
   "doctor.startDiagnosis": "Start Diagnosis",
   "doctor.stopDiagnosis": "Disconnect",

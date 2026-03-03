@@ -167,7 +167,17 @@ export function Doctor({
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueState, setRescueState] = useState<RescueUiState>(createInitialRescueUiState);
   const [primaryState, setPrimaryState] = useState<PrimaryRecoveryState>(createInitialPrimaryRecoveryState);
+  const [activeDiagnosisEngine, setActiveDiagnosisEngine] = useState<"openclaw" | "zeroclaw" | null>(null);
   const lastAutoLaunchKeyRef = useRef<string | null>(null);
+  const agentSourceLabel = showZeroclawDiagnosis
+    ? t("doctor.engineZeroclaw")
+    : t("installChat.letAiHelp");
+  const diagnosisEngine = showZeroclawDiagnosis ? "zeroclaw" : "openclaw";
+  const activeSourceLabel = activeDiagnosisEngine
+    ? activeDiagnosisEngine === "zeroclaw"
+      ? t("doctor.engineZeroclaw")
+      : t("installChat.letAiHelp")
+    : agentSourceLabel;
 
   const {
     activating: rescueActivating,
@@ -203,6 +213,7 @@ export function Doctor({
   useEffect(() => {
     doctor.reset();
     doctor.disconnect();
+    setActiveDiagnosisEngine(null);
     setRescueState(createInitialRescueUiState());
     setPrimaryState(createInitialPrimaryRecoveryState());
     doctor.setTarget(isRemote ? instanceId : "local");
@@ -233,12 +244,17 @@ export function Doctor({
   // Effective model: session override takes priority over global runtime model.
   const effectiveModel = sessionModelOverride ?? runtimeModel;
 
-  const handleStartDiagnosis = async (extraContext?: string) => {
-    if (!zeroclawDoctorUiLoaded) {
+  const handleStartDiagnosis = async (
+    extraContext?: string,
+    overrideEngine?: "zeroclaw" | "openclaw"
+  ) => {
+    const engine = overrideEngine ?? diagnosisEngine;
+    if (engine === "zeroclaw" && !zeroclawDoctorUiLoaded) {
       setStartError(t("doctor.loading"));
       return;
     }
 
+    setActiveDiagnosisEngine(engine);
     setStartError(null);
     setDiagnosing(true);
     setStartupStage("connecting");
@@ -265,7 +281,7 @@ export function Doctor({
         setRemoteConnState("connected");
       }
 
-      if (showZeroclawDiagnosis) {
+      if (engine === "zeroclaw") {
         await doctor.connect();
       }
       setStartupStage("collecting");
@@ -288,11 +304,12 @@ export function Doctor({
         diagnosisTransport,
         undefined,
         "doctor",
-        showZeroclawDiagnosis ? "zeroclaw" : "openclaw",
+        engine,
       );
     } catch (err) {
       const msg = String(err);
       setStartError(msg);
+      setActiveDiagnosisEngine(null);
       if (isRemote) {
         setRemoteConnState("disconnected");
       }
@@ -313,6 +330,7 @@ export function Doctor({
   const handleStopDiagnosis = async () => {
     await doctor.disconnect();
     doctor.reset();
+    setActiveDiagnosisEngine(null);
   };
 
   // Logs helpers
@@ -1042,7 +1060,7 @@ export function Doctor({
       <Card className="gap-2 py-4">
         <CardHeader className="pb-0">
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <CardTitle className="text-base">{t("doctor.agentSource")}</CardTitle>
+            <CardTitle className="text-base">{activeSourceLabel}</CardTitle>
             <div className="flex items-center gap-2 flex-wrap justify-end">
               <span className="text-xs text-muted-foreground">{t("doctor.targetExecutionLabel")}</span>
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{displayedDoctorTarget}</code>
@@ -1089,18 +1107,31 @@ export function Doctor({
                   {startupHint}
                 </div>
               )}
-              <Button
-                onClick={() => {
-                  void handleStartDiagnosis();
-                }}
-                disabled={diagnosing || !zeroclawDoctorUiLoaded}
-              >
-                {diagnosing
-                  ? t("doctor.connecting")
-                  : !zeroclawDoctorUiLoaded
-                    ? t("doctor.loading")
-                    : t("doctor.startDiagnosis")}
-              </Button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                {showZeroclawDiagnosis && (
+                  <Button
+                    onClick={() => {
+                      void handleStartDiagnosis(undefined, "zeroclaw");
+                    }}
+                    disabled={diagnosing || !zeroclawDoctorUiLoaded}
+                  >
+                    {diagnosing
+                      ? t("doctor.connecting")
+                      : t("doctor.startDiagnosis")}
+                  </Button>
+                )}
+                <Button
+                  variant={showZeroclawDiagnosis ? "outline" : "default"}
+                  onClick={() => {
+                    void handleStartDiagnosis(undefined, "openclaw");
+                  }}
+                  disabled={diagnosing}
+                >
+                  {diagnosing
+                    ? t("doctor.connecting")
+                    : t("installChat.letAiHelp")}
+                </Button>
+              </div>
             </>
           ) : !doctor.connected && doctor.messages.length > 0 ? (
             <>
@@ -1139,7 +1170,7 @@ export function Doctor({
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <Badge variant="outline" className="text-xs">
-                      {t("doctor.engineZeroclaw")}
+                      {activeSourceLabel}
                     </Badge>
                     <Badge variant="outline" className="text-xs flex items-center gap-1.5">
                       <span className={`inline-block w-1.5 h-1.5 rounded-full ${doctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
@@ -1173,7 +1204,7 @@ export function Doctor({
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <Badge variant="outline" className="text-xs">
-                      {t("doctor.agentSource")}
+                      {activeSourceLabel}
                     </Badge>
                     <Badge variant="outline" className="text-xs flex items-center gap-1.5">
                       <span className={`inline-block w-1.5 h-1.5 rounded-full ${remoteConnState === "connected" ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
