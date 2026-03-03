@@ -1309,16 +1309,13 @@ export function Doctor({
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
-                          <AlertDialogAction asChild>
-                            <AsyncActionButton
-                              variant="destructive"
-                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                              loadingText={t("home.deleting")}
-                              disabled={deletingBackupName != null}
-                              onClick={async () => {
-                                setDeletingBackupName(backup.name);
-                                try {
-                                  await ua.deleteBackup(backup.name);
+                          <AlertDialogAction
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            disabled={deletingBackupName != null}
+                            onClick={() => {
+                              setDeletingBackupName(backup.name);
+                              ua.deleteBackup(backup.name)
+                                .then(() => {
                                   setFadingOutBackupName(backup.name);
                                   setBackupMessage(t("home.deletedBackup", { name: backup.name }));
                                   setTimeout(() => {
@@ -1326,17 +1323,12 @@ export function Doctor({
                                     setFadingOutBackupName((prev) => (prev === backup.name ? null : prev));
                                     refreshBackups();
                                   }, 350);
-                                } catch (e) {
-                                  if (!hasGuidanceEmitted(e)) {
-                                    setBackupMessage(t("home.deleteBackupFailed", { error: String(e) }));
-                                  }
-                                } finally {
-                                  setDeletingBackupName(null);
-                                }
-                              }}
-                            >
-                              {t("home.delete")}
-                            </AsyncActionButton>
+                                })
+                                .catch((e) => { if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.deleteBackupFailed", { error: String(e) })); })
+                                .finally(() => setDeletingBackupName(null));
+                            }}
+                          >
+                            {deletingBackupName === backup.name ? t("home.deleting") : t("home.delete")}
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
