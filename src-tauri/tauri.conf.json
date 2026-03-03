@@ -40,7 +40,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/watchdog.js", "resources/zeroclaw/**"],
+    "resources": ["resources/watchdog.js", "resources/zeroclaw/*/*"],
     "targets": "all",
     "macOS": {
       "minimumSystemVersion": "10.15",
