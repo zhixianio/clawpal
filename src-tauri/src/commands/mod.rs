@@ -3230,7 +3230,9 @@ const MAX_ERROR_SNIPPET_CHARS: usize = 280;
 
 fn default_base_url_for_provider(provider: &str) -> Option<&'static str> {
     match provider.trim().to_ascii_lowercase().as_str() {
-        "openai" => Some("https://api.openai.com/v1"),
+        "openai" | "openai-codex" | "github-copilot" | "copilot" => {
+            Some("https://api.openai.com/v1")
+        }
         "openrouter" => Some("https://openrouter.ai/api/v1"),
         "groq" => Some("https://api.groq.com/openai/v1"),
         "deepseek" => Some("https://api.deepseek.com/v1"),
@@ -4217,6 +4219,22 @@ mod model_value_tests {
         assert_eq!(
             profile_to_model_value(&p),
             "openrouter/moonshotai/kimi-k2.5",
+        );
+    }
+
+    #[test]
+    fn test_default_base_url_supports_openai_codex_family() {
+        assert_eq!(
+            default_base_url_for_provider("openai-codex"),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(
+            default_base_url_for_provider("github-copilot"),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(
+            default_base_url_for_provider("copilot"),
+            Some("https://api.openai.com/v1")
         );
     }
 }
