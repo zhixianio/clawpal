@@ -55,27 +55,38 @@ function buildDoctorCacheKey(context: DoctorSessionContext): string {
 
 function sanitizeDoctorCacheMessages(rawMessages: unknown): DoctorChatMessage[] {
   if (!Array.isArray(rawMessages)) return [];
-  return rawMessages
-    .map((raw) => {
-      if (!raw || typeof raw !== "object") return null;
-      const item = raw as Partial<DoctorChatMessage> & Record<string, unknown>;
-      const role = item.role;
-      if (role !== "assistant" && role !== "user" && role !== "tool-call" && role !== "tool-result") return null;
-      const id = typeof item.id === "string" ? item.id : "";
-      if (!id) return null;
-      const content = typeof item.content === "string" ? item.content : "";
-      return {
-        id,
-        role,
-        content,
-        invoke: item.invoke && typeof item.invoke === "object" ? item.invoke as DoctorInvoke : undefined,
-        invokeResult: item.invokeResult,
-        invokeId: typeof item.invokeId === "string" ? item.invokeId : undefined,
-        status: item.status,
-        diagnosisReport: item.diagnosisReport,
-      };
-    })
-    .filter((msg): msg is DoctorChatMessage => msg !== null);
+  return rawMessages.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const item = raw as Partial<DoctorChatMessage> & Record<string, unknown>;
+    const role = item.role;
+    if (role !== "assistant" && role !== "user" && role !== "tool-call" && role !== "tool-result") return [];
+    const id = typeof item.id === "string" ? item.id : "";
+    if (!id) return [];
+    const content = typeof item.content === "string" ? item.content : "";
+    const next: DoctorChatMessage = {
+      id,
+      role,
+      content,
+    };
+    if (item.invoke && typeof item.invoke === "object") {
+      next.invoke = item.invoke as DoctorInvoke;
+    }
+    if (typeof item.invokeId === "string") {
+      next.invokeId = item.invokeId;
+    }
+    if (item.invokeResult !== undefined) {
+      next.invokeResult = item.invokeResult;
+    }
+    const status = item.status;
+    if (status === "pending" || status === "approved" || status === "rejected" || status === "auto") {
+      next.status = status;
+    }
+    const diagnosisReport = item.diagnosisReport;
+    if (diagnosisReport && typeof diagnosisReport === "object" && Array.isArray((diagnosisReport as { items?: unknown }).items)) {
+      next.diagnosisReport = { items: ((diagnosisReport as { items: unknown }).items as DiagnosisReportItem[]) };
+    }
+    return [next];
+  });
 }
 
 function loadDoctorSessionCache(context: DoctorSessionContext): DoctorSessionCache | null {
