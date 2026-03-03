@@ -3288,7 +3288,10 @@ fn run_provider_probe(
 
     let lower = provider_trimmed.to_ascii_lowercase();
     let auth_kind = infer_auth_kind(&provider_trimmed, api_key.trim(), InternalAuthKind::ApiKey);
-    let response = if lower == "anthropic" {
+    let looks_like_claude_model = model_trimmed.to_ascii_lowercase().contains("claude");
+    let use_anthropic_probe_for_openai_codex =
+        lower == "openai-codex" && looks_like_claude_model;
+    let response = if lower == "anthropic" || use_anthropic_probe_for_openai_codex {
         let url = format!("{}/messages", resolved_base);
         let mut req = client
             .post(&url)
