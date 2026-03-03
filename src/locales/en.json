@@ -612,6 +612,7 @@
   "ssh.passphraseValidationFailed": "SSH passphrase check failed (host: {{host}}). Verify the passphrase is correct or unlock the key first.",
   "ssh.missingKeyFile": "No usable private key file found (host: {{host}}). Check IdentityFile in SSH config and confirm the key is readable.",
   "ssh.publicKeyRejected": "SSH authentication failed (host: {{host}}). Passphrase was submitted, but the remote host still rejected it. Check authorized_keys, use user root, and confirm the host fingerprint.",
+  "ssh.publicKeyAuthFailed": "SSH authentication failed (host: {{host}}). The remote host rejected the public key. Check authorized_keys, verify the key file, and confirm the user and host fingerprint.",
   "ssh.passphraseCancelled": "SSH passphrase input cancelled (host: {{host}}). Retry and enter a passphrase if the key is encrypted.",
   "ssh.passphrasePrompt": "Enter SSH key passphrase for {{host}}",
   "ssh.passphraseTitle": "SSH Key Passphrase",

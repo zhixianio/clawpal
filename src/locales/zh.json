@@ -612,6 +612,7 @@
   "ssh.passphraseValidationFailed": "SSH 口令校验失败（host: {{host}}）。请确认私钥口令正确，或先解锁对应密钥后重试。",
   "ssh.missingKeyFile": "未找到可用私钥文件（host: {{host}}）。请检查 SSH 配置里的 IdentityFile 是否可读。",
   "ssh.publicKeyRejected": "SSH 认证失败（host: {{host}}）。已提交口令但远端仍拒绝。请确认 authorized_keys、用户为 root 且主机指纹匹配。",
+  "ssh.publicKeyAuthFailed": "SSH 认证失败（host: {{host}}）。远端拒绝了公钥。请确认 authorized_keys、密钥文件、用户名及主机指纹。",
   "ssh.passphraseCancelled": "已取消输入 SSH 私钥口令（host: {{host}}）。如果该密钥加密，请重试并输入口令。",
   "ssh.passphrasePrompt": "请输入 {{host}} 的 SSH 私钥口令",
   "ssh.passphraseTitle": "SSH 私钥口令",
