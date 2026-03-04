@@ -500,9 +500,13 @@ jobs:
           set -euo pipefail
 
           APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
+          APP_ZIP="$RUNNER_TEMP/notary-app-${{ matrix.target }}.zip"
           SUBMIT_JSON="$RUNNER_TEMP/notary-app-submit-${{ matrix.target }}.json"
 
-          xcrun notarytool submit "$APP_PATH" \
+          rm -f "$APP_ZIP"
+          ditto -c -k --keepParent "$APP_PATH" "$APP_ZIP"
+
+          xcrun notarytool submit "$APP_ZIP" \
             --key "$APPLE_API_KEY_PATH" \
             --key-id "$APPLE_API_KEY" \
             --issuer "$APPLE_API_ISSUER" \
@@ -524,6 +528,7 @@ jobs:
           echo "### Apple notarization submission (app / ${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
           echo "- id: $submission_id" >> "$GITHUB_STEP_SUMMARY"
           echo "- app: $APP_PATH" >> "$GITHUB_STEP_SUMMARY"
+          echo "- app_zip: $APP_ZIP" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Poll Apple Notary status (app)
         id: notarize_app_poll
