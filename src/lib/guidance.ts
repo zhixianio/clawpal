@@ -11,7 +11,7 @@ function logDevGuidanceError(context: string, detail: unknown): void {
   console.error(`[dev guidance] ${context}`, detail);
 }
 
-function normalizeErrorSignature(raw: string): string {
+export function normalizeErrorSignature(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/\s+/g, " ")
