@@ -184,7 +184,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
@@ -196,7 +195,6 @@ jobs:
           has_apple_signing=true
           [ -z "$APPLE_CERTIFICATE" ] && has_apple_signing=false
           [ -z "$APPLE_CERTIFICATE_PASSWORD" ] && has_apple_signing=false
-          [ -z "$APPLE_SIGNING_IDENTITY" ] && has_apple_signing=false
           [ -z "$APPLE_API_KEY" ] && has_apple_signing=false
           [ -z "$APPLE_API_ISSUER" ] && has_apple_signing=false
           [ -z "$APPLE_API_KEY_CONTENT" ] && has_apple_signing=false
@@ -259,6 +257,7 @@ jobs:
             patchelf
 
       - name: Import Apple certificate (macOS only)
+        id: import_apple_cert
         if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -283,8 +282,36 @@ jobs:
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
 
+          echo "keychain_path=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+
           # Clean up certificate file
           rm "$CERTIFICATE_PATH"
+
+      - name: Resolve Apple signing identity from certificate (macOS only)
+        id: apple_identity
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          KEYCHAIN_PATH="${{ steps.import_apple_cert.outputs.keychain_path }}"
+          if [ -z "$KEYCHAIN_PATH" ]; then
+            echo "::error::Missing keychain path from certificate import step"
+            exit 1
+          fi
+
+          identity=$(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | awk -F\" '/Developer ID Application:/ {print $2; exit}'
+          )
+
+          if [ -z "$identity" ]; then
+            echo "::error::Could not resolve Developer ID Application identity from imported certificate"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          echo "signing_identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "### Resolved Apple signing identity" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $identity" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Write Apple API key (macOS only)
         if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
@@ -293,6 +320,47 @@ jobs:
         run: |
           mkdir -p ~/.private_keys
           echo "$APPLE_API_KEY_CONTENT" > ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+
+      - name: Sign zeroclaw macOS sidecars (macOS only)
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN_PATH="${{ steps.import_apple_cert.outputs.keychain_path }}"
+          IDENTITY="${{ steps.apple_identity.outputs.signing_identity }}"
+
+          if [ -z "$KEYCHAIN_PATH" ]; then
+            echo "::error::Missing keychain path from certificate import step"
+            exit 1
+          fi
+
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::Missing resolved Apple signing identity"
+            exit 1
+          fi
+
+          bins=(
+            "src-tauri/resources/zeroclaw/darwin-aarch64/zeroclaw"
+            "src-tauri/resources/zeroclaw/darwin-x64/zeroclaw"
+          )
+
+          for bin in "${bins[@]}"; do
+            if [ ! -f "$bin" ]; then
+              echo "::error::Missing sidecar binary: $bin"
+              exit 1
+            fi
+
+            chmod +x "$bin"
+            codesign \
+              --force \
+              --timestamp \
+              --options runtime \
+              --sign "$IDENTITY" \
+              --keychain "$KEYCHAIN_PATH" \
+              "$bin"
+            codesign --verify --verbose=2 "$bin"
+          done
 
       - name: Install frontend dependencies
         run: npm ci
@@ -307,7 +375,7 @@ jobs:
           fi
           echo "args=$args" >> "$GITHUB_OUTPUT"
 
-      - name: Build Tauri app (signed/notarized)
+      - name: Build Tauri app (signed)
         if: steps.signing.outputs.should_sign == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -316,10 +384,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_PATH: ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_identity.outputs.signing_identity || secrets.APPLE_SIGNING_IDENTITY }}
         with:
           tagName: ${{ steps.release_meta.outputs.tag }}
           releaseCommitish: ${{ inputs.target_commitish }}
@@ -348,6 +413,419 @@ jobs:
           releaseDraft: true
           prerelease: ${{ steps.release_flags.outputs.is_prerelease == 'true' }}
           args: ${{ steps.build_args.outputs.args }}
+
+      - name: Locate macOS bundle assets
+        id: macos_assets
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          candidates=(
+            "target/${{ matrix.target }}/release/bundle"
+            "src-tauri/target/${{ matrix.target }}/release/bundle"
+          )
+
+          bundle_root=""
+          for candidate in "${candidates[@]}"; do
+            if [ -d "$candidate" ]; then
+              bundle_root="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$bundle_root" ]; then
+            echo "::error::Could not locate macOS bundle root for target ${{ matrix.target }}"
+            exit 1
+          fi
+
+          dmg_path="$(find "$bundle_root/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
+          app_path="$(find "$bundle_root/macos" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
+
+          if [ -z "$dmg_path" ]; then
+            echo "::error::Could not locate DMG bundle for target ${{ matrix.target }}"
+            exit 1
+          fi
+
+          if [ -z "$app_path" ]; then
+            echo "::error::Could not locate .app bundle for target ${{ matrix.target }}"
+            exit 1
+          fi
+
+          echo "bundle_root=$bundle_root" >> "$GITHUB_OUTPUT"
+          echo "dmg_path=$dmg_path" >> "$GITHUB_OUTPUT"
+          echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
+
+          echo "### macOS bundle assets (${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- bundle_root: $bundle_root" >> "$GITHUB_STEP_SUMMARY"
+          echo "- app: $app_path" >> "$GITHUB_STEP_SUMMARY"
+          echo "- dmg: $dmg_path" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preflight macOS signing diagnostics
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
+          LOG_PATH="$RUNNER_TEMP/notary-codesign-${{ matrix.target }}.log"
+          : > "$LOG_PATH"
+
+          bins=(
+            "$APP_PATH/Contents/MacOS/clawpal"
+            "$APP_PATH/Contents/Resources/resources/zeroclaw/darwin-aarch64/zeroclaw"
+            "$APP_PATH/Contents/Resources/resources/zeroclaw/darwin-x64/zeroclaw"
+          )
+
+          for bin in "${bins[@]}"; do
+            if [ ! -f "$bin" ]; then
+              echo "::warning::Expected binary not found in app bundle: $bin"
+              continue
+            fi
+
+            echo "----- $bin" | tee -a "$LOG_PATH"
+            codesign -dv --verbose=4 "$bin" 2>&1 | tee -a "$LOG_PATH"
+            codesign --verify --strict --verbose=2 "$bin" 2>&1 | tee -a "$LOG_PATH"
+          done
+
+      - name: Submit macOS app to Apple Notary
+        id: notarize_app_submit
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
+          SUBMIT_JSON="$RUNNER_TEMP/notary-app-submit-${{ matrix.target }}.json"
+
+          xcrun notarytool submit "$APP_PATH" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --output-format json > "$SUBMIT_JSON"
+
+          submission_id="$(
+            python3 -c 'import json,sys;print((json.load(open(sys.argv[1], "r", encoding="utf-8")).get("id") or "").strip())' "$SUBMIT_JSON"
+          )"
+
+          if [ -z "$submission_id" ]; then
+            echo "::error::Could not parse notarization submission id"
+            cat "$SUBMIT_JSON" || true
+            exit 1
+          fi
+
+          echo "submission_id=$submission_id" >> "$GITHUB_OUTPUT"
+          echo "submit_json=$SUBMIT_JSON" >> "$GITHUB_OUTPUT"
+
+          echo "### Apple notarization submission (app / ${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- id: $submission_id" >> "$GITHUB_STEP_SUMMARY"
+          echo "- app: $APP_PATH" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Poll Apple Notary status (app)
+        id: notarize_app_poll
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          submission_id="${{ steps.notarize_app_submit.outputs.submission_id }}"
+          INFO_JSON="$RUNNER_TEMP/notary-app-info-${{ matrix.target }}.json"
+          LOG_JSON="$RUNNER_TEMP/notary-app-log-${{ matrix.target }}.json"
+          MAX_ATTEMPTS=120
+          SLEEP_SECONDS=20
+          accepted=false
+
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            xcrun notarytool info "$submission_id" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --output-format json > "$INFO_JSON"
+
+            status="$(
+              python3 -c 'import json,sys;print((json.load(open(sys.argv[1], "r", encoding="utf-8")).get("status") or "").strip())' "$INFO_JSON"
+            )"
+
+            now="$(date -u +%H:%M:%SZ)"
+            echo "[$now][$attempt/$MAX_ATTEMPTS] notarization status: ${status:-unknown}"
+
+            if [ "$status" = "Accepted" ]; then
+              accepted=true
+              break
+            fi
+
+            if [ "$status" = "Invalid" ] || [ "$status" = "Rejected" ]; then
+              xcrun notarytool log "$submission_id" \
+                --key "$APPLE_API_KEY_PATH" \
+                --key-id "$APPLE_API_KEY" \
+                --issuer "$APPLE_API_ISSUER" \
+                "$LOG_JSON" || true
+              echo "::group::Apple notary log (app / ${{ matrix.target }})"
+              cat "$LOG_JSON" || true
+              echo "::endgroup::"
+              echo "status=$status" >> "$GITHUB_OUTPUT"
+              echo "info_json=$INFO_JSON" >> "$GITHUB_OUTPUT"
+              echo "log_json=$LOG_JSON" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+          done
+
+          xcrun notarytool log "$submission_id" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            "$LOG_JSON" || true
+
+          if [ "$accepted" != "true" ]; then
+            echo "::error::Timed out waiting for Apple notarization after $((MAX_ATTEMPTS * SLEEP_SECONDS / 60)) minutes"
+            echo "::group::Latest Apple notary info (app / ${{ matrix.target }})"
+            cat "$INFO_JSON" || true
+            echo "::endgroup::"
+            echo "::group::Apple notary log (app / ${{ matrix.target }})"
+            cat "$LOG_JSON" || true
+            echo "::endgroup::"
+            echo "status=timeout" >> "$GITHUB_OUTPUT"
+            echo "info_json=$INFO_JSON" >> "$GITHUB_OUTPUT"
+            echo "log_json=$LOG_JSON" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "::group::Apple notary log (app / ${{ matrix.target }})"
+          cat "$LOG_JSON" || true
+          echo "::endgroup::"
+
+          echo "status=Accepted" >> "$GITHUB_OUTPUT"
+          echo "info_json=$INFO_JSON" >> "$GITHUB_OUTPUT"
+          echo "log_json=$LOG_JSON" >> "$GITHUB_OUTPUT"
+          echo "### Apple notarization status (app / ${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- id: $submission_id" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: Accepted" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Staple Apple notarization ticket to app
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
+
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+
+      - name: Repack macOS DMG with stapled app
+        id: repack_dmg
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
+          DMG_PATH="${{ steps.repack_dmg.outputs.dmg_path }}"
+          VOL_NAME="$(basename "$APP_PATH" .app)"
+          REPACKED_DMG="$RUNNER_TEMP/repacked-${{ matrix.target }}.dmg"
+
+          rm -f "$REPACKED_DMG"
+          hdiutil create \
+            -volname "$VOL_NAME" \
+            -srcfolder "$APP_PATH" \
+            -format UDZO \
+            -ov \
+            "$REPACKED_DMG"
+
+          mv "$REPACKED_DMG" "$DMG_PATH"
+          echo "dmg_path=$DMG_PATH" >> "$GITHUB_OUTPUT"
+
+          echo "### Repacked macOS DMG (${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source app: $APP_PATH" >> "$GITHUB_STEP_SUMMARY"
+          echo "- repacked dmg: $DMG_PATH" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Submit repacked macOS DMG to Apple Notary
+        id: notarize_dmg_submit
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DMG_PATH="${{ steps.repack_dmg.outputs.dmg_path }}"
+          SUBMIT_JSON="$RUNNER_TEMP/notary-dmg-submit-${{ matrix.target }}.json"
+
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --output-format json > "$SUBMIT_JSON"
+
+          submission_id="$(
+            python3 -c 'import json,sys;print((json.load(open(sys.argv[1], "r", encoding="utf-8")).get("id") or "").strip())' "$SUBMIT_JSON"
+          )"
+
+          if [ -z "$submission_id" ]; then
+            echo "::error::Could not parse notarization submission id"
+            cat "$SUBMIT_JSON" || true
+            exit 1
+          fi
+
+          echo "submission_id=$submission_id" >> "$GITHUB_OUTPUT"
+          echo "submit_json=$SUBMIT_JSON" >> "$GITHUB_OUTPUT"
+
+          echo "### Apple notarization submission (dmg / ${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- id: $submission_id" >> "$GITHUB_STEP_SUMMARY"
+          echo "- dmg: $DMG_PATH" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Poll Apple Notary status (dmg)
+        id: notarize_dmg_poll
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ~/.private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          submission_id="${{ steps.notarize_dmg_submit.outputs.submission_id }}"
+          INFO_JSON="$RUNNER_TEMP/notary-dmg-info-${{ matrix.target }}.json"
+          LOG_JSON="$RUNNER_TEMP/notary-dmg-log-${{ matrix.target }}.json"
+          MAX_ATTEMPTS=120
+          SLEEP_SECONDS=20
+          accepted=false
+
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            xcrun notarytool info "$submission_id" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --output-format json > "$INFO_JSON"
+
+            status="$(
+              python3 -c 'import json,sys;print((json.load(open(sys.argv[1], "r", encoding="utf-8")).get("status") or "").strip())' "$INFO_JSON"
+            )"
+
+            now="$(date -u +%H:%M:%SZ)"
+            echo "[$now][$attempt/$MAX_ATTEMPTS] notarization status: ${status:-unknown}"
+
+            if [ "$status" = "Accepted" ]; then
+              accepted=true
+              break
+            fi
+
+            if [ "$status" = "Invalid" ] || [ "$status" = "Rejected" ]; then
+              xcrun notarytool log "$submission_id" \
+                --key "$APPLE_API_KEY_PATH" \
+                --key-id "$APPLE_API_KEY" \
+                --issuer "$APPLE_API_ISSUER" \
+                "$LOG_JSON" || true
+              echo "::group::Apple notary log (dmg / ${{ matrix.target }})"
+              cat "$LOG_JSON" || true
+              echo "::endgroup::"
+              echo "status=$status" >> "$GITHUB_OUTPUT"
+              echo "info_json=$INFO_JSON" >> "$GITHUB_OUTPUT"
+              echo "log_json=$LOG_JSON" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+
+            sleep "$SLEEP_SECONDS"
+          done
+
+          xcrun notarytool log "$submission_id" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            "$LOG_JSON" || true
+
+          if [ "$accepted" != "true" ]; then
+            echo "::error::Timed out waiting for Apple notarization after $((MAX_ATTEMPTS * SLEEP_SECONDS / 60)) minutes"
+            echo "::group::Latest Apple notary info (dmg / ${{ matrix.target }})"
+            cat "$INFO_JSON" || true
+            echo "::endgroup::"
+            echo "::group::Apple notary log (dmg / ${{ matrix.target }})"
+            cat "$LOG_JSON" || true
+            echo "::endgroup::"
+            echo "status=timeout" >> "$GITHUB_OUTPUT"
+            echo "info_json=$INFO_JSON" >> "$GITHUB_OUTPUT"
+            echo "log_json=$LOG_JSON" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "::group::Apple notary log (dmg / ${{ matrix.target }})"
+          cat "$LOG_JSON" || true
+          echo "::endgroup::"
+
+          echo "status=Accepted" >> "$GITHUB_OUTPUT"
+          echo "info_json=$INFO_JSON" >> "$GITHUB_OUTPUT"
+          echo "log_json=$LOG_JSON" >> "$GITHUB_OUTPUT"
+          echo "### Apple notarization status (dmg / ${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- id: $submission_id" >> "$GITHUB_STEP_SUMMARY"
+          echo "- status: Accepted" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Staple DMG and verify mounted app ticket
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DMG_PATH="${{ steps.repack_dmg.outputs.dmg_path }}"
+          MOUNT_POINT="$RUNNER_TEMP/notary-mount-${{ matrix.target }}"
+
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+
+          rm -rf "$MOUNT_POINT"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach "$DMG_PATH" -nobrowse -readonly -mountpoint "$MOUNT_POINT"
+          APP_IN_DMG="$(find "$MOUNT_POINT" -maxdepth 2 -type d -name '*.app' | head -n 1 || true)"
+
+          if [ -z "$APP_IN_DMG" ]; then
+            echo "::error::Could not locate app bundle inside DMG: $DMG_PATH"
+            hdiutil detach "$MOUNT_POINT" -force || true
+            exit 1
+          fi
+
+          xcrun stapler validate "$APP_IN_DMG"
+          syspolicy_check distribution "$APP_IN_DMG" -v
+
+          hdiutil detach "$MOUNT_POINT" -force
+          rm -rf "$MOUNT_POINT"
+
+      - name: Re-upload notarized macOS DMG
+        if: ${{ contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.release_meta.outputs.tag }}"
+          DMG_PATH="${{ steps.repack_dmg.outputs.dmg_path }}"
+
+          gh release upload "$TAG" "$DMG_PATH" --clobber
+          if [ -f "${DMG_PATH}.sig" ]; then
+            gh release upload "$TAG" "${DMG_PATH}.sig" --clobber
+          fi
+
+      - name: Upload notarization diagnostics
+        if: ${{ always() && contains(matrix.target, 'apple-darwin') && steps.signing.outputs.should_sign == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: notarization-diagnostics-${{ matrix.target }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/notary-*.json
+            ${{ runner.temp }}/notary-*.log
 
       - name: Build Tauri app (unsigned)
         if: steps.signing.outputs.should_sign != 'true'
@@ -438,63 +916,42 @@ jobs:
             gh release upload "${{ steps.release_meta.outputs.tag }}" $dest --clobber
           }
 
-      - name: Upload zeroclaw sidecar binary
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin)
-              SIDE_DIR="darwin-aarch64"
-              OUTPUT_NAME="zeroclaw-macos-aarch64"
-              SOURCE_BIN="zeroclaw"
-              ;;
-            x86_64-apple-darwin)
-              SIDE_DIR="darwin-x64"
-              OUTPUT_NAME="zeroclaw-macos-x64"
-              SOURCE_BIN="zeroclaw"
-              ;;
-            x86_64-unknown-linux-gnu)
-              SIDE_DIR="linux-x64"
-              OUTPUT_NAME="zeroclaw-linux-x64"
-              SOURCE_BIN="zeroclaw"
-              ;;
-            x86_64-pc-windows-msvc)
-              SIDE_DIR="windows-x64"
-              OUTPUT_NAME="zeroclaw-windows-x64.exe"
-              SOURCE_BIN="zeroclaw.exe"
-              ;;
-            *)
-              echo "Unsupported build target: ${{ matrix.target }}"
-              exit 0
-              ;;
-          esac
-
-          ASSET_SUFFIX="${{ steps.signing.outputs.asset_suffix }}"
-          if [ -n "$ASSET_SUFFIX" ]; then
-            if [[ "$OUTPUT_NAME" == *.exe ]]; then
-              OUTPUT_NAME="${OUTPUT_NAME%.exe}${ASSET_SUFFIX}.exe"
-            else
-              OUTPUT_NAME="${OUTPUT_NAME}${ASSET_SUFFIX}"
-            fi
-          fi
-
-          SOURCE="src-tauri/resources/zeroclaw/${SIDE_DIR}/${SOURCE_BIN}"
-          if [ ! -f "$SOURCE" ]; then
-            echo "Zeroclaw binary not found for ${SIDE_DIR}: $SOURCE"
-            exit 1
-          fi
-
-          mkdir -p release-artifacts
-          DEST="release-artifacts/$OUTPUT_NAME"
-          cp "$SOURCE" "$DEST"
-          if [ "${{ matrix.platform }}" != "windows-latest" ]; then
-            chmod +x "$DEST"
-          fi
-          gh release upload "${{ steps.release_meta.outputs.tag }}" "$DEST" --clobber
-
       - name: Cleanup Apple signing (macOS only)
         if: ${{ contains(matrix.target, 'apple-darwin') && always() }}
         run: |
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db 2>/dev/null || true
           rm -f ~/.private_keys/AuthKey_*.p8 2>/dev/null || true
+
+  cleanup_release_assets:
+    name: Cleanup Ambiguous macOS Assets
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ always() && needs.build.result == 'success' }}
+    steps:
+      - name: Remove non-notarized macOS app tar assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="v${{ inputs.version }}"
+          echo "Cleaning release assets for $TAG"
+
+          mapfile -t targets < <(
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '
+              .assets[]
+              | .name
+              | select(test("\\.app\\.tar\\.gz(\\.sig)?$"))
+            '
+          )
+
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "No *.app.tar.gz assets found."
+            exit 0
+          fi
+
+          for name in "${targets[@]}"; do
+            echo "Deleting asset: $name"
+            gh release delete-asset "$TAG" "$name" --repo "$GITHUB_REPOSITORY" -y
+          done
