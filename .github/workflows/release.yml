@@ -635,7 +635,7 @@ jobs:
           set -euo pipefail
 
           APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
-          DMG_PATH="${{ steps.repack_dmg.outputs.dmg_path }}"
+          DMG_PATH="${{ steps.macos_assets.outputs.dmg_path }}"
           VOL_NAME="$(basename "$APP_PATH" .app)"
           REPACKED_DMG="$RUNNER_TEMP/repacked-${{ matrix.target }}.dmg"
 
