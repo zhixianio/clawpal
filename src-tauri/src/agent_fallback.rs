@@ -442,7 +442,10 @@ pub async fn explain_operation_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_guidance_json, rules_fallback, GuidanceAction, OpenclawProbe};
+    use super::{
+        local_openclaw_not_installed_guidance, parse_guidance_json, rules_fallback,
+        GuidanceAction, OpenclawProbe,
+    };
 
     #[test]
     fn parse_guidance_json_accepts_embedded_json() {

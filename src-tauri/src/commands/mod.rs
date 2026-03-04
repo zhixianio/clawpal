@@ -3697,9 +3697,26 @@ fn resolve_key_from_auth_store_json(data: &Value, auth_ref: &str) -> Option<Stri
     resolve_credential_from_auth_store_json(data, auth_ref).map(|credential| credential.secret)
 }
 
+fn resolve_key_from_auth_store_json_with_env(
+    data: &Value,
+    auth_ref: &str,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    resolve_credential_from_auth_store_json_with_env(data, auth_ref, env_lookup)
+        .map(|credential| credential.secret)
+}
+
 fn resolve_credential_from_auth_store_json(
     data: &Value,
     auth_ref: &str,
+) -> Option<InternalProviderCredential> {
+    resolve_credential_from_auth_store_json_with_env(data, auth_ref, &local_env_lookup)
+}
+
+fn resolve_credential_from_auth_store_json_with_env(
+    data: &Value,
+    auth_ref: &str,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Option<InternalProviderCredential> {
     let keys = auth_ref_lookup_keys(auth_ref);
     if keys.is_empty() {
@@ -3709,7 +3726,9 @@ fn resolve_credential_from_auth_store_json(
     if let Some(profiles) = data.get("profiles").and_then(Value::as_object) {
         for key in &keys {
             if let Some(auth_entry) = profiles.get(key) {
-                if let Some(credential) = extract_credential_from_auth_entry(auth_entry) {
+                if let Some(credential) =
+                    extract_credential_from_auth_entry_with_env(auth_entry, env_lookup)
+                {
                     return Some(credential);
                 }
             }
@@ -3719,7 +3738,9 @@ fn resolve_credential_from_auth_store_json(
     if let Some(root_obj) = data.as_object() {
         for key in &keys {
             if let Some(auth_entry) = root_obj.get(key) {
-                if let Some(credential) = extract_credential_from_auth_entry(auth_entry) {
+                if let Some(credential) =
+                    extract_credential_from_auth_entry_with_env(auth_entry, env_lookup)
+                {
                     return Some(credential);
                 }
             }
@@ -3729,9 +3750,104 @@ fn resolve_credential_from_auth_store_json(
     None
 }
 
+// ---------------------------------------------------------------------------
+// SecretRef resolution — OpenClaw secrets management compatibility
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct SecretRef {
+    source: String,
+    id: String,
+}
+
+fn try_parse_secret_ref(value: &Value) -> Option<SecretRef> {
+    let obj = value.as_object()?;
+    let source = obj.get("source")?.as_str()?.trim();
+    let id = obj.get("id")?.as_str()?.trim();
+    if source.is_empty() || id.is_empty() {
+        return None;
+    }
+    Some(SecretRef {
+        source: source.to_string(),
+        id: id.to_string(),
+    })
+}
+
+fn resolve_secret_ref_with_env(
+    secret_ref: &SecretRef,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    match secret_ref.source.as_str() {
+        "env" => env_lookup(&secret_ref.id),
+        "file" => resolve_secret_ref_file(&secret_ref.id),
+        _ => None, // "exec" requires trusted binary + provider config, not supported here
+    }
+}
+
+fn resolve_secret_ref_file(path_str: &str) -> Option<String> {
+    let path = std::path::Path::new(path_str);
+    if !path.is_absolute() || !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn local_env_lookup(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn collect_secret_ref_env_names_from_auth_store(data: &Value) -> Vec<String> {
+    let mut names = Vec::new();
+    let check_entry = |entry: &Value, names: &mut Vec<String>| {
+        if let Some(sr) = entry.get("secretRef").and_then(try_parse_secret_ref) {
+            if sr.source == "env" {
+                names.push(sr.id);
+            }
+        }
+        for field in ["token", "key", "apiKey", "api_key", "access"] {
+            if let Some(field_val) = entry.get(field) {
+                if let Some(sr) = try_parse_secret_ref(field_val) {
+                    if sr.source == "env" {
+                        names.push(sr.id);
+                    }
+                }
+            }
+        }
+    };
+    if let Some(profiles) = data.get("profiles").and_then(Value::as_object) {
+        for entry in profiles.values() {
+            check_entry(entry, &mut names);
+        }
+    }
+    if let Some(root_obj) = data.as_object() {
+        for (key, entry) in root_obj {
+            if key != "profiles" && key != "version" {
+                check_entry(entry, &mut names);
+            }
+        }
+    }
+    names
+}
+
 /// Extract the actual key/token from an agent auth-profiles entry.
-/// Handles different auth types: token, api_key, oauth.
+/// Handles different auth types: token, api_key, oauth, and SecretRef objects.
+#[allow(dead_code)]
 fn extract_credential_from_auth_entry(entry: &Value) -> Option<InternalProviderCredential> {
+    extract_credential_from_auth_entry_with_env(entry, &local_env_lookup)
+}
+
+fn extract_credential_from_auth_entry_with_env(
+    entry: &Value,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<InternalProviderCredential> {
     let auth_type = entry
         .get("type")
         .and_then(Value::as_str)
@@ -3748,23 +3864,63 @@ fn extract_credential_from_auth_entry(entry: &Value) -> Option<InternalProviderC
         "api_key" | "api-key" | "apikey" => Some(InternalAuthKind::ApiKey),
         _ => None,
     };
+
+    // SecretRef at entry level takes precedence (OpenClaw secrets management).
+    if let Some(secret_ref) = entry.get("secretRef").and_then(try_parse_secret_ref) {
+        if let Some(resolved) = resolve_secret_ref_with_env(&secret_ref, env_lookup) {
+            let kind = infer_auth_kind(
+                provider,
+                &resolved,
+                kind_from_type.unwrap_or(InternalAuthKind::ApiKey),
+            );
+            return Some(InternalProviderCredential {
+                secret: resolved,
+                kind,
+            });
+        }
+    }
+
     // "token" type → "token" field (e.g. anthropic)
     // "api_key" type → "key" field (e.g. kimi-coding)
     // "oauth" type → "access" field (e.g. minimax-portal, openai-codex)
     for field in ["token", "key", "apiKey", "api_key", "access"] {
-        if let Some(val) = entry.get(field).and_then(Value::as_str) {
-            let trimmed = val.trim();
-            if !trimmed.is_empty() {
-                let fallback_kind = match field {
-                    "token" | "access" => InternalAuthKind::Authorization,
-                    _ => InternalAuthKind::ApiKey,
-                };
-                let kind =
-                    infer_auth_kind(provider, trimmed, kind_from_type.unwrap_or(fallback_kind));
-                return Some(InternalProviderCredential {
-                    secret: trimmed.to_string(),
-                    kind,
-                });
+        if let Some(field_val) = entry.get(field) {
+            // Plaintext string value.
+            if let Some(val) = field_val.as_str() {
+                let trimmed = val.trim();
+                if !trimmed.is_empty() {
+                    let fallback_kind = match field {
+                        "token" | "access" => InternalAuthKind::Authorization,
+                        _ => InternalAuthKind::ApiKey,
+                    };
+                    let kind = infer_auth_kind(
+                        provider,
+                        trimmed,
+                        kind_from_type.unwrap_or(fallback_kind),
+                    );
+                    return Some(InternalProviderCredential {
+                        secret: trimmed.to_string(),
+                        kind,
+                    });
+                }
+            }
+            // SecretRef object in credential field (OpenClaw secrets management).
+            if let Some(secret_ref) = try_parse_secret_ref(field_val) {
+                if let Some(resolved) = resolve_secret_ref_with_env(&secret_ref, env_lookup) {
+                    let fallback_kind = match field {
+                        "token" | "access" => InternalAuthKind::Authorization,
+                        _ => InternalAuthKind::ApiKey,
+                    };
+                    let kind = infer_auth_kind(
+                        provider,
+                        &resolved,
+                        kind_from_type.unwrap_or(fallback_kind),
+                    );
+                    return Some(InternalProviderCredential {
+                        secret: resolved,
+                        kind,
+                    });
+                }
             }
         }
     }
@@ -4986,6 +5142,226 @@ mod model_profile_upsert_tests {
                 "anthropic/claude-opus-4-6".to_string(),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod secret_ref_tests {
+    use super::*;
+
+    #[test]
+    fn try_parse_secret_ref_parses_valid_env_ref() {
+        let val = serde_json::json!({ "source": "env", "id": "ANTHROPIC_API_KEY" });
+        let sr = try_parse_secret_ref(&val).expect("should parse");
+        assert_eq!(sr.source, "env");
+        assert_eq!(sr.id, "ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn try_parse_secret_ref_parses_valid_file_ref() {
+        let val = serde_json::json!({ "source": "file", "provider": "filemain", "id": "/tmp/secret.txt" });
+        let sr = try_parse_secret_ref(&val).expect("should parse");
+        assert_eq!(sr.source, "file");
+        assert_eq!(sr.id, "/tmp/secret.txt");
+    }
+
+    #[test]
+    fn try_parse_secret_ref_returns_none_for_plain_string() {
+        let val = serde_json::json!("sk-ant-plaintext");
+        assert!(try_parse_secret_ref(&val).is_none());
+    }
+
+    #[test]
+    fn try_parse_secret_ref_returns_none_for_missing_source() {
+        let val = serde_json::json!({ "id": "SOME_KEY" });
+        assert!(try_parse_secret_ref(&val).is_none());
+    }
+
+    #[test]
+    fn try_parse_secret_ref_returns_none_for_missing_id() {
+        let val = serde_json::json!({ "source": "env" });
+        assert!(try_parse_secret_ref(&val).is_none());
+    }
+
+    #[test]
+    fn extract_credential_resolves_env_secret_ref_in_key_field() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "kimi-coding",
+            "key": { "source": "env", "id": "KIMI_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "KIMI_API_KEY" {
+                Some("sk-resolved-kimi".to_string())
+            } else {
+                None
+            }
+        };
+        let credential =
+            extract_credential_from_auth_entry_with_env(&entry, &env_lookup).expect("should resolve");
+        assert_eq!(credential.secret, "sk-resolved-kimi");
+        assert_eq!(credential.kind, InternalAuthKind::ApiKey);
+    }
+
+    #[test]
+    fn extract_credential_resolves_env_secret_ref_in_token_field() {
+        let entry = serde_json::json!({
+            "type": "token",
+            "provider": "anthropic",
+            "token": { "source": "env", "id": "ANTHROPIC_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "ANTHROPIC_API_KEY" {
+                Some("sk-ant-resolved".to_string())
+            } else {
+                None
+            }
+        };
+        let credential =
+            extract_credential_from_auth_entry_with_env(&entry, &env_lookup).expect("should resolve");
+        assert_eq!(credential.secret, "sk-ant-resolved");
+        assert_eq!(credential.kind, InternalAuthKind::Authorization);
+    }
+
+    #[test]
+    fn extract_credential_resolves_top_level_secret_ref() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "openai",
+            "secretRef": { "source": "env", "id": "OPENAI_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "OPENAI_API_KEY" {
+                Some("sk-openai-resolved".to_string())
+            } else {
+                None
+            }
+        };
+        let credential =
+            extract_credential_from_auth_entry_with_env(&entry, &env_lookup).expect("should resolve");
+        assert_eq!(credential.secret, "sk-openai-resolved");
+        assert_eq!(credential.kind, InternalAuthKind::ApiKey);
+    }
+
+    #[test]
+    fn top_level_secret_ref_takes_precedence_over_plaintext_field() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "openai",
+            "key": "sk-plaintext-stale",
+            "secretRef": { "source": "env", "id": "OPENAI_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "OPENAI_API_KEY" {
+                Some("sk-ref-fresh".to_string())
+            } else {
+                None
+            }
+        };
+        let credential =
+            extract_credential_from_auth_entry_with_env(&entry, &env_lookup).expect("should resolve");
+        assert_eq!(credential.secret, "sk-ref-fresh");
+    }
+
+    #[test]
+    fn falls_back_to_plaintext_when_secret_ref_env_unresolved() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "openai",
+            "key": "sk-plaintext-fallback",
+            "secretRef": { "source": "env", "id": "MISSING_VAR" }
+        });
+        let env_lookup = |_: &str| -> Option<String> { None };
+        let credential =
+            extract_credential_from_auth_entry_with_env(&entry, &env_lookup).expect("should resolve");
+        assert_eq!(credential.secret, "sk-plaintext-fallback");
+    }
+
+    #[test]
+    fn resolve_key_from_auth_store_with_env_resolves_secret_ref() {
+        let store = serde_json::json!({
+            "version": 1,
+            "profiles": {
+                "anthropic:default": {
+                    "type": "token",
+                    "provider": "anthropic",
+                    "token": { "source": "env", "id": "ANTHROPIC_API_KEY" }
+                }
+            }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "ANTHROPIC_API_KEY" {
+                Some("sk-ant-from-env".to_string())
+            } else {
+                None
+            }
+        };
+        let key = resolve_key_from_auth_store_json_with_env(
+            &store,
+            "anthropic:default",
+            &env_lookup,
+        );
+        assert_eq!(key, Some("sk-ant-from-env".to_string()));
+    }
+
+    #[test]
+    fn collect_secret_ref_env_names_finds_names_from_profiles_and_root() {
+        let store = serde_json::json!({
+            "version": 1,
+            "profiles": {
+                "anthropic:default": {
+                    "type": "token",
+                    "provider": "anthropic",
+                    "token": { "source": "env", "id": "ANTHROPIC_API_KEY" }
+                },
+                "openai:default": {
+                    "type": "api_key",
+                    "provider": "openai",
+                    "secretRef": { "source": "env", "id": "OPENAI_API_KEY" }
+                }
+            }
+        });
+        let mut names = collect_secret_ref_env_names_from_auth_store(&store);
+        names.sort();
+        assert_eq!(names, vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn resolve_secret_ref_file_reads_file_content() {
+        let tmp = std::env::temp_dir().join(format!(
+            "clawpal-secretref-file-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&tmp).expect("create tmp dir");
+        let secret_file = tmp.join("api-key.txt");
+        fs::write(&secret_file, "  sk-from-file\n").expect("write secret file");
+
+        let resolved = resolve_secret_ref_file(secret_file.to_str().unwrap());
+        assert_eq!(resolved, Some("sk-from-file".to_string()));
+
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn resolve_secret_ref_file_returns_none_for_missing_file() {
+        assert!(resolve_secret_ref_file("/nonexistent/path/secret.txt").is_none());
+    }
+
+    #[test]
+    fn resolve_secret_ref_file_returns_none_for_relative_path() {
+        assert!(resolve_secret_ref_file("relative/secret.txt").is_none());
+    }
+
+    #[test]
+    fn exec_source_secret_ref_is_not_resolved() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "vault",
+            "key": { "source": "exec", "provider": "vault", "id": "my-api-key" }
+        });
+        let env_lookup = |_: &str| -> Option<String> { None };
+        let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup);
+        assert!(credential.is_none());
     }
 }
 
@@ -6399,8 +6775,25 @@ async fn resolve_remote_key_from_agent_auth_profiles(
                 let data: Value = serde_json::from_str(&text).map_err(|e| {
                     format!("Failed to parse remote auth store at {auth_file}: {e}")
                 })?;
+                // Try plaintext first, then resolve SecretRef env vars from remote.
                 if let Some(key) = resolve_key_from_auth_store_json(&data, auth_ref) {
                     return Ok(Some(key));
+                }
+                // Collect env-source SecretRef names and fetch them from remote host.
+                let sr_env_names = collect_secret_ref_env_names_from_auth_store(&data);
+                if !sr_env_names.is_empty() {
+                    let remote_env =
+                        RemoteAuthCache::batch_read_env_vars(pool, host_id, &sr_env_names)
+                            .await
+                            .unwrap_or_default();
+                    let env_lookup = |name: &str| -> Option<String> {
+                        remote_env.get(name).cloned()
+                    };
+                    if let Some(key) = resolve_key_from_auth_store_json_with_env(
+                        &data, auth_ref, &env_lookup,
+                    ) {
+                        return Ok(Some(key));
+                    }
                 }
             }
         }
@@ -6552,13 +6945,14 @@ struct RemoteAuthCache {
 
 impl RemoteAuthCache {
     /// Build cache by collecting all needed env var names from all profiles
-    /// and reading them + all auth-store files in bulk.
+    /// (including SecretRef env vars from auth stores) and reading them +
+    /// all auth-store files in bulk.
     async fn build(
         pool: &SshConnectionPool,
         host_id: &str,
         profiles: &[ModelProfile],
     ) -> Result<Self, String> {
-        // Collect all unique env var names needed across all profiles.
+        // Collect env var names needed from profile auth_refs and provider conventions.
         let mut env_var_names = Vec::<String>::new();
         let mut seen_env = std::collections::HashSet::<String>::new();
         for profile in profiles {
@@ -6573,16 +6967,26 @@ impl RemoteAuthCache {
             }
         }
 
-        // Batch-read all env vars in a single SSH call using printenv.
-        // We use a delimiter to parse multi-value output safely.
+        // Read all auth-store files from remote agents first so we can
+        // discover additional env var names referenced by SecretRefs.
+        let auth_store_files = Self::read_auth_store_files(pool, host_id).await?;
+
+        // Scan auth store files for env-source SecretRef references and
+        // include their env var names in the batch read.
+        for data in &auth_store_files {
+            for name in collect_secret_ref_env_names_from_auth_store(data) {
+                if seen_env.insert(name.clone()) {
+                    env_var_names.push(name);
+                }
+            }
+        }
+
+        // Batch-read all env vars in a single SSH call.
         let env_vars = if env_var_names.is_empty() {
             HashMap::new()
         } else {
             Self::batch_read_env_vars(pool, host_id, &env_var_names).await?
         };
-
-        // Read all auth-store files from remote agents.
-        let auth_store_files = Self::read_auth_store_files(pool, host_id).await?;
 
         Ok(Self {
             env_vars,
@@ -6702,8 +7106,13 @@ impl RemoteAuthCache {
     }
 
     fn find_in_auth_stores(&self, auth_ref: &str) -> Option<String> {
+        let env_lookup = |name: &str| -> Option<String> {
+            self.env_vars.get(name).cloned()
+        };
         for data in &self.auth_store_files {
-            if let Some(key) = resolve_key_from_auth_store_json(data, auth_ref) {
+            if let Some(key) =
+                resolve_key_from_auth_store_json_with_env(data, auth_ref, &env_lookup)
+            {
                 return Some(key);
             }
         }
