@@ -68,6 +68,8 @@ pub fn classify_engine_error(message: &str) -> &'static str {
         return "MODEL_UNAVAILABLE";
     }
     if lower.contains("no such file")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
         || (lower.contains("not found")
             && (lower.contains("file")
                 || lower.contains("directory")

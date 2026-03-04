@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, RegisteredInstance, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus, ZeroclawRuntimeTarget, ZeroclawUsageStats } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, RegisteredInstance, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus, ZeroclawOauthCompleteResult, ZeroclawOauthLoginStartResult, ZeroclawRuntimeTarget, ZeroclawUsageStats } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
@@ -112,6 +112,28 @@ export const api = {
     invoke("test_model_profile", { profileId }),
   resolveProviderAuth: (provider: string): Promise<ProviderAuthSuggestion> =>
     invoke("resolve_provider_auth", { provider }),
+  startZeroclawOauthLogin: (
+    provider: string,
+    profile?: string,
+    instanceId?: string,
+  ): Promise<ZeroclawOauthLoginStartResult> =>
+    invoke("start_zeroclaw_oauth_login", {
+      provider,
+      profile: profile ?? null,
+      instanceId: instanceId ?? null,
+    }),
+  completeZeroclawOauthLogin: (
+    provider: string,
+    redirectInput: string,
+    profile?: string,
+    instanceId?: string,
+  ): Promise<ZeroclawOauthCompleteResult> =>
+    invoke("complete_zeroclaw_oauth_login", {
+      provider,
+      redirectInput,
+      profile: profile ?? null,
+      instanceId: instanceId ?? null,
+    }),
   resolveApiKeys: (): Promise<ResolvedApiKey[]> =>
     invoke("resolve_api_keys", {}),
   listAgentsOverview: (): Promise<AgentOverview[]> =>

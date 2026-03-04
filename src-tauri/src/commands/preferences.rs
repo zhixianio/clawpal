@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -27,10 +27,38 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
         .filter(|raw| !raw.is_empty())
 }
 
+fn sanitize_zeroclaw_model_preference(value: Option<String>) -> Option<String> {
+    let normalized_value = normalize_optional_string(value)?;
+    let normalized_ref = super::normalize_model_ref(&normalized_value);
+    if normalized_ref.is_empty() {
+        return None;
+    }
+
+    let Ok(profiles) = crate::commands::list_model_profiles() else {
+        // If profiles cannot be loaded, keep the current preference to avoid
+        // dropping user intent due to transient IO issues.
+        return Some(normalized_value);
+    };
+
+    let mut valid_models = HashSet::<String>::new();
+    for profile in profiles.into_iter().filter(|p| p.enabled) {
+        let key = super::normalize_model_ref(&super::profile_to_model_value(&profile));
+        if !key.is_empty() {
+            valid_models.insert(key);
+        }
+    }
+
+    if valid_models.contains(&normalized_ref) {
+        Some(normalized_value)
+    } else {
+        None
+    }
+}
+
 pub fn load_app_preferences_from_paths(paths: &OpenClawPaths) -> AppPreferences {
     let path = app_preferences_path(paths);
     let mut prefs = read_json::<AppPreferences>(&path).unwrap_or_default();
-    prefs.zeroclaw_model = normalize_optional_string(prefs.zeroclaw_model);
+    prefs.zeroclaw_model = sanitize_zeroclaw_model_preference(prefs.zeroclaw_model);
     prefs
 }
 

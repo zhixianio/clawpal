@@ -3443,6 +3443,14 @@ pub(crate) fn provider_env_var_candidates(provider: &str) -> Vec<String> {
         push_unique("ANTHROPIC_OAUTH_TOKEN");
         push_unique("ANTHROPIC_AUTH_TOKEN");
     }
+    if normalized == "openai-codex"
+        || normalized == "openai_codex"
+        || normalized == "github-copilot"
+        || normalized == "copilot"
+    {
+        push_unique("OPENAI_CODEX_TOKEN");
+        push_unique("OPENAI_CODEX_AUTH_TOKEN");
+    }
 
     out
 }

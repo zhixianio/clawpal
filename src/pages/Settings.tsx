@@ -55,6 +55,7 @@ type ProfileForm = {
   id: string;
   provider: string;
   model: string;
+  authRef: string;
   apiKey: string;
   useCustomUrl: boolean;
   baseUrl: string;
@@ -81,6 +82,7 @@ function emptyForm(): ProfileForm {
     id: "",
     provider: "",
     model: "",
+    authRef: "",
     apiKey: "",
     useCustomUrl: false,
     baseUrl: "",
@@ -88,7 +90,39 @@ function emptyForm(): ProfileForm {
   };
 }
 
+function normalizeOauthProvider(provider: string): string {
+  const lower = provider.trim().toLowerCase();
+  if (lower === "openai_codex" || lower === "github-copilot" || lower === "copilot") {
+    return "openai-codex";
+  }
+  return lower;
+}
+
+function providerUsesOAuthAuth(provider: string): boolean {
+  return normalizeOauthProvider(provider) === "openai-codex";
+}
+
+function defaultOauthAuthRef(provider: string): string {
+  const normalized = normalizeOauthProvider(provider);
+  if (normalized === "openai-codex") {
+    return "openai-codex:default";
+  }
+  return "";
+}
+
+function oauthProfileNameFromAuthRef(authRef: string): string {
+  const trimmed = authRef.trim();
+  if (!trimmed) return "default";
+  const idx = trimmed.indexOf(":");
+  if (idx < 0) return "default";
+  const profile = trimmed.slice(idx + 1).trim();
+  return profile || "default";
+}
+
 function providerSupportsOptionalApiKey(provider: string): boolean {
+  if (providerUsesOAuthAuth(provider)) {
+    return true;
+  }
   const lower = provider.trim().toLowerCase();
   return [
     "ollama",
@@ -200,6 +234,10 @@ export function Settings({
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [authSuggestion, setAuthSuggestion] = useState<ProviderAuthSuggestion | null>(null);
+  const [oauthAuthorizeUrl, setOauthAuthorizeUrl] = useState("");
+  const [oauthRedirectInput, setOauthRedirectInput] = useState("");
+  const [oauthStarting, setOauthStarting] = useState(false);
+  const [oauthCompleting, setOauthCompleting] = useState(false);
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
   const [zeroclawModel, setZeroclawModel] = useState("");
   const [zeroclawSaving, setZeroclawSaving] = useState(false);
@@ -439,6 +477,13 @@ export function Settings({
     }
   }, [form.provider, form.id, ua, profiles, maskedKeyMap]);
 
+  useEffect(() => {
+    if (!providerUsesOAuthAuth(form.provider)) {
+      setOauthAuthorizeUrl("");
+      setOauthRedirectInput("");
+    }
+  }, [form.provider]);
+
   const modelCandidates = useMemo(() => {
     const found = catalog.find((c) => c.provider === form.provider);
     return found?.models || [];
@@ -468,36 +513,110 @@ export function Settings({
     return Array.from(new Set(fromProfiles)).sort((a, b) => a.localeCompare(b));
   }, [profiles]);
 
-  const upsert = (event: FormEvent) => {
-    event.preventDefault();
+  useEffect(() => {
+    if (!zeroclawPrefsLoadedRef.current) return;
+    const current = zeroclawModel.trim();
+    if (!current) return;
+    const exists = zeroclawModelCandidates.some(
+      (candidate) => candidate.toLowerCase() === current.toLowerCase(),
+    );
+    if (!exists) {
+      setZeroclawModel("");
+    }
+  }, [zeroclawModel, zeroclawModelCandidates]);
+
+  const saveProfile = async (authRefOverride?: string): Promise<boolean> => {
     if (!form.provider || !form.model) {
       setMessage(t('settings.providerModelRequired'));
-      return;
+      return false;
     }
     const apiKeyOptional = form.useCustomUrl || providerSupportsOptionalApiKey(form.provider);
     if (!ua.isRemote && !form.apiKey && !form.id && !authSuggestion?.hasKey && !apiKeyOptional) {
       setMessage(t('settings.apiKeyRequired'));
-      return;
+      return false;
     }
+    const overrideAuthRef = (authRefOverride || "").trim();
+    const explicitAuthRef = form.authRef.trim();
+    const oauthFallbackAuthRef = defaultOauthAuthRef(form.provider);
+    const resolvedAuthRef = overrideAuthRef
+      || explicitAuthRef
+      || ((!form.apiKey && authSuggestion?.authRef) ? authSuggestion.authRef : "")
+      || (!form.apiKey ? oauthFallbackAuthRef : "");
     const profileData: ModelProfile = {
       id: form.id || "",
       name: `${form.provider}/${form.model}`,
       provider: form.provider,
       model: form.model,
-      authRef: (!form.apiKey && authSuggestion?.authRef) ? authSuggestion.authRef : "",
+      authRef: resolvedAuthRef,
       apiKey: form.apiKey || undefined,
       baseUrl: form.useCustomUrl && form.baseUrl ? form.baseUrl : undefined,
       enabled: form.enabled,
     };
-    ua.upsertModelProfile(profileData)
-      .then(() => {
-        setMessage(t('settings.profileSaved'));
-        setForm(emptyForm());
-        setProfileDialogOpen(false);
-        refreshProfiles();
-        onDataChange?.();
-      })
-      .catch((e) => setMessage(t('settings.saveFailed', { error: String(e) })));
+    try {
+      await ua.upsertModelProfile(profileData);
+      setMessage(t('settings.profileSaved'));
+      setForm(emptyForm());
+      setProfileDialogOpen(false);
+      setOauthAuthorizeUrl("");
+      setOauthRedirectInput("");
+      refreshProfiles();
+      onDataChange?.();
+      return true;
+    } catch (e) {
+      setMessage(t('settings.saveFailed', { error: String(e) }));
+      return false;
+    }
+  };
+
+  const upsert = (event: FormEvent) => {
+    event.preventDefault();
+    void saveProfile();
+  };
+
+  const startOauthLogin = async () => {
+    if (!providerUsesOAuthAuth(form.provider)) return;
+    const provider = normalizeOauthProvider(form.provider);
+    const authRef = form.authRef.trim() || defaultOauthAuthRef(provider);
+    const profile = oauthProfileNameFromAuthRef(authRef);
+    setOauthStarting(true);
+    try {
+      const result = await ua.startZeroclawOauthLogin(provider, profile, ua.instanceId);
+      setForm((prev) => ({ ...prev, authRef: result.authRef || prev.authRef || authRef }));
+      setOauthAuthorizeUrl(result.authorizeUrl);
+      setMessage(t("settings.oauthStartSuccess"));
+    } catch (e) {
+      setMessage(t("settings.oauthStartFailed", { error: String(e) }));
+    } finally {
+      setOauthStarting(false);
+    }
+  };
+
+  const completeOauthAndSave = async () => {
+    if (!providerUsesOAuthAuth(form.provider)) return;
+    const provider = normalizeOauthProvider(form.provider);
+    const authRef = form.authRef.trim() || defaultOauthAuthRef(provider);
+    const profile = oauthProfileNameFromAuthRef(authRef);
+    const redirectInput = oauthRedirectInput.trim();
+    if (!redirectInput) {
+      setMessage(t("settings.oauthRedirectRequired"));
+      return;
+    }
+    setOauthCompleting(true);
+    try {
+      const result = await ua.completeZeroclawOauthLogin(
+        provider,
+        redirectInput,
+        profile,
+        ua.instanceId,
+      );
+      const resolvedAuthRef = result.authRef || authRef;
+      setForm((prev) => ({ ...prev, authRef: resolvedAuthRef }));
+      await saveProfile(resolvedAuthRef);
+    } catch (e) {
+      setMessage(t("settings.oauthCompleteFailed", { error: String(e) }));
+    } finally {
+      setOauthCompleting(false);
+    }
   };
 
   const editProfile = (profile: ModelProfile) => {
@@ -505,16 +624,25 @@ export function Settings({
       id: profile.id,
       provider: profile.provider,
       model: profile.model,
+      authRef: profile.authRef || "",
       apiKey: "",
       useCustomUrl: !!profile.baseUrl,
       baseUrl: profile.baseUrl || "",
       enabled: profile.enabled,
     });
+    setOauthAuthorizeUrl("");
+    setOauthRedirectInput("");
+    setOauthStarting(false);
+    setOauthCompleting(false);
     setProfileDialogOpen(true);
   };
 
   const openAddProfile = () => {
     setForm(emptyForm());
+    setOauthAuthorizeUrl("");
+    setOauthRedirectInput("");
+    setOauthStarting(false);
+    setOauthCompleting(false);
     setProfileDialogOpen(true);
   };
 
@@ -673,10 +801,6 @@ export function Settings({
       {showProfiles && !ua.isRemote && (
         <p className="text-sm text-muted-foreground mb-4">
           {t('settings.oauthHint')}
-          <code className="mx-1 px-1.5 py-0.5 bg-muted rounded text-xs">openclaw models auth login</code>
-          {t('settings.or')}
-          <code className="mx-1 px-1.5 py-0.5 bg-muted rounded text-xs">openclaw models auth login-github-copilot</code>.
-          {t('settings.oauthHintSuffix')}
         </p>
       )}
 
@@ -785,9 +909,12 @@ export function Settings({
                     <Label className="text-sm font-semibold shrink-0">{t("settings.zeroclawModel")}</Label>
                     <div className="w-[320px] max-w-full">
                       <Select
-                        value={zeroclawModel ? (zeroclawModelCandidates.includes(zeroclawModel) ? zeroclawModel : "__raw__") : "__none__"}
+                        value={
+                          zeroclawModel && zeroclawModelCandidates.includes(zeroclawModel)
+                            ? zeroclawModel
+                            : "__none__"
+                        }
                         onValueChange={(val) => {
-                          if (val === "__raw__") return;
                           setZeroclawModel(val === "__none__" ? "" : val);
                         }}
                         disabled={zeroclawSaving}
@@ -799,9 +926,6 @@ export function Settings({
                           <SelectItem value="__none__">
                             <span className="text-muted-foreground">{t("home.notSet")}</span>
                           </SelectItem>
-                          {zeroclawModel && !zeroclawModelCandidates.includes(zeroclawModel) && (
-                            <SelectItem value="__raw__">{zeroclawModel}</SelectItem>
-                          )}
                           {zeroclawModelCandidates.map((model) => (
                             <SelectItem key={model} value={model}>
                               {model}
@@ -1007,7 +1131,13 @@ export function Settings({
       {/* Add / Edit Profile Dialog */}
       <Dialog open={profileDialogOpen} onOpenChange={(open) => {
         setProfileDialogOpen(open);
-        if (!open) setForm(emptyForm());
+        if (!open) {
+          setForm(emptyForm());
+          setOauthAuthorizeUrl("");
+          setOauthRedirectInput("");
+          setOauthStarting(false);
+          setOauthCompleting(false);
+        }
       }}>
         <DialogContent>
           <DialogHeader>
@@ -1019,7 +1149,12 @@ export function Settings({
               <AutocompleteField
                 value={form.provider}
                 onChange={(val) =>
-                  setForm((p) => ({ ...p, provider: val, model: "" }))
+                  setForm((p) => ({
+                    ...p,
+                    provider: val,
+                    model: "",
+                    authRef: p.id ? p.authRef : defaultOauthAuthRef(val),
+                  }))
                 }
                 onFocus={ensureCatalog}
                 options={providerCandidates.map((provider) => ({
@@ -1044,6 +1179,72 @@ export function Settings({
                 }))}
                 placeholder="e.g. gpt-4o"
               />
+            </div>
+
+            {providerUsesOAuthAuth(form.provider) && (
+              <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-2">
+                <p>{t("settings.oauthProviderHint", { provider: normalizeOauthProvider(form.provider) })}</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={startOauthLogin}
+                    disabled={oauthStarting || oauthCompleting}
+                  >
+                    {oauthStarting ? t("settings.oauthStarting") : t("settings.oauthStart")}
+                  </Button>
+                  {oauthAuthorizeUrl && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        ua.openUrl(oauthAuthorizeUrl).catch((e) => {
+                          setMessage(t("settings.oauthOpenLinkFailed", { error: String(e) }));
+                        });
+                      }}
+                    >
+                      {t("settings.oauthOpenLink")}
+                    </Button>
+                  )}
+                </div>
+                {oauthAuthorizeUrl && (
+                  <p className="font-mono break-all">{oauthAuthorizeUrl}</p>
+                )}
+                <div className="space-y-1">
+                  <Label>{t("settings.oauthRedirectInputLabel")}</Label>
+                  <Input
+                    placeholder={t("settings.oauthRedirectInputPlaceholder")}
+                    value={oauthRedirectInput}
+                    onChange={(e) => setOauthRedirectInput(e.target.value)}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={completeOauthAndSave}
+                  disabled={oauthStarting || oauthCompleting || !oauthRedirectInput.trim()}
+                >
+                  {oauthCompleting ? t("settings.oauthCompleting") : t("settings.oauthCompleteAndSave")}
+                </Button>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label>{t('settings.authRef')}</Label>
+              <Input
+                placeholder={providerUsesOAuthAuth(form.provider) ? "openai-codex:default" : "provider:default"}
+                value={form.authRef}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, authRef: e.target.value }))
+                }
+              />
+              {providerUsesOAuthAuth(form.provider) && (
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.oauthAuthRefHint")}
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">

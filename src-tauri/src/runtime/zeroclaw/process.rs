@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::thread;
 use std::{
     collections::hash_map::DefaultHasher,
     collections::HashSet,
     hash::{Hash, Hasher},
     sync::{Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::models::{resolve_paths, OpenClawPaths};
@@ -49,6 +50,8 @@ fn now_ms() -> u64 {
 }
 
 const ZEROCLAW_MESSAGE_MAX_BYTES: usize = 24 * 1024;
+const ZEROCLAW_EXEC_TIMEOUT_SECS: u64 = 90;
+const ZEROCLAW_LOCAL_PROVIDER_TIMEOUT_SECS: u64 = 45;
 
 fn truncate_utf8_tail(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
@@ -72,6 +75,56 @@ fn clamp_message_for_cli(message: &str) -> String {
     let keep = ZEROCLAW_MESSAGE_MAX_BYTES.saturating_sub(marker.len());
     let tail = truncate_utf8_tail(message, keep);
     format!("{marker}{tail}")
+}
+
+fn run_zeroclaw_with_timeout(
+    cmd: &Path,
+    args: &[String],
+    env_pairs: &[(String, String)],
+    timeout_secs: u64,
+) -> Result<Output, String> {
+    let mut child = Command::new(cmd)
+        .envs(env_pairs.iter().cloned())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to run zeroclaw sidecar: {e}"))?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("failed to collect zeroclaw sidecar output: {e}"));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let output = child.wait_with_output().ok();
+                    let stderr = output
+                        .as_ref()
+                        .map(|out| String::from_utf8_lossy(&out.stderr).trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_default();
+                    let detail = if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" stderr: {stderr}")
+                    };
+                    return Err(format!(
+                        "zeroclaw sidecar timed out after {}s.{}",
+                        timeout_secs, detail
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!("failed to poll zeroclaw sidecar process: {e}"));
+            }
+        }
+    }
 }
 
 fn as_u64(value: &Value) -> Option<u64> {
@@ -490,6 +543,68 @@ fn resolve_zeroclaw_command_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
+pub(crate) fn resolve_zeroclaw_command_path_for_internal() -> Option<PathBuf> {
+    resolve_zeroclaw_command_path()
+}
+
+fn zeroclaw_oauth_root_dir() -> PathBuf {
+    resolve_paths()
+        .clawpal_dir
+        .join("zeroclaw-sidecar")
+        .join("oauth")
+}
+
+fn zeroclaw_oauth_config_dir_path_for_instance(instance_id: &str) -> PathBuf {
+    let bucket = sanitize_instance_namespace(instance_id);
+    zeroclaw_oauth_root_dir().join(bucket)
+}
+
+pub(crate) fn zeroclaw_oauth_config_dir_for_instance(instance_id: &str) -> Result<PathBuf, String> {
+    let dir = zeroclaw_oauth_config_dir_path_for_instance(instance_id);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create zeroclaw oauth config dir: {e}"))?;
+    Ok(dir)
+}
+
+fn oauth_auth_profiles_file_exists(config_dir: &Path) -> bool {
+    config_dir.join("auth-profiles.json").is_file()
+}
+
+fn pick_oauth_auth_store_source_dir(
+    preferred_dir: &Path,
+    local_dir: &Path,
+    oauth_root: &Path,
+) -> Option<PathBuf> {
+    if oauth_auth_profiles_file_exists(preferred_dir) {
+        return Some(preferred_dir.to_path_buf());
+    }
+    if local_dir != preferred_dir && oauth_auth_profiles_file_exists(local_dir) {
+        return Some(local_dir.to_path_buf());
+    }
+    let Ok(entries) = std::fs::read_dir(oauth_root) else {
+        return None;
+    };
+    let mut fallback_dirs = Vec::<PathBuf>::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || path == preferred_dir || path == local_dir {
+            continue;
+        }
+        if oauth_auth_profiles_file_exists(&path) {
+            fallback_dirs.push(path);
+        }
+    }
+    fallback_dirs.sort();
+    fallback_dirs.into_iter().next()
+}
+
+fn resolve_oauth_auth_store_source_dir(instance_id: &str) -> Option<PathBuf> {
+    let preferred_dir = zeroclaw_oauth_config_dir_path_for_instance(instance_id);
+    let local_dir = zeroclaw_oauth_config_dir_path_for_instance("local");
+    let oauth_root = zeroclaw_oauth_root_dir();
+    pick_oauth_auth_store_source_dir(&preferred_dir, &local_dir, &oauth_root)
+}
+
 fn collect_provider_credentials_for_doctor(
 ) -> std::collections::HashMap<String, crate::commands::InternalProviderCredential> {
     let credentials = crate::commands::collect_provider_credentials_for_internal();
@@ -522,8 +637,13 @@ fn collect_provider_credentials_for_doctor(
 fn normalize_profile_provider_for_zeroclaw(provider: &str) -> Option<&'static str> {
     match provider.trim().to_ascii_lowercase().as_str() {
         "openrouter" => Some("openrouter"),
-        "openai" | "openai-codex" | "github-copilot" | "copilot" => Some("openai"),
+        "openai" => Some("openai"),
+        "openai-codex" | "github-copilot" | "copilot" => Some("openai-codex"),
         "anthropic" => Some("anthropic"),
+        "ollama" => Some("ollama"),
+        "lmstudio" | "lm-studio" => Some("lmstudio"),
+        "llamacpp" | "llama.cpp" => Some("llamacpp"),
+        "vllm" => Some("vllm"),
         "google" | "gemini" | "google-vertex" | "google-gemini-cli" | "google-antigravity" => {
             Some("gemini")
         }
@@ -563,6 +683,10 @@ fn zeroclaw_env_pairs_from_clawpal() -> Vec<(String, String)> {
         let Some(env_name) = (match mapped {
             "openrouter" => Some("OPENROUTER_API_KEY"),
             "openai" => Some("OPENAI_API_KEY"),
+            "openai-codex" => Some(match credential.kind {
+                crate::commands::InternalAuthKind::Authorization => "OPENAI_CODEX_TOKEN",
+                crate::commands::InternalAuthKind::ApiKey => "OPENAI_API_KEY",
+            }),
             "anthropic" => Some(match credential.kind {
                 crate::commands::InternalAuthKind::Authorization => "ANTHROPIC_OAUTH_TOKEN",
                 crate::commands::InternalAuthKind::ApiKey => "ANTHROPIC_API_KEY",
@@ -585,6 +709,9 @@ fn pick_zeroclaw_provider(env_pairs: &[(String, String)]) -> Option<&'static str
     if env_pairs.iter().any(|(k, _)| k == "OPENROUTER_API_KEY") {
         return Some("openrouter");
     }
+    if env_pairs.iter().any(|(k, _)| k == "OPENAI_CODEX_TOKEN") {
+        return Some("openai-codex");
+    }
     if env_pairs.iter().any(|(k, _)| k == "OPENAI_API_KEY") {
         return Some("openai");
     }
@@ -603,24 +730,154 @@ fn pick_zeroclaw_provider(env_pairs: &[(String, String)]) -> Option<&'static str
     None
 }
 
-fn provider_available(env_pairs: &[(String, String)], provider: &str) -> bool {
+fn collect_profile_providers_for_zeroclaw() -> HashSet<&'static str> {
+    let mut out = HashSet::new();
+    if let Ok(profiles) = crate::commands::list_model_profiles() {
+        for provider in profiles
+            .into_iter()
+            .filter(|p| p.enabled)
+            .filter_map(|p| normalize_zeroclaw_provider(&p.provider))
+        {
+            out.insert(provider);
+        }
+    }
+    out
+}
+
+fn collect_oauth_providers_from_auth_store(config_dir: &Path) -> HashSet<&'static str> {
+    let mut out = HashSet::new();
+    let auth_file = config_dir.join("auth-profiles.json");
+    let Ok(raw) = std::fs::read_to_string(&auth_file) else {
+        return out;
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&raw) else {
+        return out;
+    };
+
+    if let Some(active_profiles) = json.get("active_profiles").and_then(Value::as_object) {
+        for (provider, active_profile) in active_profiles {
+            if let Some(normalized) = normalize_zeroclaw_provider(provider) {
+                out.insert(normalized);
+                continue;
+            }
+            if let Some(active) = active_profile.as_str() {
+                if let Some((prefix, _)) = active.split_once(':') {
+                    if let Some(normalized) = normalize_zeroclaw_provider(prefix) {
+                        out.insert(normalized);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(profiles) = json.get("profiles").and_then(Value::as_object) {
+        for (profile_id, entry) in profiles {
+            if let Some(provider) = entry.get("provider").and_then(Value::as_str) {
+                if let Some(normalized) = normalize_zeroclaw_provider(provider) {
+                    out.insert(normalized);
+                    let kind = entry
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    if kind == "oauth" && normalized == "openai" {
+                        out.insert("openai-codex");
+                    }
+                    continue;
+                }
+            }
+            if let Some((prefix, _)) = profile_id.split_once(':') {
+                if let Some(normalized) = normalize_zeroclaw_provider(prefix) {
+                    out.insert(normalized);
+                    let kind = entry
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    if kind == "oauth" && normalized == "openai" {
+                        out.insert("openai-codex");
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn sync_instance_oauth_auth_store_into_runtime_cfg(instance_id: &str, runtime_cfg_dir: &Path) {
+    let Some(oauth_cfg_dir) = resolve_oauth_auth_store_source_dir(instance_id) else {
+        return;
+    };
+    for file_name in [".secret_key", "auth-profiles.json"] {
+        let source = oauth_cfg_dir.join(file_name);
+        if !source.is_file() {
+            continue;
+        }
+        let target = runtime_cfg_dir.join(file_name);
+        let _ = std::fs::copy(&source, &target);
+    }
+}
+
+fn provider_available(
+    env_pairs: &[(String, String)],
+    profile_providers: &HashSet<&'static str>,
+    oauth_providers: &HashSet<&'static str>,
+    provider: &str,
+) -> bool {
     match provider {
         "openrouter" => env_pairs.iter().any(|(k, _)| k == "OPENROUTER_API_KEY"),
+        "openai-codex" => {
+            env_pairs
+                .iter()
+                .any(|(k, _)| k == "OPENAI_CODEX_TOKEN" || k == "OPENAI_API_KEY")
+                || oauth_providers.contains("openai-codex")
+        }
         "openai" => env_pairs.iter().any(|(k, _)| k == "OPENAI_API_KEY"),
-        "anthropic" => env_pairs
-            .iter()
-            .any(|(k, _)| k == "ANTHROPIC_API_KEY" || k == "ANTHROPIC_OAUTH_TOKEN"),
-        "gemini" => env_pairs.iter().any(|(k, _)| k == "GEMINI_API_KEY"),
+        "anthropic" => {
+            env_pairs
+                .iter()
+                .any(|(k, _)| k == "ANTHROPIC_API_KEY" || k == "ANTHROPIC_OAUTH_TOKEN")
+                || oauth_providers.contains("anthropic")
+        }
+        "gemini" => {
+            env_pairs.iter().any(|(k, _)| k == "GEMINI_API_KEY")
+                || oauth_providers.contains("gemini")
+        }
         "moonshot" | "kimi-code" => env_pairs.iter().any(|(k, _)| k == "MOONSHOT_API_KEY"),
+        "ollama" | "lmstudio" | "llamacpp" | "vllm" => profile_providers.contains(provider),
         _ => false,
     }
+}
+
+fn is_keyless_local_provider(provider: &str) -> bool {
+    matches!(provider, "ollama" | "lmstudio" | "llamacpp" | "vllm")
+}
+
+fn provider_exec_timeout_secs(provider: &str) -> u64 {
+    if is_keyless_local_provider(provider) {
+        ZEROCLAW_LOCAL_PROVIDER_TIMEOUT_SECS
+    } else {
+        ZEROCLAW_EXEC_TIMEOUT_SECS
+    }
+}
+
+fn should_try_no_model_fallback(provider: &str) -> bool {
+    !is_keyless_local_provider(provider)
 }
 
 fn normalize_zeroclaw_provider(provider: &str) -> Option<&'static str> {
     match provider.trim().to_ascii_lowercase().as_str() {
         "openrouter" => Some("openrouter"),
-        "openai" | "openai-codex" | "github-copilot" | "copilot" => Some("openai"),
+        "openai" => Some("openai"),
+        "openai-codex" | "github-copilot" | "copilot" => Some("openai-codex"),
         "anthropic" => Some("anthropic"),
+        "ollama" => Some("ollama"),
+        "lmstudio" | "lm-studio" => Some("lmstudio"),
+        "llamacpp" | "llama.cpp" => Some("llamacpp"),
+        "vllm" => Some("vllm"),
         "gemini" | "google" | "google-vertex" | "google-gemini-cli" | "google-antigravity" => {
             Some("gemini")
         }
@@ -637,17 +894,32 @@ fn preferred_provider_from_model_value(model: &str) -> Option<&'static str> {
 fn provider_order_for_runtime(
     env_pairs: &[(String, String)],
     preferred_model: Option<&str>,
+    profile_providers: &HashSet<&'static str>,
+    oauth_providers: &HashSet<&'static str>,
 ) -> Vec<&'static str> {
     let mut provider_order: Vec<&'static str> = Vec::new();
     if let Some(model) = preferred_model {
         if let Some(provider) = preferred_provider_from_model_value(model) {
-            if provider_available(env_pairs, provider) {
+            if provider_available(env_pairs, profile_providers, oauth_providers, provider) {
                 provider_order.push(provider);
             }
         }
     }
-    for provider in ["openrouter", "openai", "anthropic", "gemini", "moonshot"] {
-        if provider_available(env_pairs, provider) && !provider_order.contains(&provider) {
+    for provider in [
+        "openrouter",
+        "openai-codex",
+        "openai",
+        "anthropic",
+        "gemini",
+        "moonshot",
+        "ollama",
+        "lmstudio",
+        "llamacpp",
+        "vllm",
+    ] {
+        if provider_available(env_pairs, profile_providers, oauth_providers, provider)
+            && !provider_order.contains(&provider)
+        {
             provider_order.push(provider);
         }
     }
@@ -662,7 +934,16 @@ fn provider_order_for_runtime(
 pub fn get_zeroclaw_runtime_target() -> ZeroclawRuntimeTarget {
     let env_pairs = zeroclaw_env_pairs_from_clawpal();
     let preferred_model = crate::commands::load_zeroclaw_model_preference();
-    let provider_order = provider_order_for_runtime(&env_pairs, preferred_model.as_deref());
+    let profile_providers = collect_profile_providers_for_zeroclaw();
+    let oauth_providers = resolve_oauth_auth_store_source_dir("local")
+        .map(|dir| collect_oauth_providers_from_auth_store(dir.as_path()))
+        .unwrap_or_default();
+    let provider_order = provider_order_for_runtime(
+        &env_pairs,
+        preferred_model.as_deref(),
+        &profile_providers,
+        &oauth_providers,
+    );
     let provider_order_text: Vec<String> =
         provider_order.iter().map(|p| (*p).to_string()).collect();
     let Some(provider) = provider_order.first().copied() else {
@@ -723,7 +1004,8 @@ fn default_model_for_provider(provider: &str) -> Option<&'static str> {
 fn candidate_models_for_provider(provider: &str) -> Vec<String> {
     let mut out = Vec::<String>::new();
     let provider_aliases: &[&str] = match provider {
-        "openai" => &["openai", "openai-codex", "github-copilot", "copilot"],
+        "openai" => &["openai"],
+        "openai-codex" => &["openai-codex", "github-copilot", "copilot"],
         "gemini" => &[
             "gemini",
             "google",
@@ -800,7 +1082,8 @@ fn prepend_preferred_model_candidate(
         if let Some((raw_provider, _)) = model.split_once('/') {
             let raw = raw_provider.trim().to_ascii_lowercase();
             let current = provider_name.trim().to_ascii_lowercase();
-            let alias_match = current == "openai" && raw == "openai-codex";
+            let alias_match = (current == "openai" && raw == "openai-codex")
+                || (current == "openai-codex" && raw == "openai");
             if raw != current && !alias_match {
                 return;
             }
@@ -831,13 +1114,11 @@ pub fn run_zeroclaw_message(
     let cmd = resolve_zeroclaw_command_path()
         .ok_or_else(|| "zeroclaw binary not found in bundled resources".to_string())?;
     let cfg = doctor_sidecar_config_dir(instance_id, session_scope)?;
+    sync_instance_oauth_auth_store_into_runtime_cfg(instance_id, &cfg);
     ensure_runtime_trace_mode(&cfg);
     let env_pairs = zeroclaw_env_pairs_from_clawpal();
-    if env_pairs.is_empty() {
-        return Err(
-            "No compatible API key found in ClawPal model profiles for zeroclaw.".to_string(),
-        );
-    }
+    let profile_providers = collect_profile_providers_for_zeroclaw();
+    let oauth_providers = collect_oauth_providers_from_auth_store(&cfg);
     let cfg_arg = cfg.to_string_lossy().to_string();
     let message = clamp_message_for_cli(message);
     let base_args = vec![
@@ -850,19 +1131,25 @@ pub fn run_zeroclaw_message(
     // Per-session model override takes priority over global preference.
     let preferred_model = crate::commands::preferences::lookup_session_model_override(instance_id)
         .or_else(|| crate::commands::load_zeroclaw_model_preference());
-    let provider_order = provider_order_for_runtime(&env_pairs, preferred_model.as_deref());
+    let provider_order = provider_order_for_runtime(
+        &env_pairs,
+        preferred_model.as_deref(),
+        &profile_providers,
+        &oauth_providers,
+    );
     if provider_order.is_empty() {
+        if env_pairs.is_empty() {
+            return Err(
+                "No compatible API key found in ClawPal model profiles for zeroclaw.".to_string(),
+            );
+        }
         return Err(
             "No supported zeroclaw provider is available from current profiles.".to_string(),
         );
     }
     let mut attempt_errors = Vec::<String>::new();
-    let try_once = |args: Vec<String>| -> Result<String, String> {
-        let output = Command::new(&cmd)
-            .envs(env_pairs.clone())
-            .args(args)
-            .output()
-            .map_err(|e| format!("failed to run zeroclaw sidecar: {e}"))?;
+    let try_once = |args: Vec<String>, timeout_secs: u64| -> Result<String, String> {
+        let output = run_zeroclaw_with_timeout(&cmd, &args, &env_pairs, timeout_secs)?;
         let stdout = sanitize_output(&String::from_utf8_lossy(&output.stdout));
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         record_zeroclaw_usage(&stdout, &stderr);
@@ -897,6 +1184,7 @@ pub fn run_zeroclaw_message(
         Ok("(zeroclaw returned no output)".to_string())
     };
     for provider in provider_order {
+        let timeout_secs = provider_exec_timeout_secs(provider);
         let mut provider_base_args = base_args.clone();
         provider_base_args.push("-p".to_string());
         provider_base_args.push(provider.to_string());
@@ -908,7 +1196,7 @@ pub fn run_zeroclaw_message(
             Some(provider),
         );
         if model_candidates.is_empty() {
-            match try_once(provider_base_args.clone()) {
+            match try_once(provider_base_args.clone(), timeout_secs) {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     attempt_errors.push(format!("provider={provider} no-model: {e}"));
@@ -921,7 +1209,7 @@ pub fn run_zeroclaw_message(
             let mut args = provider_base_args.clone();
             args.push("--model".to_string());
             args.push(model.clone());
-            match try_once(args) {
+            match try_once(args, timeout_secs) {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     attempt_errors.push(format!("provider={provider} model={model}: {e}"));
@@ -937,8 +1225,13 @@ pub fn run_zeroclaw_message(
                 }
             }
         }
-        if let Ok(v) = try_once(provider_base_args.clone()) {
-            return Ok(v);
+        if should_try_no_model_fallback(provider) {
+            match try_once(provider_base_args.clone(), timeout_secs) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    attempt_errors.push(format!("provider={provider} fallback: {e}"));
+                }
+            }
         }
     }
 
@@ -956,11 +1249,35 @@ pub fn run_zeroclaw_message(
 mod tests {
     use super::{
         credential_clearly_mismatched_for_provider, normalize_model_for_provider,
-        parse_usage_from_text, parse_usage_from_value, prepend_preferred_model_candidate,
-        sanitize_instance_namespace, zeroclaw_command_candidates,
+        normalize_zeroclaw_provider, parse_usage_from_text, parse_usage_from_value,
+        pick_oauth_auth_store_source_dir, prepend_preferred_model_candidate,
+        provider_exec_timeout_secs, provider_order_for_runtime, sanitize_instance_namespace,
+        should_try_no_model_fallback, zeroclaw_command_candidates, ZEROCLAW_EXEC_TIMEOUT_SECS,
+        ZEROCLAW_LOCAL_PROVIDER_TIMEOUT_SECS,
     };
     use serde_json::json;
-    use std::path::PathBuf;
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("clawpal-{prefix}-{unique}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_auth_profiles(dir: &Path) {
+        std::fs::write(
+            dir.join("auth-profiles.json"),
+            r#"{"profiles":{"openai:default":{"provider":"openai","profile_name":"default"}}}"#,
+        )
+        .expect("write auth-profiles");
+    }
 
     #[test]
     fn instance_namespace_is_stable_for_same_instance() {
@@ -1101,5 +1418,138 @@ done"#;
             "openrouter",
             "sk-or-v1-abcdef"
         ));
+    }
+
+    #[test]
+    fn normalize_provider_supports_ollama_family() {
+        assert_eq!(normalize_zeroclaw_provider("ollama"), Some("ollama"));
+        assert_eq!(normalize_zeroclaw_provider("lm-studio"), Some("lmstudio"));
+        assert_eq!(normalize_zeroclaw_provider("llama.cpp"), Some("llamacpp"));
+        assert_eq!(normalize_zeroclaw_provider("vllm"), Some("vllm"));
+    }
+
+    #[test]
+    fn provider_order_supports_keyless_local_provider_from_profiles() {
+        let env_pairs: Vec<(String, String)> = Vec::new();
+        let mut profile_providers = HashSet::new();
+        profile_providers.insert("ollama");
+        let oauth_providers = HashSet::new();
+        let ordered = provider_order_for_runtime(
+            &env_pairs,
+            Some("ollama/qwen3.5:27b"),
+            &profile_providers,
+            &oauth_providers,
+        );
+        assert_eq!(ordered.first().copied(), Some("ollama"));
+    }
+
+    #[test]
+    fn provider_order_keeps_keyed_provider_unavailable_without_credential() {
+        let env_pairs: Vec<(String, String)> = Vec::new();
+        let mut profile_providers = HashSet::new();
+        profile_providers.insert("openrouter");
+        let oauth_providers = HashSet::new();
+        let ordered = provider_order_for_runtime(
+            &env_pairs,
+            Some("openrouter/anthropic/claude-sonnet-4-5"),
+            &profile_providers,
+            &oauth_providers,
+        );
+        assert!(ordered.is_empty());
+    }
+
+    #[test]
+    fn provider_order_accepts_openai_codex_from_oauth_store_without_env_key() {
+        let env_pairs: Vec<(String, String)> = Vec::new();
+        let profile_providers = HashSet::new();
+        let mut oauth_providers = HashSet::new();
+        oauth_providers.insert("openai-codex");
+        let ordered = provider_order_for_runtime(
+            &env_pairs,
+            Some("openai-codex/gpt-5"),
+            &profile_providers,
+            &oauth_providers,
+        );
+        assert_eq!(ordered.first().copied(), Some("openai-codex"));
+    }
+
+    #[test]
+    fn oauth_auth_store_prefers_instance_specific_dir_when_present() {
+        let root = make_temp_dir("oauth-source-preferred");
+        let preferred = root.join("preferred");
+        let local = root.join("local");
+        let other = root.join("other");
+        std::fs::create_dir_all(&preferred).expect("create preferred");
+        std::fs::create_dir_all(&local).expect("create local");
+        std::fs::create_dir_all(&other).expect("create other");
+        write_auth_profiles(&preferred);
+        write_auth_profiles(&local);
+        write_auth_profiles(&other);
+
+        let selected = pick_oauth_auth_store_source_dir(&preferred, &local, &root);
+        assert_eq!(selected.as_deref(), Some(preferred.as_path()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn oauth_auth_store_falls_back_to_local_dir() {
+        let root = make_temp_dir("oauth-source-local");
+        let preferred = root.join("preferred");
+        let local = root.join("local");
+        let other = root.join("other");
+        std::fs::create_dir_all(&preferred).expect("create preferred");
+        std::fs::create_dir_all(&local).expect("create local");
+        std::fs::create_dir_all(&other).expect("create other");
+        write_auth_profiles(&local);
+        write_auth_profiles(&other);
+
+        let selected = pick_oauth_auth_store_source_dir(&preferred, &local, &root);
+        assert_eq!(selected.as_deref(), Some(local.as_path()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn oauth_auth_store_falls_back_to_any_instance_when_local_missing() {
+        let root = make_temp_dir("oauth-source-any");
+        let preferred = root.join("preferred");
+        let local = root.join("local");
+        let z_dir = root.join("zzz");
+        let a_dir = root.join("aaa");
+        std::fs::create_dir_all(&preferred).expect("create preferred");
+        std::fs::create_dir_all(&local).expect("create local");
+        std::fs::create_dir_all(&z_dir).expect("create zzz");
+        std::fs::create_dir_all(&a_dir).expect("create aaa");
+        write_auth_profiles(&z_dir);
+        write_auth_profiles(&a_dir);
+
+        let selected = pick_oauth_auth_store_source_dir(&preferred, &local, &root);
+        assert_eq!(selected.as_deref(), Some(a_dir.as_path()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_provider_uses_shorter_timeout() {
+        assert_eq!(
+            provider_exec_timeout_secs("ollama"),
+            ZEROCLAW_LOCAL_PROVIDER_TIMEOUT_SECS
+        );
+        assert_eq!(
+            provider_exec_timeout_secs("lmstudio"),
+            ZEROCLAW_LOCAL_PROVIDER_TIMEOUT_SECS
+        );
+        assert_eq!(
+            provider_exec_timeout_secs("openrouter"),
+            ZEROCLAW_EXEC_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn no_model_fallback_is_skipped_for_local_provider() {
+        assert!(!should_try_no_model_fallback("ollama"));
+        assert!(!should_try_no_model_fallback("llamacpp"));
+        assert!(should_try_no_model_fallback("openrouter"));
     }
 }

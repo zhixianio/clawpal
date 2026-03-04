@@ -329,13 +329,8 @@ export function Doctor({
       const key = normalized.toLowerCase();
       if (!uniqueModels.has(key)) uniqueModels.set(key, normalized);
     }
-    if (runtimeModel && runtimeModel.trim()) {
-      const normalized = runtimeModel.trim();
-      const key = normalized.toLowerCase();
-      if (!uniqueModels.has(key)) uniqueModels.set(key, normalized);
-    }
     return Array.from(uniqueModels.values()).sort((a, b) => a.localeCompare(b));
-  }, [modelProfiles, runtimeModel]);
+  }, [modelProfiles]);
 
   const handleStartDiagnosis = async (
     extraContext?: string,

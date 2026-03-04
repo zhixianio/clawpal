@@ -37,12 +37,8 @@ export function ModelSwitcher({ sessionId, defaultModel, availableModels, onMode
       const key = normalized.toLowerCase();
       if (!uniqueModels.has(key)) uniqueModels.set(key, normalized);
     }
-    if (currentModel && currentModel !== "auto") {
-      const key = currentModel.toLowerCase();
-      if (!uniqueModels.has(key)) uniqueModels.set(key, currentModel);
-    }
     return Array.from(uniqueModels.values()).sort((a, b) => a.localeCompare(b));
-  }, [availableModels, currentModel]);
+  }, [availableModels]);
 
   const handleSelect = async (model: string) => {
     try {

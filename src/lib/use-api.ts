@@ -735,6 +735,8 @@ export function useApi() {
       recordInstallExperience: api.recordInstallExperience,
       openUrl: api.openUrl,
       resolveProviderAuth: api.resolveProviderAuth,
+      startZeroclawOauthLogin: api.startZeroclawOauthLogin,
+      completeZeroclawOauthLogin: api.completeZeroclawOauthLogin,
       getCachedModelCatalog: localCached(
         "getCachedModelCatalog",
         8_000,

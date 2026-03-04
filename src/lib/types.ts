@@ -180,6 +180,21 @@ export interface ProviderAuthSuggestion {
   source: string;
 }
 
+export interface ZeroclawOauthLoginStartResult {
+  provider: string;
+  profile: string;
+  authRef: string;
+  authorizeUrl: string;
+  details: string;
+}
+
+export interface ZeroclawOauthCompleteResult {
+  provider: string;
+  profile: string;
+  authRef: string;
+  details: string;
+}
+
 export interface ResolvedApiKey {
   profileId: string;
   maskedKey: string;
