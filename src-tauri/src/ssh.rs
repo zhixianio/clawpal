@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore};
@@ -21,6 +22,29 @@ pub struct SftpEntry {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTransferStats {
+    pub host_id: String,
+    pub upload_bytes_per_sec: u64,
+    pub download_bytes_per_sec: u64,
+    pub total_upload_bytes: u64,
+    pub total_download_bytes: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostTransferCounter {
+    total_upload_bytes: u64,
+    total_download_bytes: u64,
+    upload_bytes_per_sec: u64,
+    download_bytes_per_sec: u64,
+    updated_at_ms: u64,
+    last_sample_at_ms: u64,
+    last_sample_upload_bytes: u64,
+    last_sample_download_bytes: u64,
+}
+
 #[derive(Clone)]
 struct ConnectedHost {
     config: SshHostConfig,
@@ -32,6 +56,7 @@ struct ConnectedHost {
 
 pub struct SshConnectionPool {
     connections: Mutex<HashMap<String, ConnectedHost>>,
+    transfer_counters: Mutex<HashMap<String, HostTransferCounter>>,
 }
 
 const SSH_OP_MAX_CONCURRENCY_PER_HOST: usize = 2;
@@ -46,6 +71,78 @@ impl SshConnectionPool {
     pub fn new() -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
+            transfer_counters: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn refresh_counter_speed(counter: &mut HostTransferCounter, now_ms: u64) {
+        if counter.last_sample_at_ms == 0 {
+            counter.last_sample_at_ms = now_ms;
+            counter.last_sample_upload_bytes = counter.total_upload_bytes;
+            counter.last_sample_download_bytes = counter.total_download_bytes;
+            return;
+        }
+        let elapsed = now_ms.saturating_sub(counter.last_sample_at_ms);
+        if elapsed < 400 {
+            return;
+        }
+        let upload_delta = counter
+            .total_upload_bytes
+            .saturating_sub(counter.last_sample_upload_bytes);
+        let download_delta = counter
+            .total_download_bytes
+            .saturating_sub(counter.last_sample_download_bytes);
+        counter.upload_bytes_per_sec = upload_delta.saturating_mul(1000) / elapsed.max(1);
+        counter.download_bytes_per_sec = download_delta.saturating_mul(1000) / elapsed.max(1);
+        counter.last_sample_at_ms = now_ms;
+        counter.last_sample_upload_bytes = counter.total_upload_bytes;
+        counter.last_sample_download_bytes = counter.total_download_bytes;
+    }
+
+    async fn record_transfer(&self, host_id: &str, upload_bytes: u64, download_bytes: u64) {
+        if upload_bytes == 0 && download_bytes == 0 {
+            return;
+        }
+        let now_ms = Self::now_ms();
+        let mut guard = self.transfer_counters.lock().await;
+        let counter = guard.entry(host_id.to_string()).or_default();
+        if upload_bytes > 0 {
+            counter.total_upload_bytes = counter.total_upload_bytes.saturating_add(upload_bytes);
+        }
+        if download_bytes > 0 {
+            counter.total_download_bytes = counter
+                .total_download_bytes
+                .saturating_add(download_bytes);
+        }
+        counter.updated_at_ms = now_ms;
+        Self::refresh_counter_speed(counter, now_ms);
+    }
+
+    pub async fn get_transfer_stats(&self, host_id: &str) -> SshTransferStats {
+        let now_ms = Self::now_ms();
+        let mut guard = self.transfer_counters.lock().await;
+        let counter = guard.entry(host_id.to_string()).or_default();
+        Self::refresh_counter_speed(counter, now_ms);
+        // Idle decay: hide stale rates shortly after transfer stops.
+        if now_ms.saturating_sub(counter.updated_at_ms) > 1_500 {
+            counter.upload_bytes_per_sec = 0;
+            counter.download_bytes_per_sec = 0;
+        }
+        SshTransferStats {
+            host_id: host_id.to_string(),
+            upload_bytes_per_sec: counter.upload_bytes_per_sec,
+            download_bytes_per_sec: counter.download_bytes_per_sec,
+            total_upload_bytes: counter.total_upload_bytes,
+            total_download_bytes: counter.total_download_bytes,
+            updated_at_ms: counter.updated_at_ms,
         }
     }
 
@@ -110,6 +207,11 @@ impl SshConnectionPool {
                 op_limiter: std::sync::Arc::new(Semaphore::new(SSH_OP_MAX_CONCURRENCY_PER_HOST)),
             },
         );
+        self.transfer_counters
+            .lock()
+            .await
+            .entry(config.id.clone())
+            .or_default();
         crate::commands::logs::log_dev(format!(
             "[dev][ssh_pool] connect_with_passphrase cached id={} total={}",
             config.id,
@@ -219,6 +321,7 @@ impl SshConnectionPool {
             ));
             message
         })?;
+        self.record_transfer(id, command.len() as u64, 0).await;
         let mut result = {
             let session = conn.session.lock().await.clone();
             session.exec(command).await
@@ -242,6 +345,10 @@ impl SshConnectionPool {
             ));
             message
         })?;
+        let stdout_bytes = result.stdout.len() as u64;
+        let stderr_bytes = result.stderr.len() as u64;
+        self.record_transfer(id, 0, stdout_bytes.saturating_add(stderr_bytes))
+            .await;
         crate::commands::logs::log_dev(format!(
             "[dev][ssh_pool] exec success id={} exit={} stderr_len={}",
             id,
@@ -321,6 +428,7 @@ impl SshConnectionPool {
             resolved,
             bytes.len()
         ));
+        self.record_transfer(id, 0, bytes.len() as u64).await;
         Ok(String::from_utf8_lossy(&bytes).to_string())
     }
 
@@ -366,6 +474,8 @@ impl SshConnectionPool {
             "[dev][ssh_pool] sftp_write success id={} path={}",
             id, resolved
         ));
+        self.record_transfer(id, content.as_bytes().len() as u64, 0)
+            .await;
         Ok(())
     }
 

@@ -26,9 +26,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 import { Toaster } from "sonner";
-import type { ChannelNode, DiscordGuildChannel, DiscoveredInstance, DockerInstance, GuidanceAction, InstallSession, PrecheckIssue, RegisteredInstance, SshHost } from "./lib/types";
+import type { ChannelNode, DiscordGuildChannel, DiscoveredInstance, DockerInstance, GuidanceAction, InstallSession, PrecheckIssue, RegisteredInstance, SshHost, SshTransferStats } from "./lib/types";
 import { GuidanceCard } from "./components/GuidanceCard";
 import { SshFormWidget } from "./components/SshFormWidget";
 import type { AgentGuidanceItem } from "./components/GuidanceCard";
@@ -412,6 +412,8 @@ export function App() {
   const [agentGuidanceOpen, setAgentGuidanceOpen] = useState(false);
   const [unreadGuidance, setUnreadGuidance] = useState(false);
   const [showZeroclawDoctorFab, setShowZeroclawDoctorFab] = useState(false);
+  const [showSshTransferSpeedUi, setShowSshTransferSpeedUi] = useState(false);
+  const [sshTransferStats, setSshTransferStats] = useState<SshTransferStats | null>(null);
   const [doctorNavPulse, setDoctorNavPulse] = useState(false);
   const sshHealthFailStreakRef = useRef<Record<string, number>>({});
   const legacyMigrationDoneRef = useRef(false);
@@ -642,11 +644,13 @@ export function App() {
         .then((prefs) => {
           if (!cancelled) {
             setShowZeroclawDoctorFab(Boolean(prefs.showZeroclawDoctorUi));
+            setShowSshTransferSpeedUi(Boolean(prefs.showSshTransferSpeedUi));
           }
         })
         .catch(() => {
           if (!cancelled) {
             setShowZeroclawDoctorFab(false);
+            setShowSshTransferSpeedUi(false);
           }
         });
     };
@@ -1057,6 +1061,30 @@ export function App() {
   const isRemote = registeredInstances.some((item) => item.id === activeInstance && item.instanceType === "remote_ssh")
     || sshHosts.some((host) => host.id === activeInstance);
   const isConnected = !isRemote || connectionStatus[activeInstance] === "connected";
+
+  useEffect(() => {
+    if (!showSshTransferSpeedUi || !isRemote || !isConnected) {
+      setSshTransferStats(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      api.getSshTransferStats(activeInstance)
+        .then((stats) => {
+          if (!cancelled) setSshTransferStats(stats);
+        })
+        .catch((error) => {
+          logDevIgnoredError("getSshTransferStats", error);
+          if (!cancelled) setSshTransferStats(null);
+        });
+    };
+    poll();
+    const timer = window.setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeInstance, isConnected, isRemote, showSshTransferSpeedUi]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1564,6 +1592,21 @@ export function App() {
           {profileSyncStatus.message && (
             <div className="mt-1 break-words text-muted-foreground/70" title={profileSyncStatus.message}>
               {profileSyncStatus.message}
+            </div>
+          )}
+          {showSshTransferSpeedUi && isRemote && isConnected && (
+            <div className="mt-2 border-t border-border/40 pt-2 text-muted-foreground/75">
+              <div className="text-[10px] uppercase tracking-wide">{t("doctor.sshTransferSpeedTitle")}</div>
+              <div className="mt-0.5">
+                {t("doctor.sshTransferSpeedDown", {
+                  speed: `${formatBytes(Math.max(0, Math.round(sshTransferStats?.downloadBytesPerSec ?? 0)))} /s`,
+                })}
+              </div>
+              <div>
+                {t("doctor.sshTransferSpeedUp", {
+                  speed: `${formatBytes(Math.max(0, Math.round(sshTransferStats?.uploadBytesPerSec ?? 0)))} /s`,
+                })}
+              </div>
             </div>
           )}
         </div>

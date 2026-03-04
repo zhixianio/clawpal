@@ -15,6 +15,8 @@ pub struct AppPreferences {
     pub show_zeroclaw_doctor_ui: bool,
     #[serde(default)]
     pub show_rescue_bot_ui: bool,
+    #[serde(default)]
+    pub show_ssh_transfer_speed_ui: bool,
 }
 
 fn app_preferences_path(paths: &OpenClawPaths) -> std::path::PathBuf {
@@ -104,6 +106,15 @@ pub fn set_rescue_bot_ui_preference(show_ui: bool) -> Result<AppPreferences, Str
     let paths = resolve_paths();
     let mut prefs = load_app_preferences_from_paths(&paths);
     prefs.show_rescue_bot_ui = show_ui;
+    save_app_preferences_from_paths(&paths, &prefs)?;
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_ssh_transfer_speed_ui_preference(show_ui: bool) -> Result<AppPreferences, String> {
+    let paths = resolve_paths();
+    let mut prefs = load_app_preferences_from_paths(&paths);
+    prefs.show_ssh_transfer_speed_ui = show_ui;
     save_app_preferences_from_paths(&paths, &prefs)?;
     Ok(prefs)
 }

@@ -20,7 +20,7 @@ use crate::history::{add_snapshot, list_snapshots, read_snapshot};
 use crate::install::session_store::InstallSessionStore;
 use crate::install::types::InstallState;
 use crate::models::resolve_paths;
-use crate::ssh::{SftpEntry, SshConnectionPool, SshExecResult, SshHostConfig};
+use crate::ssh::{SftpEntry, SshConnectionPool, SshExecResult, SshHostConfig, SshTransferStats};
 
 pub mod agent;
 pub mod backup;
@@ -3329,7 +3329,7 @@ fn run_provider_probe(
                 .send()
                 .map_err(|e| format!("Provider request failed: {e}"))
         };
-        let mut response = match auth_kind {
+        let response = match auth_kind {
             InternalAuthKind::Authorization => build_request(true)?,
             InternalAuthKind::ApiKey => build_request(false)?,
         };
@@ -6079,6 +6079,14 @@ pub async fn ssh_status(
     } else {
         Ok("disconnected".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn get_ssh_transfer_stats(
+    pool: State<'_, SshConnectionPool>,
+    host_id: String,
+) -> Result<SshTransferStats, String> {
+    Ok(pool.get_transfer_stats(&host_id).await)
 }
 
 // ---------------------------------------------------------------------------

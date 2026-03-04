@@ -247,6 +247,7 @@ export function Settings({
   const [zeroclawTargetLoading, setZeroclawTargetLoading] = useState(true);
   const [showZeroclawDoctorUi, setShowZeroclawDoctorUi] = useState(false);
   const [showRescueBotUi, setShowRescueBotUi] = useState(false);
+  const [showSshTransferSpeedUi, setShowSshTransferSpeedUi] = useState(false);
   const zeroclawPrefsLoadedRef = useRef(false);
   const zeroclawLastSavedRef = useRef("");
 
@@ -359,6 +360,7 @@ export function Settings({
         const nextShowZeroclawUi = Boolean(prefs.showZeroclawDoctorUi);
         setShowZeroclawDoctorUi(nextShowZeroclawUi);
         setShowRescueBotUi(Boolean(prefs.showRescueBotUi));
+        setShowSshTransferSpeedUi(Boolean(prefs.showSshTransferSpeedUi));
       })
       .catch((e) => console.error("Failed to load app preferences:", e));
   }, [ua]);
@@ -770,6 +772,19 @@ export function Settings({
       });
   }, [t, ua]);
 
+  const handleSshTransferSpeedUiToggle = useCallback((nextChecked: boolean) => {
+    setShowSshTransferSpeedUi(nextChecked);
+    ua.setSshTransferSpeedUiPreference(nextChecked)
+      .then((prefs) => {
+        setShowSshTransferSpeedUi(Boolean(prefs.showSshTransferSpeedUi));
+      })
+      .catch((e) => {
+        setShowSshTransferSpeedUi((current) => !current);
+        const errorText = e instanceof Error ? e.message : String(e);
+        toast.error(t("settings.sshTransferSpeedUiSaveFailed", { error: errorText }));
+      });
+  }, [t, ua]);
+
   useEffect(() => {
     if (!zeroclawPrefsLoadedRef.current) return;
     const next = zeroclawModel.trim();
@@ -1116,6 +1131,18 @@ export function Settings({
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {t("settings.alphaEnableRescueBotUiHint")}
+                      </p>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <Label className="text-sm font-medium">{t("settings.alphaEnableSshTransferSpeedUi")}</Label>
+                        <Checkbox
+                          checked={showSshTransferSpeedUi}
+                          onCheckedChange={(checked) => handleSshTransferSpeedUiToggle(checked === true)}
+                          aria-label={t("settings.alphaEnableSshTransferSpeedUi")}
+                          className="h-5 w-5"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {t("settings.alphaEnableSshTransferSpeedUiHint")}
                       </p>
                     </div>
                   </details>

@@ -145,7 +145,6 @@ impl RuntimeAdapter for ZeroclawDoctorAdapter {
         let text = run_zeroclaw_message(&prompt, &key.instance_id, &key.storage_key())
             .map(Self::normalize_doctor_output)
             .map_err(Self::map_error)?;
-        append_history(&session_key, "system", &prompt);
         if let Some((report, summary)) = Self::parse_diagnosis(&text) {
             append_history(&session_key, "assistant", &summary);
             return Ok(vec![RuntimeEvent::chat_final(summary), report]);
@@ -164,12 +163,12 @@ impl RuntimeAdapter for ZeroclawDoctorAdapter {
         message: &str,
     ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let session_key = key.storage_key();
-        append_history(&session_key, "user", message);
         let prompt = build_prompt_with_history(&session_key, message);
         let guarded = Self::doctor_domain_prompt(key, &prompt);
         let text = run_zeroclaw_message(&guarded, &key.instance_id, &key.storage_key())
             .map(Self::normalize_doctor_output)
             .map_err(Self::map_error)?;
+        append_history(&session_key, "user", message);
         if let Some((report, summary)) = Self::parse_diagnosis(&text) {
             append_history(&session_key, "assistant", &summary);
             return Ok(vec![RuntimeEvent::chat_final(summary), report]);

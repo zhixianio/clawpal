@@ -82,7 +82,6 @@ impl RuntimeAdapter for ZeroclawInstallAdapter {
         let prompt = Self::install_domain_prompt(key, message);
         let text = run_zeroclaw_message(&prompt, &key.instance_id, &key.storage_key())
             .map_err(Self::map_error)?;
-        append_history(&session_key, "system", &prompt);
         if let Some((invoke, note)) = Self::parse_tool_intent(&text) {
             append_history(&session_key, "assistant", &note);
             return Ok(vec![RuntimeEvent::chat_final(note), invoke]);
@@ -97,12 +96,12 @@ impl RuntimeAdapter for ZeroclawInstallAdapter {
         message: &str,
     ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
         let session_key = key.storage_key();
-        append_history(&session_key, "user", message);
         let preamble = format!("{}\n", crate::prompt_templates::install_history_preamble());
         let prompt = build_prompt_with_history_preamble(&session_key, message, &preamble);
         let guarded = Self::install_domain_prompt(key, &prompt);
         let text = run_zeroclaw_message(&guarded, &key.instance_id, &key.storage_key())
             .map_err(Self::map_error)?;
+        append_history(&session_key, "user", message);
         if let Some((invoke, note)) = Self::parse_tool_intent(&text) {
             append_history(&session_key, "assistant", &note);
             return Ok(vec![RuntimeEvent::chat_final(note), invoke]);

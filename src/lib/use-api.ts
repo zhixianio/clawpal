@@ -731,6 +731,10 @@ export function useApi() {
         api.setRescueBotUiPreference,
         ["getAppPreferences"],
       ),
+      setSshTransferSpeedUiPreference: withGlobalInvalidation(
+        api.setSshTransferSpeedUiPreference,
+        ["getAppPreferences"],
+      ),
       ensureAccessProfile: api.ensureAccessProfile,
       recordInstallExperience: api.recordInstallExperience,
       openUrl: api.openUrl,
@@ -763,6 +767,7 @@ export function useApi() {
       sshConnect: api.sshConnect,
       sshDisconnect: api.sshDisconnect,
       sshStatus: api.sshStatus,
+      getSshTransferStats: api.getSshTransferStats,
 
       // Remote-only
       remoteWriteRawConfig: withInvalidation(api.remoteWriteRawConfig),

@@ -214,6 +214,16 @@ export interface AppPreferences {
   zeroclawModel: string | null;
   showZeroclawDoctorUi: boolean;
   showRescueBotUi: boolean;
+  showSshTransferSpeedUi: boolean;
+}
+
+export interface SshTransferStats {
+  hostId: string;
+  uploadBytesPerSec: number;
+  downloadBytesPerSec: number;
+  totalUploadBytes: number;
+  totalDownloadBytes: number;
+  updatedAtMs: number;
 }
 
 export interface ZeroclawUsageStats {
