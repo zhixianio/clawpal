@@ -59,10 +59,15 @@
 12. macOS signed 模式会先对 `src-tauri/resources/zeroclaw/darwin-{aarch64,x64}/zeroclaw` 显式 `codesign --timestamp --options runtime`
 13. `npm ci`
 14. 计算构建参数（Windows prerelease 追加 `--bundles nsis`）
-15. 执行 Tauri 打包（signed 或 unsigned 路径）
-16. unsigned 模式将 release 资产重命名为 `*-unsigned.*`
-17. 上传 Windows portable 与 `zeroclaw` sidecar（unsigned 模式同样加后缀）
-18. macOS 清理临时 keychain 与 API key 文件
+15. 执行 Tauri signed build（此阶段只做签名，不做内置 notarize）
+16. macOS signed 额外定位 `.app/.dmg`，输出 preflight `codesign` 诊断信息
+17. 显式调用 `xcrun notarytool submit`，记录 submission id
+18. 轮询 `xcrun notarytool info`（20s 间隔，最大 40 分钟）并实时输出状态；失败时抓取 `notarytool log`
+19. notarization Accepted 后执行 `stapler staple/validate`（app + dmg），并 `--clobber` 覆盖上传 notarized DMG
+20. 上传 notarization 诊断产物（`notary-*.json` / `notary-*.log`）供排障
+21. unsigned 模式将 release 资产重命名为 `*-unsigned.*`
+22. 上传 Windows portable（unsigned 模式同样加后缀）
+23. macOS 清理临时 keychain 与 API key 文件
 
 ## 5. Release 与 Prerelease 的差异
 
