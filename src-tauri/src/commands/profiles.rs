@@ -894,11 +894,10 @@ pub async fn push_related_secrets_to_remote(
 
     // Secret provider resolution may execute external commands with timeouts.
     // Run it on the blocking pool so async command threads stay responsive.
-    let local_credentials = tauri::async_runtime::spawn_blocking(
-        collect_provider_credentials_for_internal,
-    )
-    .await
-    .map_err(|e| format!("Failed to resolve local provider credentials: {e}"))?;
+    let local_credentials =
+        tauri::async_runtime::spawn_blocking(collect_provider_credentials_for_internal)
+            .await
+            .map_err(|e| format!("Failed to resolve local provider credentials: {e}"))?;
     let mut providers = related.into_iter().collect::<Vec<_>>();
     providers.sort();
 
