@@ -198,6 +198,9 @@ export interface ZeroclawOauthCompleteResult {
 export interface ResolvedApiKey {
   profileId: string;
   maskedKey: string;
+  credentialKind?: "oauth" | "env_ref" | "manual" | "unset";
+  authRef?: string | null;
+  resolved?: boolean;
 }
 
 export interface RemoteAuthSyncResult {

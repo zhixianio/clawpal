@@ -11,6 +11,7 @@ import { useTheme } from "@/lib/use-theme";
 import { useFont } from "@/lib/use-font";
 import type { UiFont } from "@/lib/use-font";
 import { profileToModelValue } from "@/lib/model-value";
+import { resolveProfileCredentialView } from "@/lib/profile-credential";
 import type {
   ModelCatalogProvider,
   ModelProfile,
@@ -480,10 +481,10 @@ export function Settings({
     }).catch((e) => console.error("Failed to refresh model catalog:", e));
   };
 
-  const maskedKeyMap = useMemo(() => {
-    const map = new Map<string, string>();
+  const resolvedCredentialMap = useMemo(() => {
+    const map = new Map<string, ResolvedApiKey>();
     for (const entry of apiKeys) {
-      map.set(entry.profileId, entry.maskedKey);
+      map.set(entry.profileId, entry);
     }
     return map;
   }, [apiKeys]);
@@ -497,13 +498,21 @@ export function Settings({
     if (ua.isRemote) {
       // For remote: infer from existing profiles
       const existing = (profiles || []).find(
-        (p) => p.provider === form.provider && maskedKeyMap.has(p.id) && maskedKeyMap.get(p.id) !== "..."
+        (p) => {
+          if (p.provider !== form.provider) return false;
+          const credential = resolveProfileCredentialView(p, resolvedCredentialMap.get(p.id));
+          return credential.resolved;
+        }
       );
       if (existing) {
+        const credential = resolveProfileCredentialView(
+          existing,
+          resolvedCredentialMap.get(existing.id),
+        );
         setAuthSuggestion({
           hasKey: true,
           source: `existing profile (${existing.provider}/${existing.model})`,
-          authRef: existing.authRef || "",
+          authRef: credential.authRef || existing.authRef || "",
         });
       } else {
         setAuthSuggestion(null);
@@ -513,7 +522,7 @@ export function Settings({
         .then(setAuthSuggestion)
         .catch((e) => { console.error("Failed to resolve provider auth:", e); setAuthSuggestion(null); });
     }
-  }, [form.provider, form.id, ua, profiles, maskedKeyMap]);
+  }, [form.provider, form.id, ua, profiles, resolvedCredentialMap]);
 
   useEffect(() => {
     if (!providerUsesOAuthAuth(form.provider)) {
@@ -1081,86 +1090,103 @@ export function Settings({
                   <p className="text-muted-foreground">{t('settings.noProfiles')}</p>
                 ) : null}
                 <div className="grid gap-2">
-                  {(profiles || []).map((profile) => (
-                    <div
-                      key={profile.id}
-                      className="border border-border p-2.5 rounded-lg"
-                    >
-                      <div className="flex justify-between items-center">
-                        <strong>{profile.provider}/{profile.model}</strong>
-                        {profile.enabled ? (
-                          <Badge className="bg-blue-500/10 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400">
-                            {t('settings.enabled')}
-                          </Badge>
-                        ) : (
-                          <Badge className="bg-red-500/10 text-red-600 dark:bg-red-500/15 dark:text-red-400">
-                            {t('settings.disabled')}
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="text-sm text-muted-foreground mt-1">
-                        {t('settings.apiKey')}: {maskedKeyMap.get(profile.id) || "..."}
-                      </div>
-                      {profile.baseUrl && (
-                        <div className="text-sm text-muted-foreground mt-0.5">
-                          URL: {profile.baseUrl}
+                  {(profiles || []).map((profile) => {
+                    const credential = resolveProfileCredentialView(
+                      profile,
+                      resolvedCredentialMap.get(profile.id),
+                    );
+                    const statusLower = credential.status.trim().toLowerCase();
+                    const credentialStatusText =
+                      credential.kind === "oauth" && credential.resolved && statusLower === "not set"
+                        ? t("settings.credentialStatusOauthReady")
+                        : credential.status;
+                    return (
+                      <div
+                        key={profile.id}
+                        className="border border-border p-2.5 rounded-lg"
+                      >
+                        <div className="flex justify-between items-center">
+                          <strong>{profile.provider}/{profile.model}</strong>
+                          {profile.enabled ? (
+                            <Badge className="bg-blue-500/10 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400">
+                              {t('settings.enabled')}
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-red-500/10 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+                              {t('settings.disabled')}
+                            </Badge>
+                          )}
                         </div>
-                      )}
-                      <div className="flex gap-1.5 mt-1.5">
-                        {ENABLE_PROFILE_TEST_BUTTON && (
+                        <div className="text-sm text-muted-foreground mt-1">
+                          {t('settings.credential')}: {t(`settings.credentialKind.${credential.kind}`)}
+                        </div>
+                        <div className="text-sm text-muted-foreground mt-0.5">
+                          {t("settings.credentialRef")}: {credential.authRef || "-"}
+                        </div>
+                        <div className="text-sm text-muted-foreground mt-0.5">
+                          {t("settings.credentialStatus")}: {credentialStatusText}
+                        </div>
+                        {profile.baseUrl && (
+                          <div className="text-sm text-muted-foreground mt-0.5">
+                            URL: {profile.baseUrl}
+                          </div>
+                        )}
+                        <div className="flex gap-1.5 mt-1.5">
+                          {ENABLE_PROFILE_TEST_BUTTON && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              type="button"
+                              onClick={() => testProfile(profile)}
+                              disabled={testingProfileId === profile.id}
+                            >
+                              {testingProfileId === profile.id ? t('settings.testing') : t('settings.test')}
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="outline"
                             type="button"
-                            onClick={() => testProfile(profile)}
-                            disabled={testingProfileId === profile.id}
+                            onClick={() => toggleProfileEnabled(profile)}
                           >
-                            {testingProfileId === profile.id ? t('settings.testing') : t('settings.test')}
+                            {profile.enabled ? t('settings.disable') : t('settings.enable')}
                           </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          type="button"
-                          onClick={() => toggleProfileEnabled(profile)}
-                        >
-                          {profile.enabled ? t('settings.disable') : t('settings.enable')}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          type="button"
-                          onClick={() => editProfile(profile)}
-                        >
-                          {t('settings.edit')}
-                        </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button size="sm" variant="destructive" type="button">
-                              {t('settings.delete')}
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>{t('settings.deleteProfileTitle')}</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                {t('settings.deleteProfileDescription', { name: `${profile.provider}/${profile.model}` })}
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>{t('settings.cancel')}</AlertDialogCancel>
-                              <AlertDialogAction
-                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                onClick={() => deleteProfile(profile.id)}
-                              >
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            type="button"
+                            onClick={() => editProfile(profile)}
+                          >
+                            {t('settings.edit')}
+                          </Button>
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button size="sm" variant="destructive" type="button">
                                 {t('settings.delete')}
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>{t('settings.deleteProfileTitle')}</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  {t('settings.deleteProfileDescription', { name: `${profile.provider}/${profile.model}` })}
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>{t('settings.cancel')}</AlertDialogCancel>
+                                <AlertDialogAction
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  onClick={() => deleteProfile(profile.id)}
+                                >
+                                  {t('settings.delete')}
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>

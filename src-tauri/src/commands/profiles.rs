@@ -15,6 +15,40 @@ fn is_non_empty(opt: Option<&str>) -> bool {
     opt.map(str::trim).is_some_and(|v| !v.is_empty())
 }
 
+fn profile_auth_ref_option(profile: &ModelProfile) -> Option<String> {
+    let auth_ref = profile.auth_ref.trim();
+    if auth_ref.is_empty() {
+        None
+    } else {
+        Some(auth_ref.to_string())
+    }
+}
+
+fn build_resolved_api_key(
+    profile: &ModelProfile,
+    resolved_key: &str,
+    source: Option<ResolvedCredentialSource>,
+    resolved_override: Option<bool>,
+) -> ResolvedApiKey {
+    let trimmed = resolved_key.trim();
+    ResolvedApiKey {
+        profile_id: profile.id.clone(),
+        masked_key: mask_api_key(trimmed),
+        credential_kind: infer_resolved_credential_kind(profile, source),
+        auth_ref: profile_auth_ref_option(profile),
+        resolved: resolved_override.unwrap_or(!trimmed.is_empty()),
+    }
+}
+
+fn oauth_session_ready(profile: &ModelProfile) -> bool {
+    let Some(oauth_provider) = normalize_zeroclaw_oauth_provider(&profile.provider) else {
+        return false;
+    };
+    let oauth_profile_name = profile_name_from_auth_ref(&profile.auth_ref);
+    oauth_store_has_profile("local", oauth_provider, oauth_profile_name)
+        || oauth_store_has_profile_any_instance(oauth_provider, oauth_profile_name)
+}
+
 fn missing_profile_auth_hint(provider: &str, remote: bool) -> String {
     let normalized = provider.trim().to_ascii_lowercase();
     let target = if remote {
@@ -457,27 +491,33 @@ pub async fn remote_resolve_api_keys(
         Err(e) => return Err(format!("Failed to read remote model profiles: {e}")),
     };
     let profiles = clawpal_core::profile::list_profiles_from_storage_json(&content);
+    let auth_cache = RemoteAuthCache::build(&pool, &host_id, &profiles).await.ok();
+
     let mut out = Vec::new();
     for profile in &profiles {
-        let masked = if let Some(ref key) = profile.api_key {
-            if key.len() > 8 {
-                format!("{}...{}", &key[..4], &key[key.len() - 4..])
-            } else if !key.is_empty() {
-                "****".to_string()
-            } else if !profile.auth_ref.is_empty() {
-                format!("via {}", profile.auth_ref)
+        let (resolved_key, source) = if let Some(ref cache) = auth_cache {
+            if let Some((key, source)) = cache.resolve_for_profile_with_source(profile) {
+                (key, Some(source))
             } else {
-                "not set".to_string()
+                (String::new(), None)
             }
-        } else if !profile.auth_ref.is_empty() {
-            format!("via {}", profile.auth_ref)
         } else {
-            "not set".to_string()
+            match resolve_remote_profile_api_key(&pool, &host_id, profile).await {
+                Ok(key) => (key, None),
+                Err(_) => (String::new(), None),
+            }
         };
-        out.push(ResolvedApiKey {
-            profile_id: profile.id.clone(),
-            masked_key: masked,
-        });
+        let resolved_override = if resolved_key.trim().is_empty() && oauth_session_ready(profile) {
+            Some(true)
+        } else {
+            None
+        };
+        out.push(build_resolved_api_key(
+            profile,
+            &resolved_key,
+            source,
+            resolved_override,
+        ));
     }
     Ok(out)
 }
@@ -1603,12 +1643,25 @@ pub fn resolve_api_keys() -> Result<Vec<ResolvedApiKey>, String> {
     let global_base = local_global_openclaw_base_dir();
     let mut out = Vec::new();
     for profile in &profiles {
-        let key = resolve_profile_api_key(profile, &global_base);
-        let masked = mask_api_key(&key);
-        out.push(ResolvedApiKey {
-            profile_id: profile.id.clone(),
-            masked_key: masked,
-        });
+        let (resolved_key, source) =
+            if let Some((credential, _priority, source)) =
+                resolve_profile_credential_with_priority(profile, &global_base)
+            {
+                (credential.secret, Some(source))
+            } else {
+                (String::new(), None)
+            };
+        let resolved_override = if resolved_key.trim().is_empty() && oauth_session_ready(profile) {
+            Some(true)
+        } else {
+            None
+        };
+        out.push(build_resolved_api_key(
+            profile,
+            &resolved_key,
+            source,
+            resolved_override,
+        ));
     }
     Ok(out)
 }

@@ -3217,6 +3217,19 @@ fn profile_to_model_value(profile: &ModelProfile) -> String {
 pub struct ResolvedApiKey {
     pub profile_id: String,
     pub masked_key: String,
+    pub credential_kind: ResolvedCredentialKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_ref: Option<String>,
+    pub resolved: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedCredentialKind {
+    OAuth,
+    EnvRef,
+    Manual,
+    Unset,
 }
 
 fn truncate_error_text(input: &str, max_chars: usize) -> String {
@@ -3399,13 +3412,21 @@ fn resolve_profile_api_key_with_priority(
     base_dir: &Path,
 ) -> Option<(String, u8)> {
     resolve_profile_credential_with_priority(profile, base_dir)
-        .map(|(credential, priority)| (credential.secret, priority))
+        .map(|(credential, priority, _)| (credential.secret, priority))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InternalAuthKind {
     ApiKey,
     Authorization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolvedCredentialSource {
+    ExplicitAuthRef,
+    ManualApiKey,
+    ProviderFallbackAuthRef,
+    ProviderEnvVar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3456,10 +3477,69 @@ pub(crate) fn provider_env_var_candidates(provider: &str) -> Vec<String> {
     out
 }
 
+fn is_oauth_provider_alias(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "openai-codex" | "openai_codex" | "github-copilot" | "copilot" | "openai"
+    )
+}
+
+fn is_oauth_auth_ref(provider: &str, auth_ref: &str) -> bool {
+    if !is_oauth_provider_alias(provider) {
+        return false;
+    }
+    let lower = auth_ref.trim().to_ascii_lowercase();
+    lower.starts_with("openai-codex:") || lower.starts_with("openai:")
+}
+
+pub(crate) fn infer_resolved_credential_kind(
+    profile: &ModelProfile,
+    source: Option<ResolvedCredentialSource>,
+) -> ResolvedCredentialKind {
+    let auth_ref = profile.auth_ref.trim();
+    match source {
+        Some(ResolvedCredentialSource::ManualApiKey) => ResolvedCredentialKind::Manual,
+        Some(ResolvedCredentialSource::ProviderEnvVar) => ResolvedCredentialKind::EnvRef,
+        Some(ResolvedCredentialSource::ExplicitAuthRef) => {
+            if is_oauth_auth_ref(&profile.provider, auth_ref) {
+                ResolvedCredentialKind::OAuth
+            } else {
+                ResolvedCredentialKind::EnvRef
+            }
+        }
+        Some(ResolvedCredentialSource::ProviderFallbackAuthRef) => {
+            let fallback_ref = format!("{}:default", profile.provider.trim().to_ascii_lowercase());
+            if is_oauth_auth_ref(&profile.provider, &fallback_ref) {
+                ResolvedCredentialKind::OAuth
+            } else {
+                ResolvedCredentialKind::EnvRef
+            }
+        }
+        None => {
+            if !auth_ref.is_empty() {
+                if is_oauth_auth_ref(&profile.provider, auth_ref) {
+                    ResolvedCredentialKind::OAuth
+                } else {
+                    ResolvedCredentialKind::EnvRef
+                }
+            } else if profile
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+            {
+                ResolvedCredentialKind::Manual
+            } else {
+                ResolvedCredentialKind::Unset
+            }
+        }
+    }
+}
+
 fn resolve_profile_credential_with_priority(
     profile: &ModelProfile,
     base_dir: &Path,
-) -> Option<(InternalProviderCredential, u8)> {
+) -> Option<(InternalProviderCredential, u8, ResolvedCredentialSource)> {
     // 1. Try explicit auth_ref (user-specified) as env var, then auth store.
     let auth_ref = profile.auth_ref.trim();
     let has_explicit_auth_ref = !auth_ref.is_empty();
@@ -3476,12 +3556,13 @@ fn resolve_profile_credential_with_priority(
                             kind,
                         },
                         40,
+                        ResolvedCredentialSource::ExplicitAuthRef,
                     ));
                 }
             }
         }
         if let Some(credential) = resolve_credential_from_agent_auth_profiles(base_dir, auth_ref) {
-            return Some((credential, 30));
+            return Some((credential, 30, ResolvedCredentialSource::ExplicitAuthRef));
         }
     }
 
@@ -3497,6 +3578,7 @@ fn resolve_profile_credential_with_priority(
                     kind,
                 },
                 20,
+                ResolvedCredentialSource::ManualApiKey,
             ));
         }
     }
@@ -3519,6 +3601,7 @@ fn resolve_profile_credential_with_priority(
                                 kind,
                             },
                             15,
+                            ResolvedCredentialSource::ProviderFallbackAuthRef,
                         ));
                     }
                 }
@@ -3526,7 +3609,11 @@ fn resolve_profile_credential_with_priority(
             if let Some(credential) =
                 resolve_credential_from_agent_auth_profiles(base_dir, &fallback_ref)
             {
-                return Some((credential, 15));
+                return Some((
+                    credential,
+                    15,
+                    ResolvedCredentialSource::ProviderFallbackAuthRef,
+                ));
             }
         }
     }
@@ -3548,6 +3635,7 @@ fn resolve_profile_credential_with_priority(
                         kind,
                     },
                     10,
+                    ResolvedCredentialSource::ProviderEnvVar,
                 ));
             }
         }
@@ -3583,7 +3671,7 @@ fn collect_provider_credentials_from_profiles(
 ) -> HashMap<String, InternalProviderCredential> {
     let mut out = HashMap::<String, (InternalProviderCredential, u8)>::new();
     for profile in profiles.iter().filter(|p| p.enabled) {
-        let Some((credential, priority)) =
+        let Some((credential, priority, _)) =
             resolve_profile_credential_with_priority(profile, base_dir)
         else {
             continue;
@@ -5566,6 +5654,49 @@ mod model_profile_upsert_tests {
                 "kimi-coding/k2p5".to_string(),
                 "anthropic/claude-opus-4-6".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn infer_resolved_credential_kind_detects_oauth_ref() {
+        let profile = mk_profile(
+            "p-oauth",
+            "openai-codex",
+            "gpt-5",
+            "openai-codex:default",
+            None,
+        );
+        assert_eq!(
+            infer_resolved_credential_kind(&profile, Some(ResolvedCredentialSource::ExplicitAuthRef)),
+            ResolvedCredentialKind::OAuth
+        );
+    }
+
+    #[test]
+    fn infer_resolved_credential_kind_detects_env_ref() {
+        let profile = mk_profile("p-env", "openai", "gpt-4o", "OPENAI_API_KEY", None);
+        assert_eq!(
+            infer_resolved_credential_kind(&profile, Some(ResolvedCredentialSource::ExplicitAuthRef)),
+            ResolvedCredentialKind::EnvRef
+        );
+    }
+
+    #[test]
+    fn infer_resolved_credential_kind_detects_manual_and_unset() {
+        let manual = mk_profile("p-manual", "openrouter", "deepseek-v3", "", Some("sk-manual"));
+        assert_eq!(
+            infer_resolved_credential_kind(&manual, Some(ResolvedCredentialSource::ManualApiKey)),
+            ResolvedCredentialKind::Manual
+        );
+        assert_eq!(
+            infer_resolved_credential_kind(&manual, None),
+            ResolvedCredentialKind::Manual
+        );
+
+        let unset = mk_profile("p-unset", "openrouter", "deepseek-v3", "", None);
+        assert_eq!(
+            infer_resolved_credential_kind(&unset, None),
+            ResolvedCredentialKind::Unset
         );
     }
 }
@@ -7677,7 +7808,10 @@ impl RemoteAuthCache {
     }
 
     /// Resolve API key for a single profile using cached data.
-    fn resolve_for_profile(&self, profile: &ModelProfile) -> String {
+    fn resolve_for_profile_with_source(
+        &self,
+        profile: &ModelProfile,
+    ) -> Option<(String, ResolvedCredentialSource)> {
         let auth_ref = profile.auth_ref.trim();
         let has_explicit_auth_ref = !auth_ref.is_empty();
 
@@ -7685,11 +7819,11 @@ impl RemoteAuthCache {
         if has_explicit_auth_ref {
             if is_valid_env_var_name(auth_ref) {
                 if let Some(val) = self.env_vars.get(auth_ref) {
-                    return val.clone();
+                    return Some((val.clone(), ResolvedCredentialSource::ExplicitAuthRef));
                 }
             }
             if let Some(key) = self.find_in_auth_stores(auth_ref) {
-                return key;
+                return Some((key, ResolvedCredentialSource::ExplicitAuthRef));
             }
         }
 
@@ -7697,7 +7831,10 @@ impl RemoteAuthCache {
         if let Some(ref key) = profile.api_key {
             let trimmed = key.trim();
             if !trimmed.is_empty() {
-                return trimmed.to_string();
+                return Some((
+                    trimmed.to_string(),
+                    ResolvedCredentialSource::ManualApiKey,
+                ));
             }
         }
 
@@ -7708,7 +7845,7 @@ impl RemoteAuthCache {
             let skip = has_explicit_auth_ref && auth_ref == fallback;
             if !skip {
                 if let Some(key) = self.find_in_auth_stores(&fallback) {
-                    return key;
+                    return Some((key, ResolvedCredentialSource::ProviderFallbackAuthRef));
                 }
             }
         }
@@ -7716,11 +7853,17 @@ impl RemoteAuthCache {
         // 4. Provider env var conventions.
         for env_name in provider_env_var_candidates(&profile.provider) {
             if let Some(val) = self.env_vars.get(&env_name) {
-                return val.clone();
+                return Some((val.clone(), ResolvedCredentialSource::ProviderEnvVar));
             }
         }
 
-        String::new()
+        None
+    }
+
+    fn resolve_for_profile(&self, profile: &ModelProfile) -> String {
+        self.resolve_for_profile_with_source(profile)
+            .map(|(key, _)| key)
+            .unwrap_or_default()
     }
 
     fn find_in_auth_stores(&self, auth_ref: &str) -> Option<String> {
