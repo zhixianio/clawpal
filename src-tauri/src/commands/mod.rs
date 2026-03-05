@@ -7533,7 +7533,11 @@ pub async fn diagnose_ssh(
                 "SSH connect probe succeeded",
             ),
             Err(error) => {
-                let report = from_any_error(SshStage::TcpReachability, SshIntent::Connect, error);
+                let mut report =
+                    from_any_error(SshStage::TcpReachability, SshIntent::Connect, error);
+                if let Some(code) = report.error_code {
+                    report.stage = ssh_stage_for_error_code(code);
+                }
                 emit_ssh_diagnostic(&app, &report);
                 report
             }
