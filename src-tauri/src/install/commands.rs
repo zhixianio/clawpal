@@ -901,20 +901,16 @@ fn decide_target_internal(
     Ok(decision)
 }
 
-fn orchestrator_next_internal(
-    store: &InstallSessionStore,
-    session_id: &str,
+fn orchestrator_next_for_session(
+    session: InstallSession,
     goal: &str,
 ) -> Result<InstallOrchestratorDecision, String> {
-    let id = session_id.trim();
-    if id.is_empty() {
-        return Err("session_id is required".to_string());
+    let trimmed_goal = goal.trim();
+    if trimmed_goal.is_empty() {
+        return Err("goal is required".to_string());
     }
-    let session = store
-        .get(id)?
-        .ok_or_else(|| format!("install session not found: {id}"))?;
 
-    let decision = match run_external_decider(&session, goal) {
+    let decision = match run_external_decider(&session, trimmed_goal) {
         Ok(v) => v,
         Err(err) => return Ok(make_orchestrator_error_decision(err, "error")),
     };
@@ -953,12 +949,19 @@ fn orchestrator_next_internal(
     Ok(decision)
 }
 
-fn orchestrator_next(
+fn orchestrator_next_internal(
     store: &InstallSessionStore,
     session_id: &str,
     goal: &str,
 ) -> Result<InstallOrchestratorDecision, String> {
-    orchestrator_next_internal(store, session_id, goal)
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    let session = store
+        .get(id)?
+        .ok_or_else(|| format!("install session not found: {id}"))?;
+    orchestrator_next_for_session(session, goal)
 }
 
 fn append_executed_commands(session: &mut InstallSession, commands: &[String]) {
@@ -1200,7 +1203,10 @@ pub async fn install_decide_target(
     goal: String,
     context: Option<HashMap<String, Value>>,
 ) -> Result<InstallTargetDecision, String> {
-    decide_target_internal(&goal, context.unwrap_or_default())
+    let context = context.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || decide_target_internal(&goal, context))
+        .await
+        .map_err(|e| format!("failed to run install target decider task: {e}"))?
 }
 
 #[tauri::command]
@@ -1209,7 +1215,16 @@ pub async fn install_orchestrator_next(
     goal: String,
     store: State<'_, InstallSessionStore>,
 ) -> Result<InstallOrchestratorDecision, String> {
-    orchestrator_next(&store, &session_id, &goal)
+    let id = session_id.trim();
+    if id.is_empty() {
+        return Err("session_id is required".to_string());
+    }
+    let session = store
+        .get(id)?
+        .ok_or_else(|| format!("install session not found: {id}"))?;
+    tauri::async_runtime::spawn_blocking(move || orchestrator_next_for_session(session, &goal))
+        .await
+        .map_err(|e| format!("failed to run install orchestrator task: {e}"))?
 }
 
 pub async fn create_session_for_test(method: &str) -> Result<InstallSession, String> {

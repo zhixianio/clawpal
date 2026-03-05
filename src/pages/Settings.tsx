@@ -1224,12 +1224,10 @@ export function Settings({
               <AutocompleteField
                 value={form.provider}
                 onChange={(val) => {
-                  setCredentialSource((prev) => {
-                    if (providerUsesOAuthAuth(val)) {
-                      return prev === "manual" ? "manual" : "oauth";
-                    }
-                    return prev === "oauth" ? "env" : prev;
-                  });
+                  const nextSource: CredentialSource = providerUsesOAuthAuth(val)
+                    ? (credentialSource === "manual" ? "manual" : "oauth")
+                    : (credentialSource === "oauth" ? "env" : credentialSource);
+                  setCredentialSource(nextSource);
                   setForm((p) => ({
                     ...p,
                     provider: val,
@@ -1238,7 +1236,7 @@ export function Settings({
                       ? p.authRef
                       : providerUsesOAuthAuth(val)
                         ? defaultOauthAuthRef(val)
-                        : (credentialSource === "env" ? (p.authRef || defaultEnvAuthRef(val)) : p.authRef),
+                        : (nextSource === "env" ? (p.authRef || defaultEnvAuthRef(val)) : p.authRef),
                   }));
                 }}
                 onFocus={ensureCatalog}
