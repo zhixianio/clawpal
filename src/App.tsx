@@ -32,6 +32,7 @@ import type { ChannelNode, DiscordGuildChannel, DiscoveredInstance, DockerInstan
 import { GuidanceCard } from "./components/GuidanceCard";
 import { SshFormWidget } from "./components/SshFormWidget";
 import type { AgentGuidanceItem } from "./components/GuidanceCard";
+import { closeWorkspaceTab, shouldRenderGuidanceCard } from "@/lib/tabWorkspace";
 import {
   SSH_PASSPHRASE_RETRY_HINT,
   buildSshPassphraseCancelMessage,
@@ -943,19 +944,19 @@ export function App() {
   }, [navigateRoute]);
 
   const closeTab = useCallback((id: string) => {
-    setOpenTabIds((prev) => {
-      const next = prev.filter((t) => t !== id);
-      if (activeInstance === id) {
-        if (next.length === 0) {
-          setInStart(true);
-          setStartSection("overview");
-        } else {
-          setActiveInstance(next[next.length - 1]);
-        }
-      }
-      return next;
+    setOpenTabIds((prevOpenTabIds) => {
+      const nextState = closeWorkspaceTab({
+        openTabIds: prevOpenTabIds,
+        activeInstance,
+        inStart,
+        startSection,
+      }, id);
+      setActiveInstance(nextState.activeInstance);
+      setInStart(nextState.inStart);
+      setStartSection(nextState.startSection);
+      return nextState.openTabIds;
     });
-  }, [activeInstance]);
+  }, [activeInstance, inStart, startSection]);
 
   const handleInstanceSelect = useCallback((id: string) => {
     if (id === activeInstance && !inStart) {
@@ -1802,7 +1803,7 @@ export function App() {
         className="fixed bottom-5 z-[60] flex flex-col items-end gap-2"
         style={{ right: chatPanelRightOffset }}
       >
-        {agentGuidanceOpen && (
+        {shouldRenderGuidanceCard(agentGuidanceOpen, agentGuidance) && (
           <GuidanceCard
             guidance={agentGuidance}
             instanceLabel={
