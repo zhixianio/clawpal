@@ -21,7 +21,9 @@ use crate::install::session_store::InstallSessionStore;
 use crate::install::types::InstallState;
 use crate::models::resolve_paths;
 use crate::ssh::{SftpEntry, SshConnectionPool, SshExecResult, SshHostConfig, SshTransferStats};
-use clawpal_core::ssh::diagnostic::{from_any_error, SshDiagnosticReport, SshIntent, SshStage};
+use clawpal_core::ssh::diagnostic::{
+    from_any_error, SshDiagnosticReport, SshErrorCode, SshIntent, SshStage,
+};
 
 pub mod agent;
 pub mod backup;
@@ -7157,6 +7159,22 @@ fn success_ssh_diagnostic(
     report
 }
 
+fn ssh_stage_for_error_code(code: SshErrorCode) -> SshStage {
+    match code {
+        SshErrorCode::HostUnreachable | SshErrorCode::ConnectionRefused | SshErrorCode::Timeout => {
+            SshStage::TcpReachability
+        }
+        SshErrorCode::HostKeyFailed => SshStage::HostKeyVerification,
+        SshErrorCode::KeyfileMissing
+        | SshErrorCode::PassphraseRequired
+        | SshErrorCode::AuthFailed
+        | SshErrorCode::SftpPermissionDenied => SshStage::AuthNegotiation,
+        SshErrorCode::SessionStale => SshStage::SessionOpen,
+        SshErrorCode::RemoteCommandFailed => SshStage::RemoteExec,
+        SshErrorCode::Unknown => SshStage::TcpReachability,
+    }
+}
+
 fn ssh_stage_for_intent(intent: SshIntent) -> SshStage {
     match intent {
         SshIntent::Connect => SshStage::SessionOpen,
@@ -7229,12 +7247,20 @@ pub async fn ssh_connect(
             "[dev][ssh_connect] failed host_id={} host={} user={} port={} auth_method={} error={}",
             host_id, host.host, host.username, host.port, host.auth_method, error
         ));
-        return Err(make_ssh_command_error(
-            &app,
+        let message = format!("ssh connect failed: {error}");
+        let mut diagnostic = from_any_error(
             SshStage::TcpReachability,
             SshIntent::Connect,
-            format!("ssh connect failed: {error}"),
-        ));
+            message.clone(),
+        );
+        if let Some(code) = diagnostic.error_code {
+            diagnostic.stage = ssh_stage_for_error_code(code);
+        }
+        emit_ssh_diagnostic(&app, &diagnostic);
+        return Err(SshCommandError {
+            message,
+            diagnostic,
+        });
     }
     crate::commands::logs::log_dev(format!("[dev][ssh_connect] success host_id={host_id}"));
     let _ = success_ssh_diagnostic(
