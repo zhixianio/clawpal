@@ -1097,9 +1097,13 @@ export function Settings({
                     );
                     const statusLower = credential.status.trim().toLowerCase();
                     const credentialStatusText =
-                      credential.kind === "oauth" && credential.resolved && statusLower === "not set"
-                        ? t("settings.credentialStatusOauthReady")
+                      credential.kind === "oauth" && statusLower !== "..."
+                        ? (credential.resolved
+                          ? t("settings.credentialStatusOauthReady")
+                          : credential.status)
                         : credential.status;
+                    const showCredentialRef = credential.kind === "env_ref";
+                    const showCredentialStatus = credential.kind !== "env_ref";
                     return (
                       <div
                         key={profile.id}
@@ -1120,12 +1124,16 @@ export function Settings({
                         <div className="text-sm text-muted-foreground mt-1">
                           {t('settings.credential')}: {t(`settings.credentialKind.${credential.kind}`)}
                         </div>
-                        <div className="text-sm text-muted-foreground mt-0.5">
-                          {t("settings.credentialRef")}: {credential.authRef || "-"}
-                        </div>
-                        <div className="text-sm text-muted-foreground mt-0.5">
-                          {t("settings.credentialStatus")}: {credentialStatusText}
-                        </div>
+                        {showCredentialRef && (
+                          <div className="text-sm text-muted-foreground mt-0.5">
+                            {t("settings.credentialRef")}: {credential.authRef || "-"}
+                          </div>
+                        )}
+                        {showCredentialStatus && (
+                          <div className="text-sm text-muted-foreground mt-0.5">
+                            {t("settings.credentialStatus")}: {credentialStatusText}
+                          </div>
+                        )}
                         {profile.baseUrl && (
                           <div className="text-sm text-muted-foreground mt-0.5">
                             URL: {profile.baseUrl}
