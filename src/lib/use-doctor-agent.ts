@@ -183,31 +183,22 @@ function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "instal
   if (domain !== "doctor") return false;
   const args = normalizeInvokeArgs(invoke);
   if (invoke.command === "clawpal") {
-    // Doctor domain file operations should be frictionless.
+    // Only read-only diagnostic commands are safe to auto-approve.
     return hasAnyPrefix(args, [
       "doctor probe-openclaw",
-      "doctor fix-openclaw-path",
       "doctor file read",
-      "doctor file write",
       "doctor config-read",
-      "doctor config-upsert",
-      "doctor config-delete",
       "doctor sessions-read",
-      "doctor sessions-upsert",
-      "doctor sessions-delete",
     ]);
   }
   if (invoke.command === "openclaw") {
-    // Allow diagnostics and config self-heal commands without manual approval.
+    // Only read-only diagnostic commands are safe to auto-approve.
     return hasAnyPrefix(args, [
       "--version",
       "doctor",
       "gateway status",
       "health",
       "config get",
-      "config set",
-      "config delete",
-      "config unset",
       "agents list",
       "memory status",
       "security audit",
