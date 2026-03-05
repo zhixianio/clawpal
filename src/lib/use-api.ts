@@ -202,7 +202,8 @@ function logDevApiError(context: string, error: unknown, detail: Record<string, 
   });
 }
 
-function shouldLogRemoteInvokeMetric(ok: boolean, elapsedMs: number): boolean {
+/** @internal Exported for testing only. */
+export function shouldLogRemoteInvokeMetric(ok: boolean, elapsedMs: number): boolean {
   // Always log failures and slow calls; sample a small percentage of fast-success calls.
   if (!ok) return true;
   if (elapsedMs >= 1500) return true;
