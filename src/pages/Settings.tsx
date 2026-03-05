@@ -945,7 +945,23 @@ export function Settings({
                             : "__none__"
                         }
                         onValueChange={(val) => {
-                          setZeroclawModel(val === "__none__" ? "" : val);
+                          const model = val === "__none__" ? "" : val;
+                          setZeroclawModel(model);
+                          // Optimistically update the displayed runtime target so
+                          // "current preferred model" reflects the choice instantly.
+                          if (model) {
+                            const slashIdx = model.indexOf("/");
+                            const provider = slashIdx > 0 ? model.slice(0, slashIdx) : "";
+                            const modelName = slashIdx > 0 ? model.slice(slashIdx + 1) : model;
+                            setZeroclawTarget((prev) => ({
+                              ...prev,
+                              provider,
+                              model: modelName,
+                              source: "preferred",
+                              preferredModel: model,
+                              providerOrder: prev?.providerOrder ?? [],
+                            }));
+                          }
                         }}
                         disabled={zeroclawSaving}
                       >
