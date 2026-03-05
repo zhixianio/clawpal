@@ -62,6 +62,8 @@ type ProfileForm = {
   enabled: boolean;
 };
 
+type CredentialSource = "oauth" | "env" | "manual";
+
 const MODEL_CATALOG_CACHE_TTL_MS = 5 * 60_000;
 const ENABLE_PROFILE_TEST_BUTTON = true;
 let modelCatalogCache: { value: ModelCatalogProvider[]; expiresAt: number } | null = null;
@@ -117,6 +119,34 @@ function oauthProfileNameFromAuthRef(authRef: string): string {
   if (idx < 0) return "default";
   const profile = trimmed.slice(idx + 1).trim();
   return profile || "default";
+}
+
+function isEnvVarLikeAuthRef(authRef: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(authRef.trim());
+}
+
+function defaultEnvAuthRef(provider: string): string {
+  const normalized = normalizeOauthProvider(provider);
+  if (!normalized) return "";
+  if (normalized === "openai-codex") {
+    return "OPENAI_CODEX_TOKEN";
+  }
+  const providerEnv = normalized
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+  return providerEnv ? `${providerEnv}_API_KEY` : "";
+}
+
+function inferCredentialSource(provider: string, authRef: string): CredentialSource {
+  const trimmed = authRef.trim();
+  if (!trimmed) {
+    return providerUsesOAuthAuth(provider) ? "oauth" : "manual";
+  }
+  if (providerUsesOAuthAuth(provider) && trimmed.toLowerCase().startsWith("openai-codex:")) {
+    return "oauth";
+  }
+  return "env";
 }
 
 function providerSupportsOptionalApiKey(provider: string): boolean {
@@ -231,6 +261,7 @@ export function Settings({
   const [catalog, setCatalog] = useState<ModelCatalogProvider[]>([]);
   const [apiKeys, setApiKeys] = useState<ResolvedApiKey[]>([]);
   const [form, setForm] = useState<ProfileForm>(emptyForm());
+  const [credentialSource, setCredentialSource] = useState<CredentialSource>("manual");
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [authSuggestion, setAuthSuggestion] = useState<ProviderAuthSuggestion | null>(null);
@@ -491,6 +522,12 @@ export function Settings({
     }
   }, [form.provider]);
 
+  useEffect(() => {
+    if (!providerUsesOAuthAuth(form.provider) && credentialSource === "oauth") {
+      setCredentialSource("env");
+    }
+  }, [form.provider, credentialSource]);
+
   const modelCandidates = useMemo(() => {
     const found = catalog.find((c) => c.provider === form.provider);
     return found?.models || [];
@@ -541,17 +578,25 @@ export function Settings({
       return false;
     }
     const apiKeyOptional = form.useCustomUrl || providerSupportsOptionalApiKey(form.provider);
-    if (!ua.isRemote && !form.apiKey && !form.id && !authSuggestion?.hasKey && !apiKeyOptional) {
+    const oauthSource = credentialSource === "oauth" && providerUsesOAuthAuth(form.provider);
+    const envSource = credentialSource === "env";
+    const manualSource = credentialSource === "manual";
+    if (!ua.isRemote && manualSource && !form.apiKey && !form.id && !apiKeyOptional) {
       setMessage(t('settings.apiKeyRequired'));
       return false;
     }
     const overrideAuthRef = (authRefOverride || "").trim();
     const explicitAuthRef = form.authRef.trim();
     const oauthFallbackAuthRef = defaultOauthAuthRef(form.provider);
-    const resolvedAuthRef = overrideAuthRef
-      || explicitAuthRef
-      || ((!form.apiKey && authSuggestion?.authRef) ? authSuggestion.authRef : "")
-      || (!form.apiKey ? oauthFallbackAuthRef : "");
+    const resolvedAuthRef = oauthSource
+      ? (overrideAuthRef || explicitAuthRef || oauthFallbackAuthRef)
+      : envSource
+        ? (
+          overrideAuthRef
+          || explicitAuthRef
+          || ((!form.apiKey && authSuggestion?.authRef) ? authSuggestion.authRef : "")
+        )
+        : "";
     const profileData: ModelProfile = {
       id: form.id || "",
       name: `${form.provider}/${form.model}`,
@@ -630,6 +675,7 @@ export function Settings({
   };
 
   const editProfile = (profile: ModelProfile) => {
+    setCredentialSource(inferCredentialSource(profile.provider, profile.authRef || ""));
     setForm({
       id: profile.id,
       provider: profile.provider,
@@ -648,6 +694,7 @@ export function Settings({
   };
 
   const openAddProfile = () => {
+    setCredentialSource("manual");
     setForm(emptyForm());
     setOauthAuthorizeUrl("");
     setOauthRedirectInput("");
@@ -1181,6 +1228,7 @@ export function Settings({
       <Dialog open={profileDialogOpen} onOpenChange={(open) => {
         setProfileDialogOpen(open);
         if (!open) {
+          setCredentialSource("manual");
           setForm(emptyForm());
           setOauthAuthorizeUrl("");
           setOauthRedirectInput("");
@@ -1197,14 +1245,22 @@ export function Settings({
               <Label>{t('settings.provider')}</Label>
               <AutocompleteField
                 value={form.provider}
-                onChange={(val) =>
+                onChange={(val) => {
+                  const nextSource: CredentialSource = providerUsesOAuthAuth(val)
+                    ? (credentialSource === "manual" ? "manual" : "oauth")
+                    : (credentialSource === "oauth" ? "env" : credentialSource);
+                  setCredentialSource(nextSource);
                   setForm((p) => ({
                     ...p,
                     provider: val,
                     model: "",
-                    authRef: p.id ? p.authRef : defaultOauthAuthRef(val),
-                  }))
-                }
+                    authRef: p.id
+                      ? p.authRef
+                      : providerUsesOAuthAuth(val)
+                        ? defaultOauthAuthRef(val)
+                        : (nextSource === "env" ? (p.authRef || defaultEnvAuthRef(val)) : p.authRef),
+                  }));
+                }}
                 onFocus={ensureCatalog}
                 options={providerCandidates.map((provider) => ({
                   value: provider,
@@ -1230,7 +1286,52 @@ export function Settings({
               />
             </div>
 
-            {providerUsesOAuthAuth(form.provider) && (
+            <div className="space-y-1.5">
+              <Label>{t('settings.credentialSource')}</Label>
+              <Select
+                value={credentialSource}
+                onValueChange={(val) => {
+                  const next = val as CredentialSource;
+                  if (next === "oauth" && !providerUsesOAuthAuth(form.provider)) {
+                    return;
+                  }
+                  setCredentialSource(next);
+                  setForm((p) => {
+                    if (next === "oauth") {
+                      const oauthRef = p.authRef.trim();
+                      return {
+                        ...p,
+                        apiKey: "",
+                        authRef: oauthRef && !isEnvVarLikeAuthRef(oauthRef)
+                          ? oauthRef
+                          : defaultOauthAuthRef(p.provider),
+                      };
+                    }
+                    if (next === "env") {
+                      const currentRef = p.authRef.trim();
+                      return {
+                        ...p,
+                        authRef: currentRef || defaultEnvAuthRef(p.provider),
+                      };
+                    }
+                    return p;
+                  });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {providerUsesOAuthAuth(form.provider) && (
+                    <SelectItem value="oauth">{t("settings.credentialSourceOauth")}</SelectItem>
+                  )}
+                  <SelectItem value="env">{t("settings.credentialSourceEnv")}</SelectItem>
+                  <SelectItem value="manual">{t("settings.credentialSourceManual")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {credentialSource === "oauth" && providerUsesOAuthAuth(form.provider) && (
               <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-2">
                 <p>{t("settings.oauthProviderHint", { provider: normalizeOauthProvider(form.provider) })}</p>
                 <div className="flex flex-wrap gap-2">
@@ -1280,42 +1381,44 @@ export function Settings({
               </div>
             )}
 
-            <div className="space-y-1.5">
-              <Label>{t('settings.authRef')}</Label>
-              <Input
-                placeholder={providerUsesOAuthAuth(form.provider) ? "openai-codex:default" : "provider:default"}
-                value={form.authRef}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, authRef: e.target.value }))
-                }
-              />
-              {providerUsesOAuthAuth(form.provider) && (
+            {credentialSource === "env" && (
+              <div className="space-y-1.5">
+                <Label>{t('settings.authRef')}</Label>
+                <Input
+                  placeholder={defaultEnvAuthRef(form.provider) || "OPENAI_API_KEY"}
+                  value={form.authRef}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, authRef: e.target.value }))
+                  }
+                />
                 <p className="text-xs text-muted-foreground">
-                  {t("settings.oauthAuthRefHint")}
+                  {t("settings.credentialSourceEnvHint")}
                 </p>
-              )}
-            </div>
+              </div>
+            )}
 
-            <div className="space-y-1.5">
-              <Label>{t('settings.apiKey')}</Label>
-              <Input
-                type="password"
-                placeholder={form.id
-                  ? t('settings.apiKeyUnchanged')
-                  : (authSuggestion?.hasKey || form.useCustomUrl || providerSupportsOptionalApiKey(form.provider))
-                    ? t('settings.apiKeyOptional')
-                    : t('settings.apiKeyPlaceholder')}
-                value={form.apiKey}
-                onChange={(e) =>
-                  setForm((p) => ({ ...p, apiKey: e.target.value }))
-                }
-              />
-              {!form.id && authSuggestion?.hasKey && (
-                <p className="text-xs text-muted-foreground">
-                  {t('settings.keyAvailable', { source: authSuggestion.source })}
-                </p>
-              )}
-            </div>
+            {credentialSource === "manual" && (
+              <div className="space-y-1.5">
+                <Label>{t('settings.apiKey')}</Label>
+                <Input
+                  type="password"
+                  placeholder={form.id
+                    ? t('settings.apiKeyUnchanged')
+                    : (authSuggestion?.hasKey || form.useCustomUrl || providerSupportsOptionalApiKey(form.provider))
+                      ? t('settings.apiKeyOptional')
+                      : t('settings.apiKeyPlaceholder')}
+                  value={form.apiKey}
+                  onChange={(e) =>
+                    setForm((p) => ({ ...p, apiKey: e.target.value }))
+                  }
+                />
+                {!form.id && authSuggestion?.hasKey && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('settings.keyAvailable', { source: authSuggestion.source })}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-2">
               <Checkbox

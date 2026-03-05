@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::{
     fs,
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    process::{Command, Stdio},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use tauri::{Manager, State};
@@ -3572,7 +3572,9 @@ pub(crate) fn collect_provider_credentials_from_paths(
     paths: &crate::models::OpenClawPaths,
 ) -> HashMap<String, InternalProviderCredential> {
     let profiles = load_model_profiles(&paths);
-    collect_provider_credentials_from_profiles(&profiles, &paths.base_dir)
+    let mut out = collect_provider_credentials_from_profiles(&profiles, &paths.base_dir);
+    augment_provider_credentials_from_openclaw_config(paths, &mut out);
+    out
 }
 
 fn collect_provider_credentials_from_profiles(
@@ -3600,6 +3602,77 @@ fn collect_provider_credentials_from_profiles(
         }
     }
     out.into_iter().map(|(k, (v, _))| (k, v)).collect()
+}
+
+fn augment_provider_credentials_from_openclaw_config(
+    paths: &crate::models::OpenClawPaths,
+    out: &mut HashMap<String, InternalProviderCredential>,
+) {
+    let cfg = match read_openclaw_config(paths) {
+        Ok(cfg) => cfg,
+        Err(_) => return,
+    };
+    let Some(providers) = cfg.pointer("/models/providers").and_then(Value::as_object) else {
+        return;
+    };
+
+    for (provider, provider_cfg) in providers {
+        let provider_key = provider.trim().to_ascii_lowercase();
+        if provider_key.is_empty() || out.contains_key(&provider_key) {
+            continue;
+        }
+        let Some(provider_obj) = provider_cfg.as_object() else {
+            continue;
+        };
+        if let Some(credential) =
+            resolve_provider_credential_from_config_entry(&cfg, provider, provider_obj)
+        {
+            out.insert(provider_key, credential);
+        }
+    }
+}
+
+fn resolve_provider_credential_from_config_entry(
+    cfg: &Value,
+    provider: &str,
+    provider_cfg: &Map<String, Value>,
+) -> Option<InternalProviderCredential> {
+    for (field, fallback_kind, allow_plaintext) in [
+        ("apiKey", InternalAuthKind::ApiKey, true),
+        ("api_key", InternalAuthKind::ApiKey, true),
+        ("key", InternalAuthKind::ApiKey, true),
+        ("token", InternalAuthKind::Authorization, true),
+        ("access", InternalAuthKind::Authorization, true),
+        ("secretRef", InternalAuthKind::ApiKey, false),
+        ("keyRef", InternalAuthKind::ApiKey, false),
+        ("tokenRef", InternalAuthKind::Authorization, false),
+        ("apiKeyRef", InternalAuthKind::ApiKey, false),
+        ("api_key_ref", InternalAuthKind::ApiKey, false),
+        ("accessRef", InternalAuthKind::Authorization, false),
+    ] {
+        let Some(raw_val) = provider_cfg.get(field) else {
+            continue;
+        };
+
+        if allow_plaintext {
+            if let Some(secret) = raw_val.as_str().map(str::trim).filter(|v| !v.is_empty()) {
+                let kind = infer_auth_kind(provider, secret, fallback_kind);
+                return Some(InternalProviderCredential {
+                    secret: secret.to_string(),
+                    kind,
+                });
+            }
+        }
+        if let Some(secret_ref) = try_parse_secret_ref(raw_val) {
+            if let Some(secret) =
+                resolve_secret_ref_with_provider_config(&secret_ref, cfg, &local_env_lookup)
+            {
+                let kind = infer_auth_kind(provider, &secret, fallback_kind);
+                return Some(InternalProviderCredential { secret, kind });
+            }
+        }
+    }
+    None
 }
 
 fn resolve_credential_from_agent_auth_profiles(
@@ -3755,20 +3828,354 @@ fn resolve_credential_from_auth_store_json_with_env(
 #[derive(Debug, Clone)]
 struct SecretRef {
     source: String,
+    provider: Option<String>,
     id: String,
 }
 
 fn try_parse_secret_ref(value: &Value) -> Option<SecretRef> {
     let obj = value.as_object()?;
     let source = obj.get("source")?.as_str()?.trim();
+    let provider = obj
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_ascii_lowercase);
     let id = obj.get("id")?.as_str()?.trim();
     if source.is_empty() || id.is_empty() {
         return None;
     }
     Some(SecretRef {
         source: source.to_string(),
+        provider,
         id: id.to_string(),
     })
+}
+
+fn normalize_secret_provider_name(cfg: &Value, secret_ref: &SecretRef) -> Option<String> {
+    if let Some(provider) = secret_ref.provider.as_deref().map(str::trim) {
+        if !provider.is_empty() {
+            return Some(provider.to_ascii_lowercase());
+        }
+    }
+    let defaults_key = format!("/secrets/defaults/{}", secret_ref.source.trim());
+    cfg.pointer(&defaults_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn load_secret_provider_config<'a>(
+    cfg: &'a Value,
+    provider: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    cfg.pointer("/secrets/providers")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(provider))
+        .and_then(Value::as_object)
+}
+
+fn secret_ref_allowed_in_provider_cfg(
+    provider_cfg: &serde_json::Map<String, Value>,
+    id: &str,
+) -> bool {
+    let Some(ids) = provider_cfg.get("ids").and_then(Value::as_array) else {
+        return true;
+    };
+    ids.iter()
+        .filter_map(Value::as_str)
+        .any(|candidate| candidate.trim() == id)
+}
+
+fn expand_home_path(raw: &str) -> PathBuf {
+    PathBuf::from(shellexpand::tilde(raw).to_string())
+}
+
+fn resolve_secret_ref_file_with_provider_config(
+    secret_ref: &SecretRef,
+    provider_cfg: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    let source = provider_cfg
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !source.is_empty() && source != "file" {
+        return None;
+    }
+    if !secret_ref_allowed_in_provider_cfg(provider_cfg, &secret_ref.id) {
+        return None;
+    }
+    let path = provider_cfg.get("path").and_then(Value::as_str)?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let file_path = expand_home_path(path);
+    let content = fs::read_to_string(&file_path).ok()?;
+    let mode = provider_cfg
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("json")
+        .trim()
+        .to_ascii_lowercase();
+    if mode == "singlevalue" {
+        if secret_ref.id.trim() != "value" {
+            eprintln!(
+                "SecretRef file source: singlevalue mode requires id 'value', got '{}'",
+                secret_ref.id.trim()
+            );
+            return None;
+        }
+        let trimmed = content.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    let parsed: Value = serde_json::from_str(&content).ok()?;
+    let id = secret_ref.id.trim();
+    if !id.starts_with('/') {
+        eprintln!("SecretRef file source: JSON mode expects id to start with '/', got '{id}'");
+        return None;
+    }
+    let resolved = parsed.pointer(id)?;
+    let out = match resolved {
+        Value::String(v) => v.trim().to_string(),
+        Value::Number(v) => v.to_string(),
+        Value::Bool(v) => v.to_string(),
+        _ => String::new(),
+    };
+    (!out.is_empty()).then_some(out)
+}
+
+fn read_trusted_dirs(provider_cfg: &serde_json::Map<String, Value>) -> Vec<PathBuf> {
+    provider_cfg
+        .get("trustedDirs")
+        .and_then(Value::as_array)
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|dir| !dir.is_empty())
+                .map(expand_home_path)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_secret_ref_exec_with_provider_config(
+    secret_ref: &SecretRef,
+    provider_name: &str,
+    provider_cfg: &serde_json::Map<String, Value>,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let source = provider_cfg
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if !source.is_empty() && source != "exec" {
+        return None;
+    }
+    if !secret_ref_allowed_in_provider_cfg(provider_cfg, &secret_ref.id) {
+        return None;
+    }
+    let command_path = provider_cfg.get("command").and_then(Value::as_str)?.trim();
+    if command_path.is_empty() {
+        return None;
+    }
+    let expanded_command = expand_home_path(command_path);
+    if !expanded_command.is_absolute() {
+        return None;
+    }
+    let allow_symlink_command = provider_cfg
+        .get("allowSymlinkCommand")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Ok(meta) = fs::symlink_metadata(&expanded_command) {
+        if meta.file_type().is_symlink() {
+            if !allow_symlink_command {
+                return None;
+            }
+            let trusted = read_trusted_dirs(provider_cfg);
+            if !trusted.is_empty() {
+                let Ok(canonical_command) = expanded_command.canonicalize() else {
+                    return None;
+                };
+                let is_trusted = trusted.into_iter().any(|dir| {
+                    dir.canonicalize()
+                        .ok()
+                        .is_some_and(|canonical_dir| canonical_command.starts_with(canonical_dir))
+                });
+                if !is_trusted {
+                    return None;
+                }
+            }
+        }
+    }
+
+    let args = provider_cfg
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let pass_env = provider_cfg
+        .get("passEnv")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let json_only = provider_cfg
+        .get("jsonOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let timeout = provider_cfg
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .map(|ms| Duration::from_millis(ms.clamp(100, 120_000)))
+        .or_else(|| {
+            provider_cfg
+                .get("timeoutSeconds")
+                .or_else(|| provider_cfg.get("timeoutSec"))
+                .or_else(|| provider_cfg.get("timeout"))
+                .and_then(Value::as_u64)
+                .map(|secs| Duration::from_secs(secs.clamp(1, 120)))
+        })
+        .unwrap_or_else(|| Duration::from_secs(10));
+
+    let mut cmd = Command::new(expanded_command);
+    cmd.args(args);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if !pass_env.is_empty() {
+        cmd.env_clear();
+        for name in pass_env {
+            if let Some(value) = env_lookup(&name) {
+                cmd.env(name, value);
+            }
+        }
+    }
+
+    let mut child = cmd.spawn().ok()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        let payload = serde_json::json!({
+            "protocolVersion": 1,
+            "provider": provider_name,
+            "ids": [secret_ref.id.clone()],
+        });
+        let _ = stdin.write_all(payload.to_string().as_bytes());
+    }
+    let _ = child.stdin.take();
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    loop {
+        match child.try_wait().ok()? {
+            Some(_) => break,
+            None => {
+                if Instant::now() >= deadline {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    if timed_out {
+        return None;
+    }
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return None;
+    }
+
+    if let Ok(json) = serde_json::from_str::<Value>(&stdout) {
+        if let Some(value) = json
+            .get("values")
+            .and_then(Value::as_object)
+            .and_then(|values| values.get(secret_ref.id.trim()))
+        {
+            let resolved = value
+                .as_str()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    if value.is_number() || value.is_boolean() {
+                        Some(value.to_string())
+                    } else {
+                        None
+                    }
+                });
+            if resolved.is_some() {
+                return resolved;
+            }
+        }
+    }
+    if json_only {
+        return None;
+    }
+    for line in stdout.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == secret_ref.id.trim() {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    if secret_ref.id.trim() == "value" {
+        let trimmed = stdout.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+fn resolve_secret_ref_with_provider_config(
+    secret_ref: &SecretRef,
+    cfg: &Value,
+    env_lookup: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let source = secret_ref.source.trim().to_ascii_lowercase();
+    if source.is_empty() {
+        return None;
+    }
+    if source == "env" {
+        return env_lookup(secret_ref.id.trim());
+    }
+
+    let provider_name = normalize_secret_provider_name(cfg, secret_ref)?;
+    let provider_cfg = load_secret_provider_config(cfg, &provider_name)?;
+
+    match source.as_str() {
+        "file" => resolve_secret_ref_file_with_provider_config(secret_ref, provider_cfg),
+        "exec" => resolve_secret_ref_exec_with_provider_config(
+            secret_ref,
+            &provider_name,
+            provider_cfg,
+            env_lookup,
+        ),
+        _ => None,
+    }
 }
 
 fn resolve_secret_ref_with_env(
@@ -3807,15 +4214,24 @@ fn local_env_lookup(name: &str) -> Option<String> {
 }
 
 fn collect_secret_ref_env_names_from_entry(entry: &Value, names: &mut Vec<String>) {
-    if let Some(sr) = entry.get("secretRef").and_then(try_parse_secret_ref) {
-        if sr.source == "env" {
-            names.push(sr.id);
+    for ref_field in [
+        "secretRef",
+        "keyRef",
+        "tokenRef",
+        "apiKeyRef",
+        "api_key_ref",
+        "accessRef",
+    ] {
+        if let Some(sr) = entry.get(ref_field).and_then(try_parse_secret_ref) {
+            if sr.source.eq_ignore_ascii_case("env") {
+                names.push(sr.id);
+            }
         }
     }
     for field in ["token", "key", "apiKey", "api_key", "access"] {
         if let Some(field_val) = entry.get(field) {
             if let Some(sr) = try_parse_secret_ref(field_val) {
-                if sr.source == "env" {
+                if sr.source.eq_ignore_ascii_case("env") {
                     names.push(sr.id);
                 }
             }
@@ -3869,17 +4285,26 @@ fn extract_credential_from_auth_entry_with_env(
     };
 
     // SecretRef at entry level takes precedence (OpenClaw secrets management).
-    if let Some(secret_ref) = entry.get("secretRef").and_then(try_parse_secret_ref) {
-        if let Some(resolved) = resolve_secret_ref_with_env(&secret_ref, env_lookup) {
-            let kind = infer_auth_kind(
-                provider,
-                &resolved,
-                kind_from_type.unwrap_or(InternalAuthKind::ApiKey),
-            );
-            return Some(InternalProviderCredential {
-                secret: resolved,
-                kind,
-            });
+    for (ref_field, ref_kind) in [
+        ("secretRef", kind_from_type),
+        ("keyRef", Some(InternalAuthKind::ApiKey)),
+        ("tokenRef", Some(InternalAuthKind::Authorization)),
+        ("apiKeyRef", Some(InternalAuthKind::ApiKey)),
+        ("api_key_ref", Some(InternalAuthKind::ApiKey)),
+        ("accessRef", Some(InternalAuthKind::Authorization)),
+    ] {
+        if let Some(secret_ref) = entry.get(ref_field).and_then(try_parse_secret_ref) {
+            if let Some(resolved) = resolve_secret_ref_with_env(&secret_ref, env_lookup) {
+                let kind = infer_auth_kind(
+                    provider,
+                    &resolved,
+                    ref_kind.unwrap_or(InternalAuthKind::ApiKey),
+                );
+                return Some(InternalProviderCredential {
+                    secret: resolved,
+                    kind,
+                });
+            }
         }
     }
 
@@ -5204,6 +5629,26 @@ mod secret_ref_tests {
     }
 
     #[test]
+    fn extract_credential_resolves_env_secret_ref_in_key_ref_field() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "openai",
+            "keyRef": { "source": "env", "id": "OPENAI_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "OPENAI_API_KEY" {
+                Some("sk-keyref-openai".to_string())
+            } else {
+                None
+            }
+        };
+        let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup)
+            .expect("should resolve");
+        assert_eq!(credential.secret, "sk-keyref-openai");
+        assert_eq!(credential.kind, InternalAuthKind::ApiKey);
+    }
+
+    #[test]
     fn extract_credential_resolves_env_secret_ref_in_token_field() {
         let entry = serde_json::json!({
             "type": "token",
@@ -5220,6 +5665,26 @@ mod secret_ref_tests {
         let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup)
             .expect("should resolve");
         assert_eq!(credential.secret, "sk-ant-resolved");
+        assert_eq!(credential.kind, InternalAuthKind::Authorization);
+    }
+
+    #[test]
+    fn extract_credential_resolves_env_secret_ref_in_token_ref_field() {
+        let entry = serde_json::json!({
+            "type": "token",
+            "provider": "anthropic",
+            "tokenRef": { "source": "env", "id": "ANTHROPIC_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "ANTHROPIC_API_KEY" {
+                Some("sk-ant-tokenref".to_string())
+            } else {
+                None
+            }
+        };
+        let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup)
+            .expect("should resolve");
+        assert_eq!(credential.secret, "sk-ant-tokenref");
         assert_eq!(credential.kind, InternalAuthKind::Authorization);
     }
 
@@ -5324,6 +5789,28 @@ mod secret_ref_tests {
     }
 
     #[test]
+    fn collect_secret_ref_env_names_includes_keyref_and_tokenref_fields() {
+        let store = serde_json::json!({
+            "version": 1,
+            "profiles": {
+                "openai:default": {
+                    "type": "api_key",
+                    "provider": "openai",
+                    "keyRef": { "source": "env", "id": "OPENAI_API_KEY" }
+                },
+                "anthropic:default": {
+                    "type": "token",
+                    "provider": "anthropic",
+                    "tokenRef": { "source": "env", "id": "ANTHROPIC_API_KEY" }
+                }
+            }
+        });
+        let mut names = collect_secret_ref_env_names_from_auth_store(&store);
+        names.sort();
+        assert_eq!(names, vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+    }
+
+    #[test]
     fn resolve_secret_ref_file_reads_file_content() {
         let tmp =
             std::env::temp_dir().join(format!("clawpal-secretref-file-{}", uuid::Uuid::new_v4()));
@@ -5345,6 +5832,137 @@ mod secret_ref_tests {
     #[test]
     fn resolve_secret_ref_file_returns_none_for_relative_path() {
         assert!(resolve_secret_ref_file("relative/secret.txt").is_none());
+    }
+
+    #[test]
+    fn resolve_secret_ref_with_provider_config_reads_file_json_pointer() {
+        let tmp = std::env::temp_dir().join(format!(
+            "clawpal-secretref-provider-file-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&tmp).expect("create tmp dir");
+        let secret_file = tmp.join("provider-secrets.json");
+        fs::write(
+            &secret_file,
+            r#"{"providers":{"openai":{"api_key":"sk-file-provider"}}}"#,
+        )
+        .expect("write provider secret json");
+
+        let cfg = serde_json::json!({
+            "secrets": {
+                "defaults": { "file": "file-main" },
+                "providers": {
+                    "file-main": {
+                        "source": "file",
+                        "path": secret_file.to_string_lossy().to_string(),
+                        "mode": "json"
+                    }
+                }
+            }
+        });
+        let secret_ref = SecretRef {
+            source: "file".to_string(),
+            provider: None,
+            id: "/providers/openai/api_key".to_string(),
+        };
+        let env_lookup = |_: &str| -> Option<String> { None };
+        let resolved = resolve_secret_ref_with_provider_config(&secret_ref, &cfg, &env_lookup);
+        assert_eq!(resolved.as_deref(), Some("sk-file-provider"));
+
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_ref_with_provider_config_runs_exec_provider() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "clawpal-secretref-provider-exec-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&tmp).expect("create tmp dir");
+        let exec_file = tmp.join("secret-provider.sh");
+        fs::write(
+            &exec_file,
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"values\":{\"my-api-key\":\"sk-from-exec-provider\"}}'\n",
+        )
+        .expect("write exec script");
+        let mut perms = fs::metadata(&exec_file)
+            .expect("exec metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&exec_file, perms).expect("chmod");
+
+        let cfg = serde_json::json!({
+            "secrets": {
+                "defaults": { "exec": "vault-cli" },
+                "providers": {
+                    "vault-cli": {
+                        "source": "exec",
+                        "command": exec_file.to_string_lossy().to_string(),
+                        "jsonOnly": true
+                    }
+                }
+            }
+        });
+        let secret_ref = SecretRef {
+            source: "exec".to_string(),
+            provider: None,
+            id: "my-api-key".to_string(),
+        };
+        let env_lookup = |_: &str| -> Option<String> { None };
+        let resolved = resolve_secret_ref_with_provider_config(&secret_ref, &cfg, &env_lookup);
+        assert_eq!(resolved.as_deref(), Some("sk-from-exec-provider"));
+
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_ref_with_provider_config_exec_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "clawpal-secretref-provider-exec-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&tmp).expect("create tmp dir");
+        let exec_file = tmp.join("secret-provider-timeout.sh");
+        fs::write(
+            &exec_file,
+            "#!/bin/sh\ncat >/dev/null\nsleep 2\nprintf '%s' '{\"values\":{\"my-api-key\":\"sk-too-late\"}}'\n",
+        )
+        .expect("write exec script");
+        let mut perms = fs::metadata(&exec_file)
+            .expect("exec metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&exec_file, perms).expect("chmod");
+
+        let cfg = serde_json::json!({
+            "secrets": {
+                "defaults": { "exec": "vault-cli" },
+                "providers": {
+                    "vault-cli": {
+                        "source": "exec",
+                        "command": exec_file.to_string_lossy().to_string(),
+                        "jsonOnly": true,
+                        "timeoutSec": 1
+                    }
+                }
+            }
+        });
+        let secret_ref = SecretRef {
+            source: "exec".to_string(),
+            provider: None,
+            id: "my-api-key".to_string(),
+        };
+        let env_lookup = |_: &str| -> Option<String> { None };
+        let resolved = resolve_secret_ref_with_provider_config(&secret_ref, &cfg, &env_lookup);
+        assert!(resolved.is_none());
+
+        let _ = fs::remove_dir_all(tmp);
     }
 
     #[test]

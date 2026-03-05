@@ -24,6 +24,16 @@ import { explainAndBuildGuidanceError, withGuidance } from "./lib/guidance";
 import { useFont } from "./lib/use-font";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn, formatBytes } from "@/lib/utils";
@@ -407,6 +417,8 @@ export function App() {
     message: "",
     instanceId: null,
   });
+  const [relatedSecretPushRunning, setRelatedSecretPushRunning] = useState(false);
+  const [pushRelatedSecretsConfirmOpen, setPushRelatedSecretsConfirmOpen] = useState(false);
   const [agentGuidanceByInstance, setAgentGuidanceByInstance] = useState<Record<string, AgentGuidanceItem>>({});
   const [doctorLaunchByInstance, setDoctorLaunchByInstance] = useState<Record<string, AgentGuidanceItem | null>>({});
   const [agentGuidanceOpen, setAgentGuidanceOpen] = useState(false);
@@ -931,6 +943,35 @@ export function App() {
     }
   }, [showToast, t]);
 
+  const pushRelatedSecretsToActiveRemote = useCallback(async () => {
+    if (!activeInstance) return;
+    setRelatedSecretPushRunning(true);
+    try {
+      const result = await api.pushRelatedSecretsToRemote(activeInstance);
+      const message = t("doctor.pushRelatedSecretsSuccess", {
+        providers: result.totalRelatedProviders,
+        written: result.writtenSecrets,
+        skipped: result.skippedProviders,
+      });
+      showToast(message, "success");
+      setProfileSyncStatus({
+        phase: "success",
+        message,
+        instanceId: activeInstance,
+      });
+    } catch (error) {
+      const message = t("doctor.pushRelatedSecretsFailed", { error: String(error) });
+      showToast(message, "error");
+      setProfileSyncStatus({
+        phase: "error",
+        message,
+        instanceId: activeInstance,
+      });
+    } finally {
+      setRelatedSecretPushRunning(false);
+    }
+  }, [activeInstance, showToast, t]);
+
 
   const openTab = useCallback((id: string) => {
     startTransition(() => {
@@ -1317,6 +1358,8 @@ export function App() {
       return [];
     });
   }, [openTabIds, registeredInstances, t]);
+  const activeInstanceLabel =
+    openTabs.find((tab) => tab.id === activeInstance)?.label || activeInstance;
 
   // Handle install completion — register docker instance and open tab
   const handleInstallReady = useCallback(async (session: InstallSession) => {
@@ -1592,6 +1635,23 @@ export function App() {
           {profileSyncStatus.message && (
             <div className="mt-1 break-words text-muted-foreground/70" title={profileSyncStatus.message}>
               {profileSyncStatus.message}
+            </div>
+          )}
+          {isRemote && isConnected && (
+            <div className="mt-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                disabled={relatedSecretPushRunning}
+                onClick={() => {
+                  setPushRelatedSecretsConfirmOpen(true);
+                }}
+              >
+                {relatedSecretPushRunning
+                  ? t("doctor.pushRelatedSecretsRunning")
+                  : t("doctor.pushRelatedSecrets")}
+              </Button>
             </div>
           )}
           {showSshTransferSpeedUi && isRemote && isConnected && (
@@ -1937,6 +1997,30 @@ export function App() {
         )}
       </DialogContent>
     </Dialog>
+    <AlertDialog
+      open={pushRelatedSecretsConfirmOpen}
+      onOpenChange={setPushRelatedSecretsConfirmOpen}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t("doctor.pushRelatedSecretsConfirmTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("doctor.pushRelatedSecretsConfirmDescription", { host: activeInstanceLabel })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={relatedSecretPushRunning}
+            onClick={() => {
+              void pushRelatedSecretsToActiveRemote();
+            }}
+          >
+            {t("doctor.pushRelatedSecretsConfirmAction")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
     <Toaster position="top-right" richColors />
     </>
   );
