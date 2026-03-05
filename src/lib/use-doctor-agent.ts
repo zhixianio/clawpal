@@ -16,12 +16,12 @@ function extractApprovalPattern(invoke: DoctorInvoke): string {
   return `${invoke.command}:${prefix}`;
 }
 
-function normalizeInvokeArgs(invoke: DoctorInvoke): string {
+export function normalizeInvokeArgs(invoke: DoctorInvoke): string {
   const raw = (invoke.args?.args as string) ?? "";
   return raw.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function hasAnyPrefix(value: string, prefixes: string[]): boolean {
+export function hasAnyPrefix(value: string, prefixes: string[]): boolean {
   return prefixes.some((prefix) => value === prefix || value.startsWith(`${prefix} `));
 }
 
@@ -179,7 +179,7 @@ function extractOpenclawSessionId(result: Record<string, unknown>): string | und
   return typeof rawSessionId === "string" ? rawSessionId.trim() || undefined : undefined;
 }
 
-function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "install"): boolean {
+export function isDoctorAutoSafeInvoke(invoke: DoctorInvoke, domain: "doctor" | "install"): boolean {
   if (domain !== "doctor") return false;
   const args = normalizeInvokeArgs(invoke);
   if (invoke.command === "clawpal") {
