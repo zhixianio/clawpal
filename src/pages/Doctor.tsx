@@ -284,13 +284,24 @@ export function Doctor({
   ]);
 
   // Fetch runtime target model for TokenBadge / ModelSwitcher.
+  // Subscribe to cache invalidation so the model updates when changed in Settings.
   useEffect(() => {
-    invoke<{ model?: string }>("get_zeroclaw_runtime_target")
-      .then((target) => {
-        if (target?.model) setRuntimeModel(target.model);
-      })
-      .catch(() => {});
-  }, []);
+    let cancelled = false;
+    const load = () => {
+      ua.getZeroclawRuntimeTarget()
+        .then((target) => {
+          if (!cancelled && target?.model) setRuntimeModel(target.model);
+        })
+        .catch(() => {});
+    };
+    load();
+    const cacheKey = buildCacheKey("__global__", "getZeroclawRuntimeTarget", []);
+    const unsubscribe = subscribeToCacheKey(cacheKey, load);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [ua]);
 
   useEffect(() => {
     let cancelled = false;

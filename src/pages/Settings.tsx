@@ -240,7 +240,7 @@ export function Settings({
   const [oauthCompleting, setOauthCompleting] = useState(false);
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
   const [zeroclawModel, setZeroclawModel] = useState("");
-  const [zeroclawSaving, setZeroclawSaving] = useState(false);
+
   const [zeroclawUsage, setZeroclawUsage] = useState<ZeroclawUsageStats | null>(null);
   const [zeroclawUsageLoading, setZeroclawUsageLoading] = useState(true);
   const [zeroclawTarget, setZeroclawTarget] = useState<ZeroclawRuntimeTarget | null>(null);
@@ -367,9 +367,13 @@ export function Settings({
 
   useEffect(() => {
     let cancelled = false;
+    let firstLoad = true;
     const loadStats = () => {
-      setZeroclawUsageLoading(true);
-      setZeroclawTargetLoading(true);
+      // Only show loading spinners on the initial fetch to avoid flickering.
+      if (firstLoad) {
+        setZeroclawUsageLoading(true);
+        setZeroclawTargetLoading(true);
+      }
       ua.getZeroclawUsageStats()
         .then((stats) => {
           if (!cancelled) setZeroclawUsage(stats);
@@ -389,6 +393,7 @@ export function Settings({
         })
         .finally(() => {
           if (!cancelled) setZeroclawTargetLoading(false);
+          firstLoad = false;
         });
     };
     loadStats();
@@ -517,6 +522,9 @@ export function Settings({
 
   useEffect(() => {
     if (!zeroclawPrefsLoadedRef.current) return;
+    // Skip validation until profiles have loaded; an empty candidate list
+    // before that point would incorrectly clear the persisted selection.
+    if (profiles === null) return;
     const current = zeroclawModel.trim();
     if (!current) return;
     const exists = zeroclawModelCandidates.some(
@@ -525,7 +533,7 @@ export function Settings({
     if (!exists) {
       setZeroclawModel("");
     }
-  }, [zeroclawModel, zeroclawModelCandidates]);
+  }, [zeroclawModel, zeroclawModelCandidates, profiles]);
 
   const saveProfile = async (authRefOverride?: string): Promise<boolean> => {
     if (!form.provider || !form.model) {
@@ -789,10 +797,11 @@ export function Settings({
     if (!zeroclawPrefsLoadedRef.current) return;
     const next = zeroclawModel.trim();
     if (next === zeroclawLastSavedRef.current) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      setZeroclawSaving(true);
       ua.setZeroclawModelPreference(next.length > 0 ? next : null)
         .then((prefs) => {
+          if (cancelled) return;
           const persisted = prefs.zeroclawModel || "";
           zeroclawLastSavedRef.current = persisted.trim();
           if (persisted !== zeroclawModel) {
@@ -800,12 +809,12 @@ export function Settings({
           }
         })
         .catch((e) => {
+          if (cancelled) return;
           const errorText = e instanceof Error ? e.message : String(e);
           toast.error(t("settings.zeroclawModelSaveFailed", { error: errorText }));
-        })
-        .finally(() => setZeroclawSaving(false));
+        });
     }, 350);
-    return () => window.clearTimeout(timer);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [ua, zeroclawModel, t]);
 
   return (
@@ -930,9 +939,25 @@ export function Settings({
                             : "__none__"
                         }
                         onValueChange={(val) => {
-                          setZeroclawModel(val === "__none__" ? "" : val);
+                          const model = val === "__none__" ? "" : val;
+                          setZeroclawModel(model);
+                          // Optimistically update the displayed runtime target so
+                          // "current preferred model" reflects the choice instantly.
+                          if (model) {
+                            const slashIdx = model.indexOf("/");
+                            const provider = slashIdx > 0 ? model.slice(0, slashIdx) : "";
+                            const modelName = slashIdx > 0 ? model.slice(slashIdx + 1) : model;
+                            setZeroclawTarget((prev) => ({
+                              ...prev,
+                              provider,
+                              model: modelName,
+                              source: "preferred",
+                              preferredModel: model,
+                              providerOrder: prev?.providerOrder ?? [],
+                            }));
+                          }
                         }}
-                        disabled={zeroclawSaving}
+
                       >
                         <SelectTrigger>
                           <SelectValue placeholder={t("settings.zeroclawModelPlaceholder")} />
@@ -949,10 +974,7 @@ export function Settings({
                         </SelectContent>
                       </Select>
                     </div>
-                    {zeroclawSaving && (
-                      <span className="text-xs text-muted-foreground">{t("settings.saving")}</span>
-                    )}
-                    {zeroclawModelCandidates.length === 0 && !zeroclawSaving && (
+                    {zeroclawModelCandidates.length === 0 && (
                       <p className="text-xs text-muted-foreground basis-full mt-1">
                         {onNavigateToProfiles ? (
                           <button
