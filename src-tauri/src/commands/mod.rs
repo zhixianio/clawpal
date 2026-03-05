@@ -7108,13 +7108,6 @@ pub fn delete_ssh_host(host_id: String) -> Result<bool, String> {
 // Task 4: SSH connect / disconnect / status
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SshCommandError {
-    pub message: String,
-    pub diagnostic: SshDiagnosticReport,
-}
-
 fn emit_ssh_diagnostic(app: &AppHandle, report: &SshDiagnosticReport) {
     let code = report.error_code.map(|value| value.as_str().to_string());
     let payload = json!({
@@ -7138,14 +7131,11 @@ fn make_ssh_command_error(
     stage: SshStage,
     intent: SshIntent,
     raw: impl Into<String>,
-) -> SshCommandError {
+) -> String {
     let message = raw.into();
     let diagnostic = from_any_error(stage, intent, message.clone());
     emit_ssh_diagnostic(app, &diagnostic);
-    SshCommandError {
-        message,
-        diagnostic,
-    }
+    message
 }
 
 fn success_ssh_diagnostic(
@@ -7193,7 +7183,7 @@ pub async fn ssh_connect(
     pool: State<'_, SshConnectionPool>,
     host_id: String,
     app: AppHandle,
-) -> Result<bool, SshCommandError> {
+) -> Result<bool, String> {
     crate::commands::logs::log_dev(format!("[dev][ssh_connect] begin host_id={host_id}"));
     // If already connected and handle is alive, reuse
     if pool.is_connected(&host_id).await {
@@ -7257,10 +7247,7 @@ pub async fn ssh_connect(
             diagnostic.stage = ssh_stage_for_error_code(code);
         }
         emit_ssh_diagnostic(&app, &diagnostic);
-        return Err(SshCommandError {
-            message,
-            diagnostic,
-        });
+        return Err(message);
     }
     crate::commands::logs::log_dev(format!("[dev][ssh_connect] success host_id={host_id}"));
     let _ = success_ssh_diagnostic(
@@ -7278,7 +7265,7 @@ pub async fn ssh_connect_with_passphrase(
     host_id: String,
     passphrase: String,
     app: AppHandle,
-) -> Result<bool, SshCommandError> {
+) -> Result<bool, String> {
     crate::commands::logs::log_dev(format!(
         "[dev][ssh_connect_with_passphrase] begin host_id={host_id}"
     ));
@@ -7386,7 +7373,7 @@ pub async fn ssh_exec(
     host_id: String,
     command: String,
     app: AppHandle,
-) -> Result<SshExecResult, SshCommandError> {
+) -> Result<SshExecResult, String> {
     pool.exec(&host_id, &command)
         .await
         .map(|result| {
@@ -7407,7 +7394,7 @@ pub async fn sftp_read_file(
     host_id: String,
     path: String,
     app: AppHandle,
-) -> Result<String, SshCommandError> {
+) -> Result<String, String> {
     pool.sftp_read(&host_id, &path)
         .await
         .map(|result| {
@@ -7431,7 +7418,7 @@ pub async fn sftp_write_file(
     path: String,
     content: String,
     app: AppHandle,
-) -> Result<bool, SshCommandError> {
+) -> Result<bool, String> {
     pool.sftp_write(&host_id, &path, &content)
         .await
         .map_err(|error| {
@@ -7452,7 +7439,7 @@ pub async fn sftp_list_dir(
     host_id: String,
     path: String,
     app: AppHandle,
-) -> Result<Vec<SftpEntry>, SshCommandError> {
+) -> Result<Vec<SftpEntry>, String> {
     pool.sftp_list(&host_id, &path)
         .await
         .map(|result| {
@@ -7475,7 +7462,7 @@ pub async fn sftp_remove_file(
     host_id: String,
     path: String,
     app: AppHandle,
-) -> Result<bool, SshCommandError> {
+) -> Result<bool, String> {
     pool.sftp_remove(&host_id, &path).await.map_err(|error| {
         make_ssh_command_error(&app, SshStage::SftpRemove, SshIntent::SftpRemove, error)
     })?;
@@ -7494,7 +7481,7 @@ pub async fn diagnose_ssh(
     host_id: String,
     intent: String,
     app: AppHandle,
-) -> Result<SshDiagnosticReport, SshCommandError> {
+) -> Result<SshDiagnosticReport, String> {
     let intent = intent.parse::<SshIntent>().map_err(|_| {
         make_ssh_command_error(
             &app,
