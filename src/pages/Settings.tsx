@@ -240,7 +240,7 @@ export function Settings({
   const [oauthCompleting, setOauthCompleting] = useState(false);
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
   const [zeroclawModel, setZeroclawModel] = useState("");
-  const [zeroclawSaving, setZeroclawSaving] = useState(false);
+
   const [zeroclawUsage, setZeroclawUsage] = useState<ZeroclawUsageStats | null>(null);
   const [zeroclawUsageLoading, setZeroclawUsageLoading] = useState(true);
   const [zeroclawTarget, setZeroclawTarget] = useState<ZeroclawRuntimeTarget | null>(null);
@@ -801,7 +801,6 @@ export function Settings({
     if (!zeroclawPrefsLoadedRef.current) return;
     const next = zeroclawModel.trim();
     if (next === zeroclawLastSavedRef.current) return;
-    setZeroclawSaving(true);
     let cancelled = false;
     ua.setZeroclawModelPreference(next.length > 0 ? next : null)
       .then((prefs) => {
@@ -816,9 +815,6 @@ export function Settings({
         if (cancelled) return;
         const errorText = e instanceof Error ? e.message : String(e);
         toast.error(t("settings.zeroclawModelSaveFailed", { error: errorText }));
-      })
-      .finally(() => {
-        if (!cancelled) setZeroclawSaving(false);
       });
     return () => { cancelled = true; };
   }, [ua, zeroclawModel, t]);
@@ -963,7 +959,7 @@ export function Settings({
                             }));
                           }
                         }}
-                        disabled={zeroclawSaving}
+
                       >
                         <SelectTrigger>
                           <SelectValue placeholder={t("settings.zeroclawModelPlaceholder")} />
@@ -980,10 +976,7 @@ export function Settings({
                         </SelectContent>
                       </Select>
                     </div>
-                    {zeroclawSaving && (
-                      <span className="text-xs text-muted-foreground">{t("settings.saving")}</span>
-                    )}
-                    {zeroclawModelCandidates.length === 0 && !zeroclawSaving && (
+                    {zeroclawModelCandidates.length === 0 && (
                       <p className="text-xs text-muted-foreground basis-full mt-1">
                         {onNavigateToProfiles ? (
                           <button
