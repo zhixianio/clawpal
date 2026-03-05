@@ -145,16 +145,33 @@ pub enum DiagnosisSeverity {
     Info,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiagnosisCitation {
+    pub url: String,
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosisItem {
     pub problem: String,
     pub severity: DiagnosisSeverity,
     pub fix_options: Vec<String>,
     #[serde(default)]
+    pub root_cause_hypothesis: Option<String>,
+    #[serde(default)]
+    pub fix_steps: Vec<String>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub citations: Vec<DiagnosisCitation>,
+    #[serde(default)]
+    pub version_awareness: Option<String>,
+    #[serde(default)]
     pub action: Option<ToolIntent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosisResult {
     pub items: Vec<DiagnosisItem>,
     #[serde(default)]
@@ -215,10 +232,35 @@ pub fn export_diagnosis(result: &DiagnosisResult, format: &str) -> String {
                     DiagnosisSeverity::Info => "INFO",
                 };
                 md.push_str(&format!("## {} [{sev}] {}\n\n", i + 1, item.problem));
+                if let Some(ref hypothesis) = item.root_cause_hypothesis {
+                    md.push_str(&format!("**Root cause hypothesis:** {hypothesis}\n\n"));
+                }
+                if let Some(confidence) = item.confidence {
+                    md.push_str(&format!("**Confidence:** {:.2}\n\n", confidence));
+                }
                 if !item.fix_options.is_empty() {
                     md.push_str("**Fix options:**\n\n");
                     for opt in &item.fix_options {
                         md.push_str(&format!("- {opt}\n"));
+                    }
+                    md.push('\n');
+                }
+                if !item.fix_steps.is_empty() {
+                    md.push_str("**Fix steps:**\n\n");
+                    for step in &item.fix_steps {
+                        md.push_str(&format!("- {step}\n"));
+                    }
+                    md.push('\n');
+                }
+                if !item.citations.is_empty() {
+                    md.push_str("**Citations:**\n\n");
+                    for citation in &item.citations {
+                        let section = citation
+                            .section
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("section unavailable");
+                        md.push_str(&format!("- {} ({section})\n", citation.url));
                     }
                     md.push('\n');
                 }

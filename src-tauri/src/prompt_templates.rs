@@ -70,13 +70,22 @@ pub fn install_target_decider() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        doctor_domain_system, install_domain_system, install_history_preamble, render_template,
+        doctor_domain_system, doctor_history_preamble, install_domain_system,
+        install_history_preamble, render_template,
     };
 
     #[test]
     fn extracts_prompt_block() {
         let prompt = doctor_domain_system();
         assert!(prompt.contains("DOCTOR DOMAIN ONLY."));
+    }
+
+    #[test]
+    fn doctor_prompt_contains_doc_guidance_guardrails() {
+        let prompt = doctor_domain_system();
+        assert!(prompt.contains("If `docGuidance` exists in context"));
+        assert!(prompt.contains("root_cause_hypothesis"));
+        assert!(prompt.contains("version_awareness"));
     }
 
     #[test]
@@ -94,6 +103,14 @@ mod tests {
         let prompt = install_history_preamble();
         assert!(prompt.contains("output ONLY one JSON object in this exact shape"));
         assert!(prompt.contains("Never invent unsupported clawpal commands"));
+    }
+
+    #[test]
+    fn doctor_history_preamble_contains_doc_guidance_guardrails() {
+        let prompt = doctor_history_preamble();
+        assert!(prompt.contains("root_cause_hypothesis"));
+        assert!(prompt.contains("docGuidance"));
+        assert!(prompt.contains("citations"));
     }
 
     #[test]

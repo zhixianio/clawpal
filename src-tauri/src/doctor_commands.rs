@@ -1,6 +1,8 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::io::{BufRead, BufReader};
+use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
 
@@ -310,6 +312,30 @@ pub async fn collect_doctor_context() -> Result<String, String> {
         .map(|s| s.success())
         .unwrap_or(false);
 
+    let doc_request = crate::openclaw_doc_resolver::DocResolveRequest {
+        instance_scope: "local".to_string(),
+        transport: "local".to_string(),
+        openclaw_version: Some(version.trim().to_string()),
+        doctor_issues: doctor_report
+            .issues
+            .iter()
+            .map(|i| crate::openclaw_doc_resolver::DocResolveIssue {
+                id: i.id.clone(),
+                severity: i.severity.clone(),
+                message: i.message.clone(),
+            })
+            .collect(),
+        config_content: config_content.clone(),
+        error_log: error_log.clone(),
+        gateway_status: Some(if gateway_running {
+            "running".to_string()
+        } else {
+            "stopped".to_string()
+        }),
+    };
+    let doc_guidance =
+        crate::openclaw_doc_resolver::resolve_local_doc_guidance(&doc_request, &paths).await;
+
     let context = json!({
         "openclawVersion": version.trim(),
         "configPath": paths.config_path.to_string_lossy(),
@@ -327,9 +353,73 @@ pub async fn collect_doctor_context() -> Result<String, String> {
         "errorLog": error_log,
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
+        "docGuidance": doc_guidance,
     });
 
     serde_json::to_string(&context).map_err(|e| format!("Failed to serialize context: {e}"))
+}
+
+type RemoteExecFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<crate::ssh::SshExecResult, String>> + Send + 'a>>;
+type RemoteStringFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+type RemoteDocGuidanceFuture<'a> = Pin<
+    Box<dyn Future<Output = crate::openclaw_doc_resolver::DocGuidance> + Send + 'a>,
+>;
+
+trait RemoteDoctorContextOps {
+    fn exec_login<'a>(&'a self, host_id: &'a str, command: &'a str) -> RemoteExecFuture<'a>;
+    fn exec<'a>(&'a self, host_id: &'a str, command: &'a str) -> RemoteExecFuture<'a>;
+    fn sftp_read<'a>(&'a self, host_id: &'a str, path: &'a str) -> RemoteStringFuture<'a>;
+    fn resolve_config_path<'a>(&'a self, host_id: &'a str) -> RemoteStringFuture<'a>;
+}
+
+struct SshPoolRemoteDoctorContextOps<'a> {
+    pool: &'a SshConnectionPool,
+}
+
+impl RemoteDoctorContextOps for SshPoolRemoteDoctorContextOps<'_> {
+    fn exec_login<'a>(&'a self, host_id: &'a str, command: &'a str) -> RemoteExecFuture<'a> {
+        Box::pin(async move { self.pool.exec_login(host_id, command).await })
+    }
+
+    fn exec<'a>(&'a self, host_id: &'a str, command: &'a str) -> RemoteExecFuture<'a> {
+        Box::pin(async move { self.pool.exec(host_id, command).await })
+    }
+
+    fn sftp_read<'a>(&'a self, host_id: &'a str, path: &'a str) -> RemoteStringFuture<'a> {
+        Box::pin(async move { self.pool.sftp_read(host_id, path).await })
+    }
+
+    fn resolve_config_path<'a>(&'a self, host_id: &'a str) -> RemoteStringFuture<'a> {
+        Box::pin(async move { resolve_remote_config_path(self.pool, host_id).await })
+    }
+}
+
+trait RemoteDocGuidanceResolver {
+    fn resolve_remote_guidance<'a>(
+        &'a self,
+        host_id: &'a str,
+        request: &'a crate::openclaw_doc_resolver::DocResolveRequest,
+        paths: &'a crate::models::OpenClawPaths,
+    ) -> RemoteDocGuidanceFuture<'a>;
+}
+
+struct OpenclawRemoteDocGuidanceResolver<'a> {
+    pool: &'a SshConnectionPool,
+}
+
+impl RemoteDocGuidanceResolver for OpenclawRemoteDocGuidanceResolver<'_> {
+    fn resolve_remote_guidance<'a>(
+        &'a self,
+        host_id: &'a str,
+        request: &'a crate::openclaw_doc_resolver::DocResolveRequest,
+        paths: &'a crate::models::OpenClawPaths,
+    ) -> RemoteDocGuidanceFuture<'a> {
+        Box::pin(async move {
+            crate::openclaw_doc_resolver::resolve_remote_doc_guidance(self.pool, host_id, request, paths)
+                .await
+        })
+    }
 }
 
 #[tauri::command]
@@ -337,59 +427,70 @@ pub async fn collect_doctor_context_remote(
     pool: State<'_, SshConnectionPool>,
     host_id: String,
 ) -> Result<String, String> {
+    let ops = SshPoolRemoteDoctorContextOps { pool: pool.inner() };
+    let resolver = OpenclawRemoteDocGuidanceResolver { pool: pool.inner() };
+    collect_doctor_context_remote_with_ops(&ops, &resolver, &host_id).await
+}
+
+async fn collect_doctor_context_remote_with_ops(
+    ops: &impl RemoteDoctorContextOps,
+    resolver: &impl RemoteDocGuidanceResolver,
+    host_id: &str,
+) -> Result<String, String> {
     // Collect openclaw version
-    let version_result = pool
-        .exec_login(
-            &host_id,
-            clawpal_core::doctor::remote_openclaw_version_probe_script(),
-        )
+    let version_result = ops
+        .exec_login(host_id, clawpal_core::doctor::remote_openclaw_version_probe_script())
         .await?;
     let version = version_result.stdout.trim().to_string();
 
     // Resolve config path: check OPENCLAW_STATE_DIR / OPENCLAW_HOME, fallback to ~/.openclaw
-    let config_path = resolve_remote_config_path(&pool, &host_id).await?;
+    let config_path = ops.resolve_config_path(host_id).await?;
     validate_not_sensitive(&config_path)?;
-    let config_content = pool
-        .sftp_read(&host_id, &config_path)
+    let config_content = ops
+        .sftp_read(host_id, &config_path)
         .await
         .unwrap_or_else(|_| "(unable to read remote config)".into());
 
     // Use `openclaw gateway status` — always returns useful text even when gateway is stopped.
     // `openclaw health --json` requires a running gateway + auth token and returns empty otherwise.
-    let status_result = pool
-        .exec_login(
-            &host_id,
-            clawpal_core::doctor::remote_openclaw_gateway_status_script(),
-        )
+    let status_result = ops
+        .exec_login(host_id, clawpal_core::doctor::remote_openclaw_gateway_status_script())
         .await?;
     let gateway_status = status_result.stdout.trim().to_string();
 
     // Check if gateway process is running (reliable even when health RPC fails)
     // Bracket trick: [o]penclaw-gateway prevents pgrep from matching its own sh -c process
-    let pgrep_result = pool
-        .exec(
-            &host_id,
-            clawpal_core::doctor::remote_openclaw_gateway_process_probe_script(),
-        )
+    let pgrep_result = ops
+        .exec(host_id, clawpal_core::doctor::remote_openclaw_gateway_process_probe_script())
         .await;
     let gateway_running = matches!(pgrep_result, Ok(r) if r.exit_code == 0);
 
     // Collect recent error log (logs live under $OPENCLAW_STATE_DIR/logs/)
-    let error_log_result = pool
+    let error_log_result = ops
         .exec_login(
-            &host_id,
+            host_id,
             &clawpal_core::doctor::remote_gateway_error_log_tail_script(100),
         )
         .await?;
     let error_log = error_log_result.stdout;
 
     // System info
-    let platform_result = pool
-        .exec(&host_id, clawpal_core::doctor::remote_uname_s_script())
-        .await?;
-    let arch_result = pool
-        .exec(&host_id, clawpal_core::doctor::remote_uname_m_script())
-        .await?;
+    let platform_result = ops.exec(host_id, clawpal_core::doctor::remote_uname_s_script()).await?;
+    let arch_result = ops.exec(host_id, clawpal_core::doctor::remote_uname_m_script()).await?;
+
+    let paths = resolve_paths();
+    let doc_request = crate::openclaw_doc_resolver::DocResolveRequest {
+        instance_scope: host_id.to_string(),
+        transport: "remote_ssh".to_string(),
+        openclaw_version: Some(version.clone()),
+        doctor_issues: Vec::new(),
+        config_content: config_content.clone(),
+        error_log: error_log.clone(),
+        gateway_status: Some(gateway_status.clone()),
+    };
+    let doc_guidance = resolver
+        .resolve_remote_guidance(host_id, &doc_request, &paths)
+        .await;
 
     let context = json!({
         "openclawVersion": version,
@@ -402,6 +503,7 @@ pub async fn collect_doctor_context_remote(
         "arch": arch_result.stdout.trim(),
         "remote": true,
         "hostId": host_id,
+        "docGuidance": doc_guidance,
     });
 
     serde_json::to_string(&context).map_err(|e| format!("Failed to serialize context: {e}"))
@@ -1779,6 +1881,9 @@ fn validate_openclaw_tokens(tokens: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::openclaw_doc_resolver::{
+        DocCitation, DocGuidance, DocResolveRequest, ResolverMeta, RootCauseHypothesis,
+    };
     use std::collections::BTreeSet;
     use std::io::Write;
 
@@ -2012,5 +2117,265 @@ mod tests {
         let content = read_file_tail_lines(&path, 2).expect("read tail");
         let _ = std::fs::remove_file(&path);
         assert_eq!(content, "l2\nl3");
+    }
+
+    fn fake_exec_result(stdout: &str, stderr: &str, exit_code: u32) -> crate::ssh::SshExecResult {
+        crate::ssh::SshExecResult {
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            exit_code,
+        }
+    }
+
+    fn sample_doc_guidance() -> DocGuidance {
+        DocGuidance {
+            status: "ok".to_string(),
+            source_strategy: "local-first".to_string(),
+            root_cause_hypotheses: vec![RootCauseHypothesis {
+                title: "Gateway mismatch".to_string(),
+                reason: "Gateway process and status are inconsistent".to_string(),
+                score: 0.88,
+            }],
+            fix_steps: vec!["Run openclaw gateway status".to_string()],
+            confidence: 0.88,
+            citations: vec![DocCitation {
+                url: "https://docs.openclaw.ai/cli/gateway".to_string(),
+                section: "Gateway".to_string(),
+            }],
+            version_awareness: "aligned".to_string(),
+            resolver_meta: ResolverMeta {
+                cache_hit: false,
+                sources_checked: vec!["target-remote-docs".to_string()],
+                rules_matched: vec!["gateway_connectivity".to_string()],
+                fetched_pages: 1,
+                fallback_used: false,
+            },
+        }
+    }
+
+    struct FakeRemoteContextOps {
+        config_path_result: Result<String, String>,
+        sftp_read_result: Result<String, String>,
+        exec_login_results: Mutex<VecDeque<Result<crate::ssh::SshExecResult, String>>>,
+        exec_results: Mutex<VecDeque<Result<crate::ssh::SshExecResult, String>>>,
+    }
+
+    impl FakeRemoteContextOps {
+        fn next_exec_login(&self) -> Result<crate::ssh::SshExecResult, String> {
+            self.exec_login_results
+                .lock()
+                .expect("lock exec_login queue")
+                .pop_front()
+                .unwrap_or_else(|| Err("missing fake exec_login result".to_string()))
+        }
+
+        fn next_exec(&self) -> Result<crate::ssh::SshExecResult, String> {
+            self.exec_results
+                .lock()
+                .expect("lock exec queue")
+                .pop_front()
+                .unwrap_or_else(|| Err("missing fake exec result".to_string()))
+        }
+    }
+
+    impl RemoteDoctorContextOps for FakeRemoteContextOps {
+        fn exec_login<'a>(&'a self, _host_id: &'a str, _command: &'a str) -> RemoteExecFuture<'a> {
+            let result = self.next_exec_login();
+            Box::pin(async move { result })
+        }
+
+        fn exec<'a>(&'a self, _host_id: &'a str, _command: &'a str) -> RemoteExecFuture<'a> {
+            let result = self.next_exec();
+            Box::pin(async move { result })
+        }
+
+        fn sftp_read<'a>(&'a self, _host_id: &'a str, _path: &'a str) -> RemoteStringFuture<'a> {
+            let result = self.sftp_read_result.clone();
+            Box::pin(async move { result })
+        }
+
+        fn resolve_config_path<'a>(&'a self, _host_id: &'a str) -> RemoteStringFuture<'a> {
+            let result = self.config_path_result.clone();
+            Box::pin(async move { result })
+        }
+    }
+
+    struct FakeDocGuidanceResolver {
+        guidance: DocGuidance,
+        host_ids: Mutex<Vec<String>>,
+        requests: Mutex<Vec<DocResolveRequest>>,
+    }
+
+    impl FakeDocGuidanceResolver {
+        fn new(guidance: DocGuidance) -> Self {
+            Self {
+                guidance,
+                host_ids: Mutex::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn last_host_id(&self) -> Option<String> {
+            self.host_ids
+                .lock()
+                .expect("lock host ids")
+                .last()
+                .cloned()
+        }
+
+        fn last_request(&self) -> Option<DocResolveRequest> {
+            self.requests
+                .lock()
+                .expect("lock requests")
+                .last()
+                .cloned()
+        }
+    }
+
+    impl RemoteDocGuidanceResolver for FakeDocGuidanceResolver {
+        fn resolve_remote_guidance<'a>(
+            &'a self,
+            host_id: &'a str,
+            request: &'a DocResolveRequest,
+            _paths: &'a crate::models::OpenClawPaths,
+        ) -> RemoteDocGuidanceFuture<'a> {
+            self.host_ids
+                .lock()
+                .expect("lock host ids")
+                .push(host_id.to_string());
+            self.requests
+                .lock()
+                .expect("lock requests")
+                .push(request.clone());
+            let guidance = self.guidance.clone();
+            Box::pin(async move { guidance })
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_remote_context_with_mock_ops_includes_doc_guidance() {
+        let ops = FakeRemoteContextOps {
+            config_path_result: Ok("~/.openclaw/config.json".to_string()),
+            sftp_read_result: Ok("{\"channels\":{}}".to_string()),
+            exec_login_results: Mutex::new(VecDeque::from(vec![
+                Ok(fake_exec_result("2026.3.0\n", "", 0)),
+                Ok(fake_exec_result("gateway: running\n", "", 0)),
+                Ok(fake_exec_result("error log line\n", "", 0)),
+            ])),
+            exec_results: Mutex::new(VecDeque::from(vec![
+                Ok(fake_exec_result("", "", 0)),
+                Ok(fake_exec_result("Linux\n", "", 0)),
+                Ok(fake_exec_result("x86_64\n", "", 0)),
+            ])),
+        };
+        let resolver = FakeDocGuidanceResolver::new(sample_doc_guidance());
+
+        let context =
+            collect_doctor_context_remote_with_ops(&ops, &resolver, "ssh:edge-1").await;
+        assert!(context.is_ok());
+        let parsed: Value = serde_json::from_str(&context.expect("remote context")).expect("json");
+
+        assert_eq!(parsed["openclawVersion"], "2026.3.0");
+        assert_eq!(parsed["configPath"], "~/.openclaw/config.json");
+        assert_eq!(parsed["configContent"], "{\"channels\":{}}");
+        assert_eq!(parsed["gatewayStatus"], "gateway: running");
+        assert_eq!(parsed["gatewayProcessRunning"], true);
+        assert_eq!(parsed["platform"], "linux");
+        assert_eq!(parsed["arch"], "x86_64");
+        assert_eq!(parsed["remote"], true);
+        assert_eq!(parsed["hostId"], "ssh:edge-1");
+        assert_eq!(parsed["docGuidance"]["status"], "ok");
+        assert_eq!(
+            resolver.last_host_id().as_deref(),
+            Some("ssh:edge-1")
+        );
+
+        let request = resolver.last_request().expect("captured doc request");
+        assert_eq!(request.instance_scope, "ssh:edge-1");
+        assert_eq!(request.transport, "remote_ssh");
+        assert_eq!(request.openclaw_version.as_deref(), Some("2026.3.0"));
+        assert_eq!(request.config_content, "{\"channels\":{}}");
+        assert_eq!(request.error_log, "error log line\n");
+        assert_eq!(
+            request.gateway_status.as_deref(),
+            Some("gateway: running")
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_remote_context_with_mock_ops_rejects_sensitive_config_path() {
+        let ops = FakeRemoteContextOps {
+            config_path_result: Ok("/home/dev/.ssh/id_rsa".to_string()),
+            sftp_read_result: Ok("{}".to_string()),
+            exec_login_results: Mutex::new(VecDeque::from(vec![Ok(fake_exec_result(
+                "2026.3.0\n",
+                "",
+                0,
+            ))])),
+            exec_results: Mutex::new(VecDeque::new()),
+        };
+        let resolver = FakeDocGuidanceResolver::new(sample_doc_guidance());
+
+        let err = collect_doctor_context_remote_with_ops(&ops, &resolver, "ssh:edge-1")
+            .await
+            .expect_err("sensitive path should fail");
+        assert!(err.contains("blocked"));
+        assert!(resolver.last_request().is_none());
+    }
+
+    #[tokio::test]
+    async fn collect_remote_context_with_mock_ops_falls_back_when_config_read_fails() {
+        let ops = FakeRemoteContextOps {
+            config_path_result: Ok("~/.openclaw/config.json".to_string()),
+            sftp_read_result: Err("read failed".to_string()),
+            exec_login_results: Mutex::new(VecDeque::from(vec![
+                Ok(fake_exec_result("2026.3.0\n", "", 0)),
+                Ok(fake_exec_result("gateway: stopped\n", "", 0)),
+                Ok(fake_exec_result("", "", 0)),
+            ])),
+            exec_results: Mutex::new(VecDeque::from(vec![
+                Ok(fake_exec_result("", "", 1)),
+                Ok(fake_exec_result("Darwin\n", "", 0)),
+                Ok(fake_exec_result("arm64\n", "", 0)),
+            ])),
+        };
+        let resolver = FakeDocGuidanceResolver::new(sample_doc_guidance());
+
+        let context = collect_doctor_context_remote_with_ops(&ops, &resolver, "ssh:edge-2")
+            .await
+            .expect("remote context");
+        let parsed: Value = serde_json::from_str(&context).expect("json");
+        assert_eq!(parsed["configContent"], "(unable to read remote config)");
+        assert_eq!(parsed["gatewayProcessRunning"], false);
+        assert_eq!(parsed["platform"], "darwin");
+
+        let request = resolver.last_request().expect("captured doc request");
+        assert_eq!(request.config_content, "(unable to read remote config)");
+    }
+
+    #[tokio::test]
+    async fn ssh_pool_remote_context_ops_forward_methods_return_errors_without_connection() {
+        let pool = SshConnectionPool::new();
+        let ops = SshPoolRemoteDoctorContextOps { pool: &pool };
+
+        let login_err = RemoteDoctorContextOps::exec_login(&ops, "ssh:missing", "echo ok")
+            .await
+            .expect_err("expected missing connection for exec_login");
+        assert!(login_err.contains("No connection"));
+
+        let exec_err = RemoteDoctorContextOps::exec(&ops, "ssh:missing", "echo ok")
+            .await
+            .expect_err("expected missing connection for exec");
+        assert!(exec_err.contains("No connection"));
+
+        let read_err = RemoteDoctorContextOps::sftp_read(&ops, "ssh:missing", "~/.openclaw/config.toml")
+            .await
+            .expect_err("expected missing connection for sftp_read");
+        assert!(read_err.contains("No connection"));
+
+        let resolve_err = RemoteDoctorContextOps::resolve_config_path(&ops, "ssh:missing")
+            .await
+            .expect_err("expected missing connection for config path resolution");
+        assert!(resolve_err.contains("No connection"));
     }
 }

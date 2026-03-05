@@ -543,10 +543,20 @@ export interface DoctorInvoke {
   type: "read" | "write";
 }
 
+export interface DiagnosisCitation {
+  url: string;
+  section?: string;
+}
+
 export interface DiagnosisReportItem {
   problem: string;
   severity: "error" | "warn" | "info";
   fix_options: string[];
+  root_cause_hypothesis?: string;
+  fix_steps?: string[];
+  confidence?: number;
+  citations?: DiagnosisCitation[];
+  version_awareness?: string;
   action?: { tool: string; args: string; instance?: string; reason?: string };
 }
 

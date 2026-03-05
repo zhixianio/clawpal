@@ -82,6 +82,7 @@ pub mod json_util;
 pub mod logging;
 pub mod models;
 pub mod node_client;
+pub mod openclaw_doc_resolver;
 pub mod path_fix;
 pub mod prompt_templates;
 pub mod recipe;
