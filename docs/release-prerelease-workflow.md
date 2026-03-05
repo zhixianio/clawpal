@@ -157,8 +157,10 @@
 4. 三条 workflow 在 macOS 目标打包后都会执行结构校验：
    - `bash scripts/verify-dmg-layout.sh <dmg>`
    - 校验项：`.app`、`Applications -> /Applications` 链接、`.background/dmg-background.png`
-5. `release.yml` 的 signed repack 逻辑已改为“保留原 DMG 布局后替换 stapled app”：
-   - 避免 `hdiutil create -srcfolder <App>` 导致 `Applications` 链接和背景丢失
+5. `release.yml` 的 signed repack 逻辑使用 “UDRW 可写镜像原位替换 app，再转换回 UDZO”：
+   - 先 `hdiutil convert ... -format UDRW`，挂载可写镜像替换 `ClawPal.app`
+   - 再 `hdiutil convert ... -format UDZO` 输出最终 DMG
+   - 避免 `rsync + hdiutil create -srcfolder` 重建文件系统后导致 Finder 背景/拖拽引导失效
 
 ### 本地无签名视觉验证
 

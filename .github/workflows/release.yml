@@ -655,12 +655,10 @@ jobs:
           APP_PATH="${{ steps.macos_assets.outputs.app_path }}"
           DMG_PATH="${{ steps.macos_assets.outputs.dmg_path }}"
           APP_BUNDLE_NAME="$(basename "$APP_PATH")"
-          VOL_NAME="$(hdiutil imageinfo "$DMG_PATH" | awk -F': *' '/^ *Volume Name:/ {print $2; exit}')"
-          if [ -z "$VOL_NAME" ]; then
-            VOL_NAME="$(basename "$APP_PATH" .app)"
-          fi
-          REPACKED_DMG="$RUNNER_TEMP/repacked-${{ matrix.target }}.dmg"
-          STAGING_DIR="$RUNNER_TEMP/dmg-staging-${{ matrix.target }}"
+          RW_DMG_BASE="$RUNNER_TEMP/repacked-rw-${{ matrix.target }}"
+          RW_DMG="${RW_DMG_BASE}.dmg"
+          REPACKED_DMG_BASE="$RUNNER_TEMP/repacked-${{ matrix.target }}"
+          REPACKED_DMG="${REPACKED_DMG_BASE}.dmg"
           MOUNT_POINT="$RUNNER_TEMP/dmg-mount-${{ matrix.target }}"
 
           cleanup() {
@@ -671,25 +669,28 @@ jobs:
           }
           trap cleanup EXIT
 
-          rm -rf "$STAGING_DIR" "$MOUNT_POINT"
-          mkdir -p "$STAGING_DIR" "$MOUNT_POINT"
-          hdiutil attach "$DMG_PATH" -nobrowse -readonly -mountpoint "$MOUNT_POINT" >/dev/null
-          rsync -a "$MOUNT_POINT"/ "$STAGING_DIR"/
+          rm -f "$RW_DMG" "$REPACKED_DMG"
+          rm -rf "$MOUNT_POINT"
+          mkdir -p "$MOUNT_POINT"
+
+          # Keep Finder layout metadata by editing a converted writable image
+          # instead of recreating the DMG from a plain staging directory.
+          hdiutil convert "$DMG_PATH" -format UDRW -ov -o "$RW_DMG_BASE" >/dev/null
+          if [ ! -f "$RW_DMG" ]; then
+            echo "::error::Failed to create writable DMG: $RW_DMG"
+            exit 1
+          fi
+
+          hdiutil attach "$RW_DMG" -nobrowse -readwrite -mountpoint "$MOUNT_POINT" >/dev/null
+          rm -rf "$MOUNT_POINT/$APP_BUNDLE_NAME"
+          cp -R "$APP_PATH" "$MOUNT_POINT/$APP_BUNDLE_NAME"
+          sync
           hdiutil detach "$MOUNT_POINT" -force >/dev/null
 
-          rm -rf "$STAGING_DIR/$APP_BUNDLE_NAME"
-          cp -R "$APP_PATH" "$STAGING_DIR/$APP_BUNDLE_NAME"
-
-          rm -f "$REPACKED_DMG"
-          hdiutil create \
-            -volname "$VOL_NAME" \
-            -srcfolder "$STAGING_DIR" \
-            -format UDZO \
-            -ov \
-            "$REPACKED_DMG"
+          hdiutil convert "$RW_DMG" -format UDZO -ov -o "$REPACKED_DMG_BASE" >/dev/null
 
           mv "$REPACKED_DMG" "$DMG_PATH"
-          rm -rf "$STAGING_DIR"
+          rm -f "$RW_DMG"
           trap - EXIT
           cleanup
 
@@ -697,7 +698,7 @@ jobs:
 
           echo "### Repacked macOS DMG (${{ matrix.target }})" >> "$GITHUB_STEP_SUMMARY"
           echo "- source app: $APP_PATH" >> "$GITHUB_STEP_SUMMARY"
-          echo "- volume: $VOL_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "- repack mode: UDRW in-place app replacement" >> "$GITHUB_STEP_SUMMARY"
           echo "- repacked dmg: $DMG_PATH" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify DMG layout (repacked signed build)
