@@ -783,16 +783,26 @@ fn collect_related_remote_providers(
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpsertAuthStoreResult {
+    Written,
+    Unchanged,
+    Failed,
+}
+
 fn upsert_auth_store_entry(
     root: &mut Value,
     provider: &str,
     credential: &InternalProviderCredential,
-) -> bool {
+) -> UpsertAuthStoreResult {
+    if provider.trim().is_empty() {
+        return UpsertAuthStoreResult::Failed;
+    }
     if !root.is_object() {
         *root = serde_json::json!({ "version": 1 });
     }
     let Some(root_obj) = root.as_object_mut() else {
-        return false;
+        return UpsertAuthStoreResult::Failed;
     };
     if !root_obj.contains_key("version") {
         root_obj.insert("version".into(), Value::from(1_u64));
@@ -801,7 +811,7 @@ fn upsert_auth_store_entry(
         .entry("profiles".to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if !profiles_val.is_object() {
-        *profiles_val = Value::Object(serde_json::Map::new());
+        return UpsertAuthStoreResult::Failed;
     }
     let auth_ref = format!("{provider}:default");
     let auth_payload = match credential.kind {
@@ -817,34 +827,40 @@ fn upsert_auth_store_entry(
         }),
     };
     let mut changed = false;
-    if let Some(profiles) = profiles_val.as_object_mut() {
-        let replace = match profiles.get(&auth_ref) {
-            Some(existing) => existing != &auth_payload,
-            None => true,
-        };
-        if replace {
-            profiles.insert(auth_ref.clone(), auth_payload);
-            changed = true;
-        }
+    let Some(profiles) = profiles_val.as_object_mut() else {
+        return UpsertAuthStoreResult::Failed;
+    };
+    let replace = match profiles.get(&auth_ref) {
+        Some(existing) => existing != &auth_payload,
+        None => true,
+    };
+    if replace {
+        profiles.insert(auth_ref.clone(), auth_payload);
+        changed = true;
     }
     let last_good = root_obj
         .entry("lastGood".to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if !last_good.is_object() {
-        *last_good = Value::Object(serde_json::Map::new());
+        return UpsertAuthStoreResult::Failed;
     }
-    if let Some(last_good_map) = last_good.as_object_mut() {
-        let needs_update = last_good_map
-            .get(provider)
-            .and_then(Value::as_str)
-            .map(|value| value != auth_ref)
-            .unwrap_or(true);
-        if needs_update {
-            last_good_map.insert(provider.to_string(), Value::String(auth_ref));
-            changed = true;
-        }
+    let Some(last_good_map) = last_good.as_object_mut() else {
+        return UpsertAuthStoreResult::Failed;
+    };
+    let needs_update = last_good_map
+        .get(provider)
+        .and_then(Value::as_str)
+        .map(|value| value != auth_ref)
+        .unwrap_or(true);
+    if needs_update {
+        last_good_map.insert(provider.to_string(), Value::String(auth_ref));
+        changed = true;
     }
-    changed
+    if changed {
+        UpsertAuthStoreResult::Written
+    } else {
+        UpsertAuthStoreResult::Unchanged
+    }
 }
 
 #[tauri::command]
@@ -916,12 +932,15 @@ pub async fn push_related_secrets_to_remote(
         Err(e) => return Err(format!("Failed to read remote auth store: {e}")),
     };
     let mut remote_auth_json: Value = serde_json::from_str(&remote_auth_raw)
-        .unwrap_or_else(|_| serde_json::json!({ "version": 1, "profiles": {} }));
+        .map_err(|e| format!("Failed to parse remote auth store at {remote_auth_path}: {e}"))?;
 
     let mut written = 0usize;
+    let mut failed = 0usize;
     for (provider, credential) in &selected {
-        if upsert_auth_store_entry(&mut remote_auth_json, provider, credential) {
-            written += 1;
+        match upsert_auth_store_entry(&mut remote_auth_json, provider, credential) {
+            UpsertAuthStoreResult::Written => written += 1,
+            UpsertAuthStoreResult::Unchanged => {}
+            UpsertAuthStoreResult::Failed => failed += 1,
         }
     }
 
@@ -939,7 +958,7 @@ pub async fn push_related_secrets_to_remote(
         resolved_secrets: selected.len(),
         written_secrets: written,
         skipped_providers: skipped,
-        failed_providers: 0,
+        failed_providers: failed,
     })
 }
 

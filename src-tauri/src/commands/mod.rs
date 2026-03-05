@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::{
     fs,
     process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use tauri::{Manager, State};
@@ -3637,21 +3637,31 @@ fn resolve_provider_credential_from_config_entry(
     provider: &str,
     provider_cfg: &Map<String, Value>,
 ) -> Option<InternalProviderCredential> {
-    for field in ["apiKey", "api_key", "key", "token", "access"] {
+    for (field, fallback_kind, allow_plaintext) in [
+        ("apiKey", InternalAuthKind::ApiKey, true),
+        ("api_key", InternalAuthKind::ApiKey, true),
+        ("key", InternalAuthKind::ApiKey, true),
+        ("token", InternalAuthKind::Authorization, true),
+        ("access", InternalAuthKind::Authorization, true),
+        ("secretRef", InternalAuthKind::ApiKey, false),
+        ("keyRef", InternalAuthKind::ApiKey, false),
+        ("tokenRef", InternalAuthKind::Authorization, false),
+        ("apiKeyRef", InternalAuthKind::ApiKey, false),
+        ("api_key_ref", InternalAuthKind::ApiKey, false),
+        ("accessRef", InternalAuthKind::Authorization, false),
+    ] {
         let Some(raw_val) = provider_cfg.get(field) else {
             continue;
         };
-        let fallback_kind = match field {
-            "token" | "access" => InternalAuthKind::Authorization,
-            _ => InternalAuthKind::ApiKey,
-        };
 
-        if let Some(secret) = raw_val.as_str().map(str::trim).filter(|v| !v.is_empty()) {
-            let kind = infer_auth_kind(provider, secret, fallback_kind);
-            return Some(InternalProviderCredential {
-                secret: secret.to_string(),
-                kind,
-            });
+        if allow_plaintext {
+            if let Some(secret) = raw_val.as_str().map(str::trim).filter(|v| !v.is_empty()) {
+                let kind = infer_auth_kind(provider, secret, fallback_kind);
+                return Some(InternalProviderCredential {
+                    secret: secret.to_string(),
+                    kind,
+                });
+            }
         }
         if let Some(secret_ref) = try_parse_secret_ref(raw_val) {
             if let Some(secret) =
@@ -4025,6 +4035,19 @@ fn resolve_secret_ref_exec_with_provider_config(
         .get("jsonOnly")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let timeout = provider_cfg
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .map(|ms| Duration::from_millis(ms.clamp(100, 120_000)))
+        .or_else(|| {
+            provider_cfg
+                .get("timeoutSeconds")
+                .or_else(|| provider_cfg.get("timeoutSec"))
+                .or_else(|| provider_cfg.get("timeout"))
+                .and_then(Value::as_u64)
+                .map(|secs| Duration::from_secs(secs.clamp(1, 120)))
+        })
+        .unwrap_or_else(|| Duration::from_secs(10));
 
     let mut cmd = Command::new(expanded_command);
     cmd.args(args);
@@ -4049,7 +4072,26 @@ fn resolve_secret_ref_exec_with_provider_config(
         });
         let _ = stdin.write_all(payload.to_string().as_bytes());
     }
+    let _ = child.stdin.take();
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    loop {
+        match child.try_wait().ok()? {
+            Some(_) => break,
+            None => {
+                if Instant::now() >= deadline {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
     let output = child.wait_with_output().ok()?;
+    if timed_out {
+        return None;
+    }
     if !output.status.success() {
         return None;
     }
@@ -4167,15 +4209,24 @@ fn local_env_lookup(name: &str) -> Option<String> {
 }
 
 fn collect_secret_ref_env_names_from_entry(entry: &Value, names: &mut Vec<String>) {
-    if let Some(sr) = entry.get("secretRef").and_then(try_parse_secret_ref) {
-        if sr.source == "env" {
-            names.push(sr.id);
+    for ref_field in [
+        "secretRef",
+        "keyRef",
+        "tokenRef",
+        "apiKeyRef",
+        "api_key_ref",
+        "accessRef",
+    ] {
+        if let Some(sr) = entry.get(ref_field).and_then(try_parse_secret_ref) {
+            if sr.source.eq_ignore_ascii_case("env") {
+                names.push(sr.id);
+            }
         }
     }
     for field in ["token", "key", "apiKey", "api_key", "access"] {
         if let Some(field_val) = entry.get(field) {
             if let Some(sr) = try_parse_secret_ref(field_val) {
-                if sr.source == "env" {
+                if sr.source.eq_ignore_ascii_case("env") {
                     names.push(sr.id);
                 }
             }
@@ -4229,17 +4280,26 @@ fn extract_credential_from_auth_entry_with_env(
     };
 
     // SecretRef at entry level takes precedence (OpenClaw secrets management).
-    if let Some(secret_ref) = entry.get("secretRef").and_then(try_parse_secret_ref) {
-        if let Some(resolved) = resolve_secret_ref_with_env(&secret_ref, env_lookup) {
-            let kind = infer_auth_kind(
-                provider,
-                &resolved,
-                kind_from_type.unwrap_or(InternalAuthKind::ApiKey),
-            );
-            return Some(InternalProviderCredential {
-                secret: resolved,
-                kind,
-            });
+    for (ref_field, ref_kind) in [
+        ("secretRef", kind_from_type),
+        ("keyRef", Some(InternalAuthKind::ApiKey)),
+        ("tokenRef", Some(InternalAuthKind::Authorization)),
+        ("apiKeyRef", Some(InternalAuthKind::ApiKey)),
+        ("api_key_ref", Some(InternalAuthKind::ApiKey)),
+        ("accessRef", Some(InternalAuthKind::Authorization)),
+    ] {
+        if let Some(secret_ref) = entry.get(ref_field).and_then(try_parse_secret_ref) {
+            if let Some(resolved) = resolve_secret_ref_with_env(&secret_ref, env_lookup) {
+                let kind = infer_auth_kind(
+                    provider,
+                    &resolved,
+                    ref_kind.unwrap_or(InternalAuthKind::ApiKey),
+                );
+                return Some(InternalProviderCredential {
+                    secret: resolved,
+                    kind,
+                });
+            }
         }
     }
 
@@ -5564,6 +5624,26 @@ mod secret_ref_tests {
     }
 
     #[test]
+    fn extract_credential_resolves_env_secret_ref_in_key_ref_field() {
+        let entry = serde_json::json!({
+            "type": "api_key",
+            "provider": "openai",
+            "keyRef": { "source": "env", "id": "OPENAI_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "OPENAI_API_KEY" {
+                Some("sk-keyref-openai".to_string())
+            } else {
+                None
+            }
+        };
+        let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup)
+            .expect("should resolve");
+        assert_eq!(credential.secret, "sk-keyref-openai");
+        assert_eq!(credential.kind, InternalAuthKind::ApiKey);
+    }
+
+    #[test]
     fn extract_credential_resolves_env_secret_ref_in_token_field() {
         let entry = serde_json::json!({
             "type": "token",
@@ -5580,6 +5660,26 @@ mod secret_ref_tests {
         let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup)
             .expect("should resolve");
         assert_eq!(credential.secret, "sk-ant-resolved");
+        assert_eq!(credential.kind, InternalAuthKind::Authorization);
+    }
+
+    #[test]
+    fn extract_credential_resolves_env_secret_ref_in_token_ref_field() {
+        let entry = serde_json::json!({
+            "type": "token",
+            "provider": "anthropic",
+            "tokenRef": { "source": "env", "id": "ANTHROPIC_API_KEY" }
+        });
+        let env_lookup = |name: &str| -> Option<String> {
+            if name == "ANTHROPIC_API_KEY" {
+                Some("sk-ant-tokenref".to_string())
+            } else {
+                None
+            }
+        };
+        let credential = extract_credential_from_auth_entry_with_env(&entry, &env_lookup)
+            .expect("should resolve");
+        assert_eq!(credential.secret, "sk-ant-tokenref");
         assert_eq!(credential.kind, InternalAuthKind::Authorization);
     }
 
@@ -5675,6 +5775,28 @@ mod secret_ref_tests {
                     "type": "api_key",
                     "provider": "openai",
                     "secretRef": { "source": "env", "id": "OPENAI_API_KEY" }
+                }
+            }
+        });
+        let mut names = collect_secret_ref_env_names_from_auth_store(&store);
+        names.sort();
+        assert_eq!(names, vec!["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]);
+    }
+
+    #[test]
+    fn collect_secret_ref_env_names_includes_keyref_and_tokenref_fields() {
+        let store = serde_json::json!({
+            "version": 1,
+            "profiles": {
+                "openai:default": {
+                    "type": "api_key",
+                    "provider": "openai",
+                    "keyRef": { "source": "env", "id": "OPENAI_API_KEY" }
+                },
+                "anthropic:default": {
+                    "type": "token",
+                    "provider": "anthropic",
+                    "tokenRef": { "source": "env", "id": "ANTHROPIC_API_KEY" }
                 }
             }
         });
@@ -5787,6 +5909,53 @@ mod secret_ref_tests {
         let env_lookup = |_: &str| -> Option<String> { None };
         let resolved = resolve_secret_ref_with_provider_config(&secret_ref, &cfg, &env_lookup);
         assert_eq!(resolved.as_deref(), Some("sk-from-exec-provider"));
+
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_ref_with_provider_config_exec_times_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "clawpal-secretref-provider-exec-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&tmp).expect("create tmp dir");
+        let exec_file = tmp.join("secret-provider-timeout.sh");
+        fs::write(
+            &exec_file,
+            "#!/bin/sh\ncat >/dev/null\nsleep 2\nprintf '%s' '{\"values\":{\"my-api-key\":\"sk-too-late\"}}'\n",
+        )
+        .expect("write exec script");
+        let mut perms = fs::metadata(&exec_file)
+            .expect("exec metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&exec_file, perms).expect("chmod");
+
+        let cfg = serde_json::json!({
+            "secrets": {
+                "defaults": { "exec": "vault-cli" },
+                "providers": {
+                    "vault-cli": {
+                        "source": "exec",
+                        "command": exec_file.to_string_lossy().to_string(),
+                        "jsonOnly": true,
+                        "timeoutSec": 1
+                    }
+                }
+            }
+        });
+        let secret_ref = SecretRef {
+            source: "exec".to_string(),
+            provider: None,
+            id: "my-api-key".to_string(),
+        };
+        let env_lookup = |_: &str| -> Option<String> { None };
+        let resolved = resolve_secret_ref_with_provider_config(&secret_ref, &cfg, &env_lookup);
+        assert!(resolved.is_none());
 
         let _ = fs::remove_dir_all(tmp);
     }
