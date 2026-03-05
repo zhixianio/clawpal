@@ -364,7 +364,11 @@ async fn resolve_doc_guidance_impl(
     let mut cache = load_cache(paths);
     let mut telemetry = ResolveTelemetry::default();
     let scope_key = request.instance_scope.trim().to_string();
-    invalidate_cache_if_version_changed(&mut cache, &scope_key, request.openclaw_version.as_deref());
+    invalidate_cache_if_version_changed(
+        &mut cache,
+        &scope_key,
+        request.openclaw_version.as_deref(),
+    );
 
     let client = Client::builder()
         .timeout(Duration::from_secs(8))
@@ -380,13 +384,16 @@ async fn resolve_doc_guidance_impl(
 
     let local_docs_root = match (pool, host_id) {
         (Some(p), Some(host)) => {
-            telemetry.sources_checked.push("target-remote-docs".to_string());
+            telemetry
+                .sources_checked
+                .push("target-remote-docs".to_string());
             discover_remote_docs_root(p, host).await
         }
         _ => {
-            telemetry.sources_checked.push("target-local-docs".to_string());
-            discover_local_docs_root()
-                .and_then(|path| path.to_str().map(|s| s.to_string()))
+            telemetry
+                .sources_checked
+                .push("target-local-docs".to_string());
+            discover_local_docs_root().and_then(|path| path.to_str().map(|s| s.to_string()))
         }
     };
 
@@ -395,15 +402,8 @@ async fn resolve_doc_guidance_impl(
         let llms_text = match (pool, host_id) {
             (Some(p), Some(host)) => {
                 let llms_path = format!("{}/llms.txt", root.trim_end_matches('/'));
-                cached_remote_file(
-                    p,
-                    host,
-                    &llms_path,
-                    &scope_key,
-                    &mut cache,
-                    &mut telemetry,
-                )
-                .await
+                cached_remote_file(p, host, &llms_path, &scope_key, &mut cache, &mut telemetry)
+                    .await
             }
             _ => {
                 let llms_path = Path::new(root).join("llms.txt");
@@ -413,7 +413,9 @@ async fn resolve_doc_guidance_impl(
         if let Some(content) = llms_text {
             let parsed = parse_llms_links(&content);
             if !parsed.is_empty() {
-                telemetry.sources_checked.push("target-local-llms".to_string());
+                telemetry
+                    .sources_checked
+                    .push("target-local-llms".to_string());
                 index_links.extend(parsed);
             }
         }
@@ -421,7 +423,9 @@ async fn resolve_doc_guidance_impl(
 
     if index_links.is_empty() {
         telemetry.fallback_used = true;
-        telemetry.sources_checked.push("remote-llms-index".to_string());
+        telemetry
+            .sources_checked
+            .push("remote-llms-index".to_string());
         if let Some(client_ref) = client.as_ref() {
             if let Some(text) = cached_http_get(
                 client_ref,
@@ -459,7 +463,9 @@ async fn resolve_doc_guidance_impl(
 
     if index_links.is_empty() {
         telemetry.fallback_used = true;
-        telemetry.sources_checked.push("remote-llms-full".to_string());
+        telemetry
+            .sources_checked
+            .push("remote-llms-full".to_string());
         if let Some(client_ref) = client.as_ref() {
             if let Some(text) = cached_http_get(
                 client_ref,
@@ -544,7 +550,10 @@ async fn resolve_doc_guidance_impl(
         local_docs_root.is_some(),
         telemetry.fallback_used,
     );
-    let version_awareness = build_version_awareness(request.openclaw_version.as_deref(), local_docs_root.is_some());
+    let version_awareness = build_version_awareness(
+        request.openclaw_version.as_deref(),
+        local_docs_root.is_some(),
+    );
     let status = if hypotheses.is_empty() && citations.is_empty() {
         "unavailable".to_string()
     } else {
@@ -1115,7 +1124,9 @@ fn invalidate_cache_if_version_changed(
     }
     let prefix = format!("scope:{scope_key}:");
     cache.entries.retain(|key, _| !key.starts_with(&prefix));
-    cache.scope_version.insert(scope_key.to_string(), next_version);
+    cache
+        .scope_version
+        .insert(scope_key.to_string(), next_version);
 }
 
 #[cfg(test)]
@@ -1204,7 +1215,8 @@ mod tests {
 
     #[test]
     fn url_to_relpath_candidates_expands_markdown_and_index() {
-        let candidates = url_to_relpath_candidates("https://docs.openclaw.ai/automation/cron-vs-heartbeat");
+        let candidates =
+            url_to_relpath_candidates("https://docs.openclaw.ai/automation/cron-vs-heartbeat");
         assert!(candidates.contains(&"automation/cron-vs-heartbeat".to_string()));
         assert!(candidates.contains(&"automation/cron-vs-heartbeat.md".to_string()));
         assert!(candidates.contains(&"automation/cron-vs-heartbeat/index.md".to_string()));

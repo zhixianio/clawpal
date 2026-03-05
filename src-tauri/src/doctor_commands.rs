@@ -362,9 +362,8 @@ pub async fn collect_doctor_context() -> Result<String, String> {
 type RemoteExecFuture<'a> =
     Pin<Box<dyn Future<Output = Result<crate::ssh::SshExecResult, String>> + Send + 'a>>;
 type RemoteStringFuture<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
-type RemoteDocGuidanceFuture<'a> = Pin<
-    Box<dyn Future<Output = crate::openclaw_doc_resolver::DocGuidance> + Send + 'a>,
->;
+type RemoteDocGuidanceFuture<'a> =
+    Pin<Box<dyn Future<Output = crate::openclaw_doc_resolver::DocGuidance> + Send + 'a>>;
 
 trait RemoteDoctorContextOps {
     fn exec_login<'a>(&'a self, host_id: &'a str, command: &'a str) -> RemoteExecFuture<'a>;
@@ -416,8 +415,10 @@ impl RemoteDocGuidanceResolver for OpenclawRemoteDocGuidanceResolver<'_> {
         paths: &'a crate::models::OpenClawPaths,
     ) -> RemoteDocGuidanceFuture<'a> {
         Box::pin(async move {
-            crate::openclaw_doc_resolver::resolve_remote_doc_guidance(self.pool, host_id, request, paths)
-                .await
+            crate::openclaw_doc_resolver::resolve_remote_doc_guidance(
+                self.pool, host_id, request, paths,
+            )
+            .await
         })
     }
 }
@@ -439,7 +440,10 @@ async fn collect_doctor_context_remote_with_ops(
 ) -> Result<String, String> {
     // Collect openclaw version
     let version_result = ops
-        .exec_login(host_id, clawpal_core::doctor::remote_openclaw_version_probe_script())
+        .exec_login(
+            host_id,
+            clawpal_core::doctor::remote_openclaw_version_probe_script(),
+        )
         .await?;
     let version = version_result.stdout.trim().to_string();
 
@@ -454,14 +458,20 @@ async fn collect_doctor_context_remote_with_ops(
     // Use `openclaw gateway status` — always returns useful text even when gateway is stopped.
     // `openclaw health --json` requires a running gateway + auth token and returns empty otherwise.
     let status_result = ops
-        .exec_login(host_id, clawpal_core::doctor::remote_openclaw_gateway_status_script())
+        .exec_login(
+            host_id,
+            clawpal_core::doctor::remote_openclaw_gateway_status_script(),
+        )
         .await?;
     let gateway_status = status_result.stdout.trim().to_string();
 
     // Check if gateway process is running (reliable even when health RPC fails)
     // Bracket trick: [o]penclaw-gateway prevents pgrep from matching its own sh -c process
     let pgrep_result = ops
-        .exec(host_id, clawpal_core::doctor::remote_openclaw_gateway_process_probe_script())
+        .exec(
+            host_id,
+            clawpal_core::doctor::remote_openclaw_gateway_process_probe_script(),
+        )
         .await;
     let gateway_running = matches!(pgrep_result, Ok(r) if r.exit_code == 0);
 
@@ -475,8 +485,12 @@ async fn collect_doctor_context_remote_with_ops(
     let error_log = error_log_result.stdout;
 
     // System info
-    let platform_result = ops.exec(host_id, clawpal_core::doctor::remote_uname_s_script()).await?;
-    let arch_result = ops.exec(host_id, clawpal_core::doctor::remote_uname_m_script()).await?;
+    let platform_result = ops
+        .exec(host_id, clawpal_core::doctor::remote_uname_s_script())
+        .await?;
+    let arch_result = ops
+        .exec(host_id, clawpal_core::doctor::remote_uname_m_script())
+        .await?;
 
     let paths = resolve_paths();
     let doc_request = crate::openclaw_doc_resolver::DocResolveRequest {
@@ -2216,19 +2230,11 @@ mod tests {
         }
 
         fn last_host_id(&self) -> Option<String> {
-            self.host_ids
-                .lock()
-                .expect("lock host ids")
-                .last()
-                .cloned()
+            self.host_ids.lock().expect("lock host ids").last().cloned()
         }
 
         fn last_request(&self) -> Option<DocResolveRequest> {
-            self.requests
-                .lock()
-                .expect("lock requests")
-                .last()
-                .cloned()
+            self.requests.lock().expect("lock requests").last().cloned()
         }
     }
 
@@ -2270,8 +2276,7 @@ mod tests {
         };
         let resolver = FakeDocGuidanceResolver::new(sample_doc_guidance());
 
-        let context =
-            collect_doctor_context_remote_with_ops(&ops, &resolver, "ssh:edge-1").await;
+        let context = collect_doctor_context_remote_with_ops(&ops, &resolver, "ssh:edge-1").await;
         assert!(context.is_ok());
         let parsed: Value = serde_json::from_str(&context.expect("remote context")).expect("json");
 
@@ -2285,10 +2290,7 @@ mod tests {
         assert_eq!(parsed["remote"], true);
         assert_eq!(parsed["hostId"], "ssh:edge-1");
         assert_eq!(parsed["docGuidance"]["status"], "ok");
-        assert_eq!(
-            resolver.last_host_id().as_deref(),
-            Some("ssh:edge-1")
-        );
+        assert_eq!(resolver.last_host_id().as_deref(), Some("ssh:edge-1"));
 
         let request = resolver.last_request().expect("captured doc request");
         assert_eq!(request.instance_scope, "ssh:edge-1");
@@ -2296,10 +2298,7 @@ mod tests {
         assert_eq!(request.openclaw_version.as_deref(), Some("2026.3.0"));
         assert_eq!(request.config_content, "{\"channels\":{}}");
         assert_eq!(request.error_log, "error log line\n");
-        assert_eq!(
-            request.gateway_status.as_deref(),
-            Some("gateway: running")
-        );
+        assert_eq!(request.gateway_status.as_deref(), Some("gateway: running"));
     }
 
     #[tokio::test]
@@ -2368,9 +2367,10 @@ mod tests {
             .expect_err("expected missing connection for exec");
         assert!(exec_err.contains("No connection"));
 
-        let read_err = RemoteDoctorContextOps::sftp_read(&ops, "ssh:missing", "~/.openclaw/config.toml")
-            .await
-            .expect_err("expected missing connection for sftp_read");
+        let read_err =
+            RemoteDoctorContextOps::sftp_read(&ops, "ssh:missing", "~/.openclaw/config.toml")
+                .await
+                .expect_err("expected missing connection for sftp_read");
         assert!(read_err.contains("No connection"));
 
         let resolve_err = RemoteDoctorContextOps::resolve_config_path(&ops, "ssh:missing")

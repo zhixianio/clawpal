@@ -129,28 +129,30 @@ export function DiagnosisCardView({ items, t }: DiagnosisCardViewProps) {
             <div className="absolute right-0 top-full mt-1 z-10 rounded-md border bg-popover p-1 shadow-md min-w-[120px]">
               <button
                 className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-accent"
-                onClick={handleDiagnosisExport.bind(
-                  null,
-                  items,
-                  "markdown",
-                  writeToClipboard,
-                  setCopied,
-                  setExportOpen,
-                )}
+                onClick={() =>
+                  void handleDiagnosisExport(
+                    items,
+                    "markdown",
+                    writeToClipboard,
+                    setCopied,
+                    setExportOpen,
+                  )
+                }
               >
                 <ClipboardCopyIcon className="size-3 inline mr-1.5" />
                 Markdown
               </button>
               <button
                 className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-accent"
-                onClick={handleDiagnosisExport.bind(
-                  null,
-                  items,
-                  "json",
-                  writeToClipboard,
-                  setCopied,
-                  setExportOpen,
-                )}
+                onClick={() =>
+                  void handleDiagnosisExport(
+                    items,
+                    "json",
+                    writeToClipboard,
+                    setCopied,
+                    setExportOpen,
+                  )
+                }
               >
                 <ClipboardCopyIcon className="size-3 inline mr-1.5" />
                 JSON

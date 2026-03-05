@@ -51,7 +51,10 @@ async fn collect_doctor_context_includes_doc_guidance_shape() {
         "docGuidance.citations must be array"
     );
     assert!(
-        doc_guidance.get("confidence").and_then(Value::as_f64).is_some(),
+        doc_guidance
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .is_some(),
         "docGuidance.confidence must be numeric"
     );
     assert!(
@@ -62,4 +65,3 @@ async fn collect_doctor_context_includes_doc_guidance_shape() {
         "docGuidance.resolverMeta must exist"
     );
 }
-
