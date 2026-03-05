@@ -210,6 +210,14 @@ export interface RemoteAuthSyncResult {
   failedKeyResolves: number;
 }
 
+export interface RelatedSecretPushResult {
+  totalRelatedProviders: number;
+  resolvedSecrets: number;
+  writtenSecrets: number;
+  skippedProviders: number;
+  failedProviders: number;
+}
+
 export interface AppPreferences {
   zeroclawModel: string | null;
   showZeroclawDoctorUi: boolean;
