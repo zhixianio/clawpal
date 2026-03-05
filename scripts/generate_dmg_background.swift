@@ -43,28 +43,35 @@ let gradient = NSGradient(
 )!
 gradient.draw(in: canvasRect, angle: 0)
 
-let leftPanel = NSBezierPath(
-  roundedRect: NSRect(x: 56, y: 94, width: 188, height: 188),
-  xRadius: 20,
-  yRadius: 20
-)
-NSColor(calibratedWhite: 1.0, alpha: 0.16).setFill()
-leftPanel.fill()
+let appIconCenterX: CGFloat = 180
+let applicationsIconCenterX: CGFloat = 480
+let iconGuideCenterY: CGFloat = 178
 
-let rightPanel = NSBezierPath(
-  roundedRect: NSRect(x: 416, y: 94, width: 188, height: 188),
-  xRadius: 20,
-  yRadius: 20
-)
-NSColor(calibratedWhite: 1.0, alpha: 0.16).setFill()
-rightPanel.fill()
+func drawDropPanel(centerX: CGFloat) {
+  let panelRect = NSRect(
+    x: centerX - 102,
+    y: iconGuideCenterY - 96,
+    width: 204,
+    height: 192
+  )
+  let panel = NSBezierPath(roundedRect: panelRect, xRadius: 22, yRadius: 22)
+  NSColor(calibratedWhite: 1.0, alpha: 0.17).setFill()
+  panel.fill()
+
+  NSColor(calibratedWhite: 1.0, alpha: 0.12).setStroke()
+  panel.lineWidth = 1.5
+  panel.stroke()
+}
+
+drawDropPanel(centerX: appIconCenterX)
+drawDropPanel(centerX: applicationsIconCenterX)
 
 let titleAttributes: [NSAttributedString.Key: Any] = [
-  .font: NSFont.systemFont(ofSize: 34, weight: .bold),
+  .font: NSFont.systemFont(ofSize: 33, weight: .bold),
   .foregroundColor: NSColor.white,
 ]
 let title = "Drag ClawPal to Applications"
-let titleRect = NSRect(x: 60, y: 314, width: 540, height: 44)
+let titleRect = NSRect(x: 58, y: 314, width: 548, height: 44)
 title.draw(in: titleRect, withAttributes: titleAttributes)
 
 let subtitleAttributes: [NSAttributedString.Key: Any] = [
@@ -72,37 +79,30 @@ let subtitleAttributes: [NSAttributedString.Key: Any] = [
   .foregroundColor: NSColor(calibratedWhite: 1.0, alpha: 0.9),
 ]
 let subtitle = "Drop ClawPal.app into Applications to install"
-let subtitleRect = NSRect(x: 60, y: 286, width: 540, height: 24)
+let subtitleRect = NSRect(x: 58, y: 286, width: 548, height: 24)
 subtitle.draw(in: subtitleRect, withAttributes: subtitleAttributes)
+
+let arrowShiftX: CGFloat = -20
+let arrowHeadScale: CGFloat = 0.6
+let arrowBaseX: CGFloat = 380 + arrowShiftX
+let arrowTipX: CGFloat = arrowBaseX + (66 * arrowHeadScale)
+let arrowHalfHeight: CGFloat = 35 * arrowHeadScale
 
 let arrowPath = NSBezierPath()
 arrowPath.lineWidth = 12
 arrowPath.lineCapStyle = .round
-arrowPath.move(to: NSPoint(x: 254, y: 188))
-arrowPath.line(to: NSPoint(x: 396, y: 188))
+arrowPath.move(to: NSPoint(x: 286 + arrowShiftX, y: iconGuideCenterY))
+arrowPath.line(to: NSPoint(x: arrowBaseX, y: iconGuideCenterY))
 NSColor(calibratedWhite: 1.0, alpha: 0.92).setStroke()
 arrowPath.stroke()
 
 let arrowHead = NSBezierPath()
-arrowHead.move(to: NSPoint(x: 396, y: 222))
-arrowHead.line(to: NSPoint(x: 452, y: 188))
-arrowHead.line(to: NSPoint(x: 396, y: 154))
+arrowHead.move(to: NSPoint(x: arrowBaseX, y: iconGuideCenterY + arrowHalfHeight))
+arrowHead.line(to: NSPoint(x: arrowTipX, y: iconGuideCenterY))
+arrowHead.line(to: NSPoint(x: arrowBaseX, y: iconGuideCenterY - arrowHalfHeight))
 arrowHead.close()
 NSColor(calibratedWhite: 1.0, alpha: 0.92).setFill()
 arrowHead.fill()
-
-let badgeAttributes: [NSAttributedString.Key: Any] = [
-  .font: NSFont.systemFont(ofSize: 16, weight: .semibold),
-  .foregroundColor: NSColor.white,
-]
-"ClawPal.app".draw(
-  in: NSRect(x: 88, y: 56, width: 164, height: 24),
-  withAttributes: badgeAttributes
-)
-"Applications".draw(
-  in: NSRect(x: 440, y: 56, width: 164, height: 24),
-  withAttributes: badgeAttributes
-)
 
 NSGraphicsContext.restoreGraphicsState()
 
