@@ -734,6 +734,215 @@ pub async fn remote_sync_profiles_to_local_auth(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedSecretPushResult {
+    pub total_related_providers: usize,
+    pub resolved_secrets: usize,
+    pub written_secrets: usize,
+    pub skipped_providers: usize,
+    pub failed_providers: usize,
+}
+
+fn provider_from_model_ref(model_ref: &str) -> Option<String> {
+    let trimmed = normalize_model_ref(model_ref);
+    let mut parts = trimmed.splitn(2, '/');
+    let provider = parts.next()?.trim().to_ascii_lowercase();
+    let model = parts.next().unwrap_or("").trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some(provider)
+}
+
+fn collect_related_remote_providers(
+    cfg: &Value,
+    remote_profiles: &[ModelProfile],
+) -> HashSet<String> {
+    let mut out = HashSet::<String>::new();
+
+    for profile in remote_profiles.iter().filter(|profile| profile.enabled) {
+        let provider = profile.provider.trim().to_ascii_lowercase();
+        if !provider.is_empty() {
+            out.insert(provider);
+        }
+        if let Some(provider_from_model) = provider_from_model_ref(&profile.model) {
+            out.insert(provider_from_model);
+        }
+    }
+
+    let bindings = collect_model_bindings(cfg, remote_profiles);
+    for binding in bindings {
+        let Some(model_ref) = binding.model_value else {
+            continue;
+        };
+        if let Some(provider) = provider_from_model_ref(&model_ref) {
+            out.insert(provider);
+        }
+    }
+    out
+}
+
+fn upsert_auth_store_entry(
+    root: &mut Value,
+    provider: &str,
+    credential: &InternalProviderCredential,
+) -> bool {
+    if !root.is_object() {
+        *root = serde_json::json!({ "version": 1 });
+    }
+    let Some(root_obj) = root.as_object_mut() else {
+        return false;
+    };
+    if !root_obj.contains_key("version") {
+        root_obj.insert("version".into(), Value::from(1_u64));
+    }
+    let profiles_val = root_obj
+        .entry("profiles".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !profiles_val.is_object() {
+        *profiles_val = Value::Object(serde_json::Map::new());
+    }
+    let auth_ref = format!("{provider}:default");
+    let auth_payload = match credential.kind {
+        InternalAuthKind::Authorization => serde_json::json!({
+            "type": "token",
+            "provider": provider,
+            "token": credential.secret,
+        }),
+        InternalAuthKind::ApiKey => serde_json::json!({
+            "type": "api_key",
+            "provider": provider,
+            "key": credential.secret,
+        }),
+    };
+    let mut changed = false;
+    if let Some(profiles) = profiles_val.as_object_mut() {
+        let replace = match profiles.get(&auth_ref) {
+            Some(existing) => existing != &auth_payload,
+            None => true,
+        };
+        if replace {
+            profiles.insert(auth_ref.clone(), auth_payload);
+            changed = true;
+        }
+    }
+    let last_good = root_obj
+        .entry("lastGood".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !last_good.is_object() {
+        *last_good = Value::Object(serde_json::Map::new());
+    }
+    if let Some(last_good_map) = last_good.as_object_mut() {
+        let needs_update = last_good_map
+            .get(provider)
+            .and_then(Value::as_str)
+            .map(|value| value != auth_ref)
+            .unwrap_or(true);
+        if needs_update {
+            last_good_map.insert(provider.to_string(), Value::String(auth_ref));
+            changed = true;
+        }
+    }
+    changed
+}
+
+#[tauri::command]
+pub async fn push_related_secrets_to_remote(
+    pool: State<'_, SshConnectionPool>,
+    host_id: String,
+) -> Result<RelatedSecretPushResult, String> {
+    let (_, _, cfg) = remote_read_openclaw_config_text_and_json(&pool, &host_id).await?;
+
+    let remote_profiles_raw = match pool
+        .sftp_read(&host_id, "~/.clawpal/model-profiles.json")
+        .await
+    {
+        Ok(content) => content,
+        Err(e) if is_remote_missing_path_error(&e) => r#"{"profiles":[]}"#.to_string(),
+        Err(e) => return Err(format!("Failed to read remote model profiles: {e}")),
+    };
+    let remote_profiles =
+        clawpal_core::profile::list_profiles_from_storage_json(&remote_profiles_raw);
+    let related = collect_related_remote_providers(&cfg, &remote_profiles);
+
+    if related.is_empty() {
+        return Ok(RelatedSecretPushResult {
+            total_related_providers: 0,
+            resolved_secrets: 0,
+            written_secrets: 0,
+            skipped_providers: 0,
+            failed_providers: 0,
+        });
+    }
+
+    let local_credentials = collect_provider_credentials_for_internal();
+    let mut providers = related.into_iter().collect::<Vec<_>>();
+    providers.sort();
+
+    let mut selected = Vec::<(String, InternalProviderCredential)>::new();
+    let mut skipped = 0usize;
+    for provider in &providers {
+        if let Some(credential) = local_credentials.get(provider) {
+            selected.push((provider.clone(), credential.clone()));
+        } else {
+            skipped += 1;
+        }
+    }
+
+    if selected.is_empty() {
+        return Ok(RelatedSecretPushResult {
+            total_related_providers: providers.len(),
+            resolved_secrets: 0,
+            written_secrets: 0,
+            skipped_providers: skipped,
+            failed_providers: 0,
+        });
+    }
+
+    let roots = resolve_remote_openclaw_roots(&pool, &host_id).await?;
+    let root = roots
+        .first()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Failed to resolve remote openclaw root".to_string())?;
+    let root = root.trim_end_matches('/');
+    let remote_auth_dir = format!("{root}/agents/main/agent");
+    let remote_auth_path = format!("{remote_auth_dir}/auth-profiles.json");
+    let remote_auth_raw = match pool.sftp_read(&host_id, &remote_auth_path).await {
+        Ok(content) => content,
+        Err(e) if is_remote_missing_path_error(&e) => r#"{"version":1,"profiles":{}}"#.to_string(),
+        Err(e) => return Err(format!("Failed to read remote auth store: {e}")),
+    };
+    let mut remote_auth_json: Value = serde_json::from_str(&remote_auth_raw)
+        .unwrap_or_else(|_| serde_json::json!({ "version": 1, "profiles": {} }));
+
+    let mut written = 0usize;
+    for (provider, credential) in &selected {
+        if upsert_auth_store_entry(&mut remote_auth_json, provider, credential) {
+            written += 1;
+        }
+    }
+
+    if written > 0 {
+        let serialized = serde_json::to_string_pretty(&remote_auth_json)
+            .map_err(|e| format!("Failed to serialize remote auth store: {e}"))?;
+        let mkdir_cmd = format!("mkdir -p {}", shell_escape(&remote_auth_dir));
+        let _ = pool.exec(&host_id, &mkdir_cmd).await;
+        pool.sftp_write(&host_id, &remote_auth_path, &serialized)
+            .await?;
+    }
+
+    Ok(RelatedSecretPushResult {
+        total_related_providers: providers.len(),
+        resolved_secrets: selected.len(),
+        written_secrets: written,
+        skipped_providers: skipped,
+        failed_providers: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

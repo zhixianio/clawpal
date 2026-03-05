@@ -407,6 +407,7 @@ export function App() {
     message: "",
     instanceId: null,
   });
+  const [relatedSecretPushRunning, setRelatedSecretPushRunning] = useState(false);
   const [agentGuidanceByInstance, setAgentGuidanceByInstance] = useState<Record<string, AgentGuidanceItem>>({});
   const [doctorLaunchByInstance, setDoctorLaunchByInstance] = useState<Record<string, AgentGuidanceItem | null>>({});
   const [agentGuidanceOpen, setAgentGuidanceOpen] = useState(false);
@@ -930,6 +931,35 @@ export function App() {
       });
     }
   }, [showToast, t]);
+
+  const pushRelatedSecretsToActiveRemote = useCallback(async () => {
+    if (!activeInstance) return;
+    setRelatedSecretPushRunning(true);
+    try {
+      const result = await api.pushRelatedSecretsToRemote(activeInstance);
+      const message = t("doctor.pushRelatedSecretsSuccess", {
+        providers: result.totalRelatedProviders,
+        written: result.writtenSecrets,
+        skipped: result.skippedProviders,
+      });
+      showToast(message, "success");
+      setProfileSyncStatus({
+        phase: "success",
+        message,
+        instanceId: activeInstance,
+      });
+    } catch (error) {
+      const message = t("doctor.pushRelatedSecretsFailed", { error: String(error) });
+      showToast(message, "error");
+      setProfileSyncStatus({
+        phase: "error",
+        message,
+        instanceId: activeInstance,
+      });
+    } finally {
+      setRelatedSecretPushRunning(false);
+    }
+  }, [activeInstance, showToast, t]);
 
 
   const openTab = useCallback((id: string) => {
@@ -1592,6 +1622,23 @@ export function App() {
           {profileSyncStatus.message && (
             <div className="mt-1 break-words text-muted-foreground/70" title={profileSyncStatus.message}>
               {profileSyncStatus.message}
+            </div>
+          )}
+          {isRemote && isConnected && (
+            <div className="mt-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-[11px]"
+                disabled={relatedSecretPushRunning}
+                onClick={() => {
+                  void pushRelatedSecretsToActiveRemote();
+                }}
+              >
+                {relatedSecretPushRunning
+                  ? t("doctor.pushRelatedSecretsRunning")
+                  : t("doctor.pushRelatedSecrets")}
+              </Button>
             </div>
           )}
           {showSshTransferSpeedUi && isRemote && isConnected && (
