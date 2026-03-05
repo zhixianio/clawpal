@@ -517,6 +517,9 @@ export function Settings({
 
   useEffect(() => {
     if (!zeroclawPrefsLoadedRef.current) return;
+    // Skip validation until profiles have loaded; an empty candidate list
+    // before that point would incorrectly clear the persisted selection.
+    if (profiles === null) return;
     const current = zeroclawModel.trim();
     if (!current) return;
     const exists = zeroclawModelCandidates.some(
@@ -525,7 +528,7 @@ export function Settings({
     if (!exists) {
       setZeroclawModel("");
     }
-  }, [zeroclawModel, zeroclawModelCandidates]);
+  }, [zeroclawModel, zeroclawModelCandidates, profiles]);
 
   const saveProfile = async (authRefOverride?: string): Promise<boolean> => {
     if (!form.provider || !form.model) {
