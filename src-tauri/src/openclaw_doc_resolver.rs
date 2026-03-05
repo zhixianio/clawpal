@@ -650,7 +650,15 @@ fn rank_urls_from_rules_and_index(
     for item in matches {
         for hint in item.rule.hints {
             let url = hint_to_url(hint);
-            *score_map.entry(url).or_insert(0.0) += item.score + 0.1;
+            let hint_lc = hint.to_ascii_lowercase();
+            let mut keyword_bonus = 0.0f32;
+            for keyword in keywords {
+                let needle = keyword.trim().to_ascii_lowercase();
+                if !needle.is_empty() && hint_lc.contains(&needle) {
+                    keyword_bonus += 0.06;
+                }
+            }
+            *score_map.entry(url).or_insert(0.0) += item.score + 0.1 + keyword_bonus;
         }
     }
 
@@ -674,7 +682,14 @@ fn rank_urls_from_rules_and_index(
     }
 
     let mut pairs = score_map.into_iter().collect::<Vec<_>>();
-    pairs.sort_by(|a, b| b.1.total_cmp(&a.1));
+    pairs.sort_by(|a, b| {
+        let by_score = b.1.total_cmp(&a.1);
+        if by_score == std::cmp::Ordering::Equal {
+            a.0.cmp(&b.0)
+        } else {
+            by_score
+        }
+    });
     pairs.into_iter().map(|(url, _)| url).collect()
 }
 

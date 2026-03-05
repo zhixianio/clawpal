@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn login_wrapper_sources_common_profile_files() {
         let wrapped = build_login_shell_wrapper("openclaw --version");
-        assert!(wrapped.contains("*/zsh|*/bash) \"$LOGIN_SHELL\" -ilc"));
+        assert!(wrapped.contains("*/zsh|*/bash) \"$LOGIN_SHELL\" -lc"));
         assert!(wrapped.contains("[ -f ~/.profile ]"));
     }
 

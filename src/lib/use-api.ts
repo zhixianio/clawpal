@@ -5,6 +5,7 @@ import { api } from "./api";
 import {
   explainAndBuildGuidanceError,
 } from "./guidance";
+import { extractErrorText } from "./sshDiagnostic";
 
 /** Returns true if the error already triggered a guidance panel, so toast can be skipped. */
 export function hasGuidanceEmitted(error: unknown): boolean {
@@ -198,7 +199,7 @@ function logDevApiError(context: string, error: unknown, detail: Record<string, 
   if (!import.meta.env.DEV) return;
   console.error(`[dev api error] ${context}`, {
     ...detail,
-    error: String(error),
+    error: extractErrorText(error),
   });
 }
 
@@ -291,7 +292,7 @@ export function useApi() {
                 argsCount: args.length,
                 ok: false,
                 elapsedMs,
-                error: String(error),
+                error: extractErrorText(error),
               });
               }
               throw await explainAndWrapError(method, error);
@@ -768,6 +769,7 @@ export function useApi() {
       sshConnect: api.sshConnect,
       sshDisconnect: api.sshDisconnect,
       sshStatus: api.sshStatus,
+      diagnoseSsh: api.diagnoseSsh,
       getSshTransferStats: api.getSshTransferStats,
 
       // Remote-only

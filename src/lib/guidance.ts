@@ -1,5 +1,6 @@
 import { api } from "./api";
 import i18n from "../i18n";
+import { extractErrorText } from "./sshDiagnostic";
 
 // ── Throttle / filter logic (shared by withGuidance and use-api dispatch) ──
 
@@ -120,7 +121,7 @@ export async function explainAndBuildGuidanceError({
   rawError,
   emitEvent = true,
 }: ExplainGuidanceInput): Promise<Error> {
-  const original = String(rawError);
+  const original = extractErrorText(rawError);
   if (
     isSshCooldownProtectionError(original)
     || isTransientSshChannelError(original)

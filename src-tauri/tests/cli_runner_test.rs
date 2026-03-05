@@ -1,12 +1,30 @@
 use std::collections::HashMap;
+use std::io::ErrorKind;
 
 // We test the public functions directly since they don't require Tauri state.
 // Import the crate as a library.
 use clawpal::cli_runner::*;
 use clawpal::models::resolve_paths;
 
+fn has_openclaw_binary() -> bool {
+    match std::process::Command::new("openclaw")
+        .arg("--version")
+        .output()
+    {
+        Ok(_) => true,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            eprintln!("skipping test: `openclaw` not found in PATH");
+            false
+        }
+        Err(err) => panic!("failed to probe `openclaw --version`: {err}"),
+    }
+}
+
 #[test]
 fn test_run_openclaw_version() {
+    if !has_openclaw_binary() {
+        return;
+    }
     let output = run_openclaw(&["--version"]).expect("should run openclaw --version");
     assert_eq!(output.exit_code, 0, "exit code should be 0");
     assert!(
@@ -17,6 +35,9 @@ fn test_run_openclaw_version() {
 
 #[test]
 fn test_run_openclaw_config_get() {
+    if !has_openclaw_binary() {
+        return;
+    }
     let output = run_openclaw(&["config", "get", "agents", "--json"])
         .expect("should run openclaw config get");
     assert_eq!(output.exit_code, 0, "exit code should be 0");
@@ -27,6 +48,9 @@ fn test_run_openclaw_config_get() {
 
 #[test]
 fn test_run_openclaw_with_env_isolation() {
+    if !has_openclaw_binary() {
+        return;
+    }
     // Create a temp dir to use as OPENCLAW_HOME
     let tmp = std::env::temp_dir().join(format!("clawpal-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();

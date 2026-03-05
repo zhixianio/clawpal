@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshTransferStats, SystemStatus, DoctorReport, SessionFile, SshHost, WatchdogStatus, ZeroclawOauthCompleteResult, ZeroclawOauthLoginStartResult, ZeroclawRuntimeTarget, ZeroclawUsageStats } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, ChannelNode, CronJob, CronRun, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus, ZeroclawOauthCompleteResult, ZeroclawOauthLoginStartResult, ZeroclawRuntimeTarget, ZeroclawUsageStats } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
@@ -221,6 +221,8 @@ export const api = {
     invoke("ssh_disconnect", { hostId }),
   sshStatus: (hostId: string): Promise<string> =>
     invoke("ssh_status", { hostId }),
+  diagnoseSsh: (hostId: string, intent: SshIntent): Promise<SshDiagnosticReport> =>
+    invoke("diagnose_ssh", { hostId, intent }),
   getSshTransferStats: (hostId: string): Promise<SshTransferStats> =>
     invoke("get_ssh_transfer_stats", { hostId }),
 

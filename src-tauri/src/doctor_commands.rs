@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
+use clawpal_core::ssh::diagnostic::{from_any_error, SshDiagnosticReport, SshIntent, SshStage};
 
 use crate::doctor_runtime_bridge::emit_runtime_event;
 use crate::models::resolve_paths;
@@ -438,32 +439,60 @@ async fn collect_doctor_context_remote_with_ops(
     resolver: &impl RemoteDocGuidanceResolver,
     host_id: &str,
 ) -> Result<String, String> {
+    let mut ssh_diagnostic: Option<SshDiagnosticReport> = None;
+    let mut capture_remote_diag = |stage: SshStage, error: String| {
+        if ssh_diagnostic.is_none() {
+            ssh_diagnostic = Some(from_any_error(stage, SshIntent::DoctorRemote, error));
+        }
+    };
+
     // Collect openclaw version
-    let version_result = ops
+    let version = match ops
         .exec_login(
             host_id,
             clawpal_core::doctor::remote_openclaw_version_probe_script(),
         )
-        .await?;
-    let version = version_result.stdout.trim().to_string();
+        .await
+    {
+        Ok(result) => result.stdout.trim().to_string(),
+        Err(error) => {
+            capture_remote_diag(SshStage::RemoteExec, error);
+            "(unavailable)".to_string()
+        }
+    };
 
     // Resolve config path: check OPENCLAW_STATE_DIR / OPENCLAW_HOME, fallback to ~/.openclaw
-    let config_path = ops.resolve_config_path(host_id).await?;
+    let config_path = match ops.resolve_config_path(host_id).await {
+        Ok(path) => path,
+        Err(error) => {
+            capture_remote_diag(SshStage::ResolveHostConfig, error);
+            "~/.openclaw/openclaw.json".to_string()
+        }
+    };
     validate_not_sensitive(&config_path)?;
-    let config_content = ops
-        .sftp_read(host_id, &config_path)
-        .await
-        .unwrap_or_else(|_| "(unable to read remote config)".into());
+    let config_content = match ops.sftp_read(host_id, &config_path).await {
+        Ok(value) => value,
+        Err(error) => {
+            capture_remote_diag(SshStage::SftpRead, error);
+            "(unable to read remote config)".to_string()
+        }
+    };
 
     // Use `openclaw gateway status` — always returns useful text even when gateway is stopped.
     // `openclaw health --json` requires a running gateway + auth token and returns empty otherwise.
-    let status_result = ops
+    let gateway_status = match ops
         .exec_login(
             host_id,
             clawpal_core::doctor::remote_openclaw_gateway_status_script(),
         )
-        .await?;
-    let gateway_status = status_result.stdout.trim().to_string();
+        .await
+    {
+        Ok(result) => result.stdout.trim().to_string(),
+        Err(error) => {
+            capture_remote_diag(SshStage::RemoteExec, error);
+            "(unavailable)".to_string()
+        }
+    };
 
     // Check if gateway process is running (reliable even when health RPC fails)
     // Bracket trick: [o]penclaw-gateway prevents pgrep from matching its own sh -c process
@@ -473,24 +502,47 @@ async fn collect_doctor_context_remote_with_ops(
             clawpal_core::doctor::remote_openclaw_gateway_process_probe_script(),
         )
         .await;
+    if let Err(error) = &pgrep_result {
+        capture_remote_diag(SshStage::RemoteExec, error.clone());
+    }
     let gateway_running = matches!(pgrep_result, Ok(r) if r.exit_code == 0);
 
     // Collect recent error log (logs live under $OPENCLAW_STATE_DIR/logs/)
-    let error_log_result = ops
+    let error_log = match ops
         .exec_login(
             host_id,
             &clawpal_core::doctor::remote_gateway_error_log_tail_script(100),
         )
-        .await?;
-    let error_log = error_log_result.stdout;
+        .await
+    {
+        Ok(result) => result.stdout,
+        Err(error) => {
+            capture_remote_diag(SshStage::RemoteExec, error);
+            String::new()
+        }
+    };
 
     // System info
-    let platform_result = ops
+    let platform = match ops
         .exec(host_id, clawpal_core::doctor::remote_uname_s_script())
-        .await?;
-    let arch_result = ops
+        .await
+    {
+        Ok(result) => result.stdout.trim().to_lowercase(),
+        Err(error) => {
+            capture_remote_diag(SshStage::RemoteExec, error);
+            "unknown".to_string()
+        }
+    };
+    let arch = match ops
         .exec(host_id, clawpal_core::doctor::remote_uname_m_script())
-        .await?;
+        .await
+    {
+        Ok(result) => result.stdout.trim().to_string(),
+        Err(error) => {
+            capture_remote_diag(SshStage::RemoteExec, error);
+            "unknown".to_string()
+        }
+    };
 
     let paths = resolve_paths();
     let doc_request = crate::openclaw_doc_resolver::DocResolveRequest {
@@ -513,11 +565,12 @@ async fn collect_doctor_context_remote_with_ops(
         "gatewayStatus": gateway_status,
         "gatewayProcessRunning": gateway_running,
         "errorLog": error_log,
-        "platform": platform_result.stdout.trim().to_lowercase(),
-        "arch": arch_result.stdout.trim(),
+        "platform": platform,
+        "arch": arch,
         "remote": true,
         "hostId": host_id,
         "docGuidance": doc_guidance,
+        "sshDiagnostic": ssh_diagnostic,
     });
 
     serde_json::to_string(&context).map_err(|e| format!("Failed to serialize context: {e}"))
@@ -2010,7 +2063,7 @@ mod tests {
 
     #[test]
     fn parse_cli_args_supports_doctor_instance_override() {
-        let tokens = parse_tool_tokens("doctor config-read commands --instance ssh:vm1")
+        let tokens = parse_tool_tokens("doctor config-read commands --instance docker:local")
             .expect("parse tokens");
         let token_refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
         let parsed = parse_cli_args(&token_refs[2..]);
@@ -2020,7 +2073,7 @@ mod tests {
         );
         assert_eq!(
             resolved_target("local", &parsed).expect("resolve target"),
-            "ssh:vm1"
+            "docker:local"
         );
     }
 

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod diagnostic;
 pub mod registry;
 
 use std::process::Stdio;

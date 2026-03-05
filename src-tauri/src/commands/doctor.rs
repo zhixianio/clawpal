@@ -1,4 +1,5 @@
 use super::*;
+use clawpal_core::ssh::diagnostic::{from_any_error, SshIntent, SshStage};
 
 #[tauri::command]
 pub async fn remote_run_doctor(
@@ -60,6 +61,19 @@ pub async fn remote_get_system_status(
     );
 
     let config_ok = matches!(&config_res, Ok(output) if output.exit_code == 0);
+    let ssh_diagnostic = match (&config_res, &pgrep_res) {
+        (Err(error), _) => Some(from_any_error(
+            SshStage::RemoteExec,
+            SshIntent::HealthCheck,
+            error.clone(),
+        )),
+        (_, Err(error)) => Some(from_any_error(
+            SshStage::RemoteExec,
+            SshIntent::HealthCheck,
+            error.clone(),
+        )),
+        _ => None,
+    };
 
     let (active_agents, global_default_model, fallback_models) = match config_res {
         Ok(ref output) if output.exit_code == 0 => {
@@ -106,6 +120,7 @@ pub async fn remote_get_system_status(
         active_agents,
         global_default_model,
         fallback_models,
+        ssh_diagnostic,
     })
 }
 
@@ -214,6 +229,7 @@ pub async fn get_status_light() -> Result<StatusLight, String> {
             },
             global_default_model,
             fallback_models,
+            ssh_diagnostic: None,
         })
     })
     .await

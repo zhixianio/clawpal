@@ -309,6 +309,7 @@ export interface InstanceStatus {
   activeAgents: number;
   globalDefaultModel?: string;
   fallbackModels?: string[];
+  sshDiagnostic?: SshDiagnosticReport | null;
 }
 
 export interface StatusExtra {
@@ -346,6 +347,72 @@ export interface SshConfigHostSuggestion {
   user?: string;
   port?: number;
   identityFile?: string;
+}
+
+export type SshStage =
+  | "resolveHostConfig"
+  | "tcpReachability"
+  | "hostKeyVerification"
+  | "authNegotiation"
+  | "sessionOpen"
+  | "remoteExec"
+  | "sftpRead"
+  | "sftpWrite"
+  | "sftpRemove";
+
+export type SshIntent =
+  | "connect"
+  | "exec"
+  | "sftp_read"
+  | "sftp_write"
+  | "sftp_remove"
+  | "install_step"
+  | "doctor_remote"
+  | "health_check";
+
+export type SshDiagnosticStatus = "ok" | "degraded" | "failed";
+
+export type SshErrorCode =
+  | "SSH_HOST_UNREACHABLE"
+  | "SSH_CONNECTION_REFUSED"
+  | "SSH_TIMEOUT"
+  | "SSH_HOST_KEY_FAILED"
+  | "SSH_KEYFILE_MISSING"
+  | "SSH_PASSPHRASE_REQUIRED"
+  | "SSH_AUTH_FAILED"
+  | "SSH_REMOTE_COMMAND_FAILED"
+  | "SSH_SFTP_PERMISSION_DENIED"
+  | "SSH_SESSION_STALE"
+  | "SSH_UNKNOWN";
+
+export type SshRepairAction =
+  | "promptPassphrase"
+  | "retryWithBackoff"
+  | "switchAuthMethodToSshConfig"
+  | "suggestKnownHostsBootstrap"
+  | "suggestAuthorizedKeysCheck"
+  | "suggestPortHostValidation"
+  | "reconnectSession";
+
+export interface SshEvidence {
+  kind: string;
+  value: string;
+}
+
+export interface SshDiagnosticReport {
+  stage: SshStage;
+  intent: SshIntent;
+  status: SshDiagnosticStatus;
+  errorCode?: SshErrorCode | null;
+  summary: string;
+  evidence: SshEvidence[];
+  repairPlan: SshRepairAction[];
+  confidence: number;
+}
+
+export interface SshCommandError {
+  message: string;
+  diagnostic: SshDiagnosticReport;
 }
 
 export interface DockerInstance {
@@ -629,6 +696,7 @@ export interface InstallStepResult {
   artifacts: Record<string, unknown>;
   next_step: string | null;
   error_code: string | null;
+  ssh_diagnostic?: SshDiagnosticReport | null;
 }
 
 export interface InstallMethodCapability {

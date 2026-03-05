@@ -1,9 +1,33 @@
-use super::{classify_error_code, RunnerFailure, RunnerOutput};
+use super::{RunnerFailure, RunnerOutput};
 use crate::cli_runner::run_openclaw_remote;
 use crate::install::types::InstallStep;
 use crate::ssh::SshConnectionPool;
+use clawpal_core::ssh::diagnostic::{
+    from_any_error, SshErrorCode, SshIntent, SshStage,
+};
 use serde_json::Value;
 use std::collections::HashMap;
+
+fn ssh_runner_failure(
+    stage: SshStage,
+    summary: &str,
+    details: String,
+    commands: Vec<String>,
+) -> RunnerFailure {
+    let report = from_any_error(stage, SshIntent::InstallStep, details.clone());
+    let error_code = report
+        .error_code
+        .unwrap_or(SshErrorCode::Unknown)
+        .as_str()
+        .to_string();
+    RunnerFailure {
+        error_code,
+        summary: summary.to_string(),
+        details,
+        commands,
+        ssh_diagnostic: Some(report),
+    }
+}
 
 pub async fn run_step(
     pool: &SshConnectionPool,
@@ -16,11 +40,13 @@ pub async fn run_step(
             let check = pool
                 .exec_login(host_id, "command -v openclaw >/dev/null 2>&1")
                 .await
-                .map_err(|e| RunnerFailure {
-                    error_code: classify_error_code(&e),
-                    summary: "install.ssh.precheck.failed".to_string(),
-                    details: e,
-                    commands: vec!["openclaw check on remote".to_string()],
+                .map_err(|e| {
+                    ssh_runner_failure(
+                        SshStage::RemoteExec,
+                        "install.ssh.precheck.failed",
+                        e,
+                        vec!["openclaw check on remote".to_string()],
+                    )
                 })?;
             let openclaw_present = check.exit_code == 0;
             let details = if openclaw_present {
@@ -55,23 +81,25 @@ pub async fn run_step(
             let result = pool
                 .exec_login(host_id, script)
                 .await
-                .map_err(|e| RunnerFailure {
-                    error_code: classify_error_code(&e),
-                    summary: "remote ssh install failed".to_string(),
-                    details: e,
-                    commands: vec![script.to_string()],
+                .map_err(|e| {
+                    ssh_runner_failure(
+                        SshStage::RemoteExec,
+                        "remote ssh install failed",
+                        e,
+                        vec![script.to_string()],
+                    )
                 })?;
             if result.exit_code != 0 {
-                return Err(RunnerFailure {
-                    error_code: classify_error_code(&result.stderr),
-                    summary: "install.ssh.install.failed".to_string(),
-                    details: if result.stderr.is_empty() {
+                return Err(ssh_runner_failure(
+                    SshStage::RemoteExec,
+                    "install.ssh.install.failed",
+                    if result.stderr.is_empty() {
                         result.stdout
                     } else {
                         result.stderr
                     },
-                    commands: vec![script.to_string()],
-                });
+                    vec![script.to_string()],
+                ));
             }
             Ok(RunnerOutput {
                 summary: "install.ssh.install.summary".to_string(),
@@ -85,23 +113,25 @@ pub async fn run_step(
             let result = pool
                 .exec_login(host_id, init_cmd)
                 .await
-                .map_err(|e| RunnerFailure {
-                    error_code: classify_error_code(&e),
-                    summary: "install.ssh.init.failed".to_string(),
-                    details: e,
-                    commands: vec![init_cmd.to_string()],
+                .map_err(|e| {
+                    ssh_runner_failure(
+                        SshStage::RemoteExec,
+                        "install.ssh.init.failed",
+                        e,
+                        vec![init_cmd.to_string()],
+                    )
                 })?;
             if result.exit_code != 0 {
-                return Err(RunnerFailure {
-                    error_code: classify_error_code(&result.stderr),
-                    summary: "install.ssh.init.failed".to_string(),
-                    details: if result.stderr.is_empty() {
+                return Err(ssh_runner_failure(
+                    SshStage::RemoteExec,
+                    "install.ssh.init.failed",
+                    if result.stderr.is_empty() {
                         result.stdout
                     } else {
                         result.stderr
                     },
-                    commands: vec![init_cmd.to_string()],
-                });
+                    vec![init_cmd.to_string()],
+                ));
             }
             Ok(RunnerOutput {
                 summary: "install.ssh.init.summary".to_string(),
@@ -113,23 +143,25 @@ pub async fn run_step(
         InstallStep::Verify => {
             let version = run_openclaw_remote(pool, host_id, &["--version"])
                 .await
-                .map_err(|e| RunnerFailure {
-                    error_code: classify_error_code(&e),
-                    summary: "remote ssh verify failed".to_string(),
-                    details: e,
-                    commands: vec!["openclaw --version".to_string()],
+                .map_err(|e| {
+                    ssh_runner_failure(
+                        SshStage::RemoteExec,
+                        "remote ssh verify failed",
+                        e,
+                        vec!["openclaw --version".to_string()],
+                    )
                 })?;
             if version.exit_code != 0 {
-                return Err(RunnerFailure {
-                    error_code: classify_error_code(&version.stderr),
-                    summary: "install.ssh.verify.failed".to_string(),
-                    details: if version.stderr.is_empty() {
+                return Err(ssh_runner_failure(
+                    SshStage::RemoteExec,
+                    "install.ssh.verify.failed",
+                    if version.stderr.is_empty() {
                         version.stdout
                     } else {
                         version.stderr
                     },
-                    commands: vec!["openclaw --version".to_string()],
-                });
+                    vec!["openclaw --version".to_string()],
+                ));
             }
             Ok(RunnerOutput {
                 summary: "install.ssh.verify.summary".to_string(),

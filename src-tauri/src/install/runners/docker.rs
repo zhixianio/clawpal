@@ -86,6 +86,7 @@ impl DockerInstanceInfo {
             summary: "install.docker.setupFailed".to_string(),
             details: "Unable to resolve HOME directory".to_string(),
             commands: vec![],
+            ssh_diagnostic: None,
         })?;
         let dir_name = if self.is_default() {
             "openclaw-docker".to_string()

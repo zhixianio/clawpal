@@ -6,6 +6,9 @@ use super::types::{
 };
 use crate::ssh::SshConnectionPool;
 use chrono::Utc;
+use clawpal_core::ssh::diagnostic::{
+    from_any_error, SshDiagnosticReport, SshErrorCode, SshIntent, SshStage,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -136,6 +139,7 @@ fn make_result(
     details: String,
     next: Option<String>,
     error_code: Option<String>,
+    ssh_diagnostic: Option<SshDiagnosticReport>,
 ) -> InstallStepResult {
     InstallStepResult {
         ok,
@@ -145,6 +149,7 @@ fn make_result(
         artifacts: HashMap::<String, Value>::new(),
         next_step: next,
         error_code,
+        ssh_diagnostic,
     }
 }
 
@@ -1008,6 +1013,27 @@ fn list_method_capabilities() -> Vec<InstallMethodCapability> {
     ]
 }
 
+fn make_remote_ssh_runner_failure(
+    stage: SshStage,
+    summary: &str,
+    details: String,
+    commands: Vec<String>,
+) -> runners::RunnerFailure {
+    let ssh_diagnostic = from_any_error(stage, SshIntent::InstallStep, details.clone());
+    let error_code = ssh_diagnostic
+        .error_code
+        .unwrap_or(SshErrorCode::Unknown)
+        .as_str()
+        .to_string();
+    runners::RunnerFailure {
+        error_code,
+        summary: summary.to_string(),
+        details,
+        commands,
+        ssh_diagnostic: Some(ssh_diagnostic),
+    }
+}
+
 async fn run_remote_ssh_step(
     pool: &SshConnectionPool,
     host_id: &str,
@@ -1020,29 +1046,35 @@ async fn run_remote_ssh_step(
         "disconnected".to_string()
     };
     if status != "connected" {
-        let hosts = crate::commands::list_ssh_hosts().map_err(|e| runners::RunnerFailure {
-            error_code: "validation_failed".to_string(),
-            summary: "remote ssh host lookup failed".to_string(),
-            details: e,
-            commands: vec![],
+        let hosts = crate::commands::list_ssh_hosts().map_err(|e| {
+            make_remote_ssh_runner_failure(
+                SshStage::ResolveHostConfig,
+                "remote ssh host lookup failed",
+                e,
+                vec![],
+            )
         })?;
         let host =
             hosts
                 .into_iter()
                 .find(|h| h.id == host_id)
-                .ok_or_else(|| runners::RunnerFailure {
-                    error_code: "validation_failed".to_string(),
-                    summary: "remote ssh host not found".to_string(),
-                    details: format!("No SSH host config with id: {host_id}"),
-                    commands: vec![],
+                .ok_or_else(|| {
+                    make_remote_ssh_runner_failure(
+                        SshStage::ResolveHostConfig,
+                        "remote ssh host not found",
+                        format!("No SSH host config with id: {host_id}"),
+                        vec![],
+                    )
                 })?;
         pool.connect(&host)
             .await
-            .map_err(|e| runners::RunnerFailure {
-                error_code: runners::classify_error_code(&e),
-                summary: "remote ssh connect failed".to_string(),
-                details: e,
-                commands: vec![format!("connect host {host_id}")],
+            .map_err(|e| {
+                make_remote_ssh_runner_failure(
+                    SshStage::TcpReachability,
+                    "remote ssh connect failed",
+                    e,
+                    vec![format!("connect host {host_id}")],
+                )
             })?;
     }
     runners::remote_ssh::run_step(pool, host_id, step, artifacts).await
@@ -1068,6 +1100,7 @@ async fn run_step(
                 e,
                 None,
                 Some("validation_failed".to_string()),
+                None,
             ))
         }
     };
@@ -1086,6 +1119,7 @@ async fn run_step(
             format!("Current state '{blocked_state}' does not allow this step"),
             None,
             Some("validation_failed".to_string()),
+            None,
         ));
     }
 
@@ -1112,6 +1146,7 @@ async fn run_step(
                     "Please select an existing remote instance before starting".to_string(),
                     None,
                     Some("validation_failed".to_string()),
+                    None,
                 ));
             };
             let Some(pool) = pool else {
@@ -1124,6 +1159,7 @@ async fn run_step(
                     "SSH connection pool is unavailable".to_string(),
                     None,
                     Some("validation_failed".to_string()),
+                    None,
                 ));
             };
             run_remote_ssh_step(pool, &host_id, &step, &session.artifacts).await
@@ -1141,7 +1177,7 @@ async fn run_step(
             store.upsert(session)?;
 
             let mut result =
-                make_result(true, output.summary, output.details, next_step(&step), None);
+                make_result(true, output.summary, output.details, next_step(&step), None, None);
             result.commands = output.commands;
             result.artifacts = output.artifacts;
             Ok(result)
@@ -1151,8 +1187,14 @@ async fn run_step(
             session.updated_at = Utc::now().to_rfc3339();
             store.upsert(session)?;
 
-            let mut result =
-                make_result(false, err.summary, err.details, None, Some(err.error_code));
+            let mut result = make_result(
+                false,
+                err.summary,
+                err.details,
+                None,
+                Some(err.error_code),
+                err.ssh_diagnostic,
+            );
             result.commands = err.commands;
             Ok(result)
         }
@@ -1275,6 +1317,7 @@ pub async fn run_local_precheck_for_test() -> Result<InstallStepResult, String> 
         output.summary,
         output.details,
         next_step(&InstallStep::Precheck),
+        None,
         None,
     );
     result.commands = output.commands;

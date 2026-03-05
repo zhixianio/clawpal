@@ -1,4 +1,5 @@
 use crate::install::types::{InstallMethod, InstallStep};
+use clawpal_core::ssh::diagnostic::SshDiagnosticReport;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Command;
@@ -22,6 +23,7 @@ pub struct RunnerFailure {
     pub summary: String,
     pub details: String,
     pub commands: Vec<String>,
+    pub ssh_diagnostic: Option<SshDiagnosticReport>,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +70,7 @@ pub fn run_command(program: &str, args: &[&str]) -> Result<CommandResult, Runner
             summary: format!("Command execution failed: {program}"),
             details: e.to_string(),
             commands: vec![command_line.clone()],
+            ssh_diagnostic: None,
         })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -85,6 +88,7 @@ pub fn run_command(program: &str, args: &[&str]) -> Result<CommandResult, Runner
             summary: format!("Command failed: {program}"),
             details,
             commands: vec![command_line],
+            ssh_diagnostic: None,
         });
     }
 
@@ -110,6 +114,7 @@ pub fn run_step(
             summary: "remote runner requires ssh connection pool".to_string(),
             details: "Use async remote runner path".to_string(),
             commands: vec![],
+            ssh_diagnostic: None,
         }),
     }
 }

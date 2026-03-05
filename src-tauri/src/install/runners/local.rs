@@ -27,6 +27,7 @@ fn detect_openclaw() -> Result<(bool, String), RunnerFailure> {
                     summary: "install.local.precheck.failed".to_string(),
                     details: e.to_string(),
                     commands: vec![command_line],
+                    ssh_diagnostic: None,
                 })
             }
         }
@@ -95,6 +96,7 @@ pub fn run_step(
                 summary: "install.local.init.failed".to_string(),
                 details: e,
                 commands: vec![format!("mkdir -p {}", paths.base_dir.display())],
+                ssh_diagnostic: None,
             })?;
             if !paths.config_path.exists() {
                 write_text(&paths.config_path, DEFAULT_CONFIG).map_err(|e| RunnerFailure {
@@ -102,6 +104,7 @@ pub fn run_step(
                     summary: "install.local.init.failed".to_string(),
                     details: e,
                     commands: vec![format!("write {}", paths.config_path.display())],
+                    ssh_diagnostic: None,
                 })?;
             }
             Ok(RunnerOutput {

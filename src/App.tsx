@@ -48,6 +48,7 @@ import {
   buildSshPassphraseCancelMessage,
   buildSshPassphraseConnectErrorMessage,
 } from "@/lib/sshConnectErrors";
+import { buildFriendlySshError, extractErrorText } from "@/lib/sshDiagnostic";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const Recipes = lazy(() => import("./pages/Recipes").then((m) => ({ default: m.Recipes })));
@@ -110,25 +111,6 @@ function logDevIgnoredError(context: string, detail: unknown): void {
 // AgentGuidanceItem is imported from ./components/GuidanceCard
 
 let toastIdCounter = 0;
-
-const SSH_ERROR_MAP: Array<[RegExp, string]> = [
-  [/connection refused/i, "ssh.errorConnectionRefused"],
-  [/no such file/i, "ssh.errorNoSuchFile"],
-  [/name or service not known|nodename nor servname provided|temporary failure in name resolution|no address associated with hostname|getaddrinfo|failed to lookup address information|unknown host|hostname was not found/i, "ssh.errorHostUnreachable"],
-  [/passphrase|sign_and_send_pubkey|agent refused operation|can't open \/dev\/tty|authentication agent/i, "ssh.errorPassphrase"],
-  [/permission denied/i, "ssh.errorPermissionDenied"],
-  [/host key verification failed/i, "ssh.errorHostKey"],
-  [/timed?\s*out/i, "ssh.errorTimeout"],
-];
-
-function friendlySshError(raw: string, t: (key: string, opts?: Record<string, string>) => string): string {
-  for (const [pattern, key] of SSH_ERROR_MAP) {
-    if (pattern.test(raw)) {
-      return `${t(key)}\n(${raw})`;
-    }
-  }
-  return t('config.sshFailed', { error: raw });
-}
 
 function sanitizeDockerPathSuffix(raw: string): string {
   const lowered = raw.toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -817,7 +799,7 @@ export function App() {
       await api.sshConnect(hostId);
       return;
     } catch (err) {
-      const raw = String(err);
+      const raw = extractErrorText(err);
       // When host is not yet in sshHosts state (e.g. just added via upsertSshHost
       // and state hasn't refreshed), assume non-password auth so the passphrase
       // dialog is still shown instead of falling through to a misleading error.
@@ -847,7 +829,7 @@ export function App() {
             );
             return;
           } catch (passphraseErr) {
-            const passphraseRaw = String(passphraseErr);
+            const passphraseRaw = extractErrorText(passphraseErr);
             const fallbackMessage = buildSshPassphraseConnectErrorMessage(
               passphraseRaw, hostLabel, t, { passphraseWasSubmitted: true },
             );
@@ -1088,8 +1070,7 @@ export function App() {
           })
           .catch((e2) => {
             setConnectionStatus((prev) => ({ ...prev, [id]: "error" }));
-            const raw = String(e2);
-            const friendly = friendlySshError(raw, t);
+            const friendly = buildFriendlySshError(e2, t);
             showToast(friendly, "error");
           });
       });
@@ -1178,7 +1159,6 @@ export function App() {
     let inFlight = false;
     const hostId = activeInstance;
     const reportAutoHealFailure = (rawError: unknown) => {
-      const errorText = String(rawError);
       void explainAndBuildGuidanceError({
         method: "sshConnect",
         instanceId: hostId,
@@ -1188,7 +1168,7 @@ export function App() {
       }).catch((error) => {
         logDevIgnoredError("autoheal explainAndBuildGuidanceError", error);
       });
-      showToast(friendlySshError(errorText, t), "error");
+      showToast(buildFriendlySshError(rawError, t), "error");
     };
     const markFailure = (rawError: unknown) => {
       if (cancelled) return;
@@ -1438,7 +1418,7 @@ export function App() {
             setInStart(true);
             setStartSection("overview");
           }
-          const reason = friendlySshError(String(err), t);
+          const reason = buildFriendlySshError(err, t);
           showToast(reason, "error");
         }
       } else {
