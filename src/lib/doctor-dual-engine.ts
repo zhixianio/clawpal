@@ -21,6 +21,29 @@ export function shouldDisableOpenclawStart(params: {
   return params.diagnosing;
 }
 
+export function shouldShowDoctorDisconnectUi(params: {
+  engine: "zeroclaw" | "openclaw";
+  connected: boolean;
+  messageCount: number;
+}): boolean {
+  if (params.engine === "zeroclaw") return false;
+  return !params.connected && params.messageCount > 0;
+}
+
+export function resolveDoctorChatConnected(params: {
+  engine: "zeroclaw" | "openclaw";
+  connected: boolean;
+}): boolean {
+  if (params.engine === "zeroclaw") return true;
+  return params.connected;
+}
+
+export function shouldSurfaceDisconnectError(params: {
+  engine: "zeroclaw" | "openclaw";
+}): boolean {
+  return params.engine !== "zeroclaw";
+}
+
 export function hasZeroclawSession(params: {
   connected: boolean;
   messageCount: number;

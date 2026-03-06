@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import i18n from "../i18n";
 import { api } from "./api";
+import { shouldSurfaceDisconnectError } from "./doctor-dual-engine";
 import { doctorStartPromptTemplate, renderPromptTemplate } from "./prompt-templates";
 import type { DiagnosisReportItem, DoctorChatMessage, DoctorInvoke } from "./types";
 
@@ -299,7 +300,11 @@ export function useDoctorAgent(options: UseDoctorAgentOptions = {}) {
       bind<{ reason: string }>("doctor:disconnected", (e) => {
         setConnected(false);
         setLoading(false);
-        if (e.payload.reason && e.payload.reason !== "server closed") {
+        if (
+          shouldSurfaceDisconnectError({ engine: engineRef.current })
+          && e.payload.reason
+          && e.payload.reason !== "server closed"
+        ) {
           setError(e.payload.reason);
         }
       }),

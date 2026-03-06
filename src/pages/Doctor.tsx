@@ -49,8 +49,10 @@ import type { BackupInfo } from "@/lib/types";
 import { formatTime, formatBytes } from "@/lib/utils";
 import {
   hasZeroclawSession as hasZeroclawSessionState,
+  resolveDoctorChatConnected,
   resolveEngineConnectionState,
   shouldDisableOpenclawStart,
+  shouldShowDoctorDisconnectUi,
   shouldDisableZeroclawStart,
 } from "@/lib/doctor-dual-engine";
 
@@ -192,6 +194,15 @@ export function Doctor({
   const hasZeroclawSession = hasZeroclawSessionState({
     connected: zeroclawDoctor.connected,
     messageCount: zeroclawDoctor.messages.length,
+  });
+  const showZeroclawDisconnectUi = shouldShowDoctorDisconnectUi({
+    engine: "zeroclaw",
+    connected: zeroclawDoctor.connected,
+    messageCount: zeroclawDoctor.messages.length,
+  });
+  const zeroclawChatConnected = resolveDoctorChatConnected({
+    engine: "zeroclaw",
+    connected: zeroclawDoctor.connected,
   });
 
   const {
@@ -925,7 +936,7 @@ export function Doctor({
                       : t("doctor.startDiagnosis")}
                   </Button>
                 </>
-              ) : !zeroclawDoctor.connected && zeroclawDoctor.messages.length > 0 ? (
+              ) : showZeroclawDisconnectUi ? (
                 <>
                   <div className="flex items-center justify-between mb-3 p-2 rounded-md bg-destructive/10 border border-destructive/20">
                     <span className="text-sm text-destructive">
@@ -964,10 +975,6 @@ export function Doctor({
                       <Badge variant="outline" className="text-xs">
                         {activeSourceLabel}
                       </Badge>
-                      <Badge variant="outline" className="text-xs flex items-center gap-1.5">
-                        <span className={`inline-block w-1.5 h-1.5 rounded-full ${zeroclawDoctor.bridgeConnected ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-                        {zeroclawDoctor.bridgeConnected ? t("doctor.bridgeConnected") : t("doctor.bridgeDisconnected")}
-                      </Badge>
                       <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
                       <ModelSwitcher
                         sessionId={doctorSessionId}
@@ -976,34 +983,27 @@ export function Doctor({
                         onModelChange={setSessionModelOverride}
                       />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={zeroclawDoctor.fullAuto}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setFullAutoConfirmOpen(true);
-                            } else {
-                              zeroclawDoctor.setFullAuto(false);
-                            }
-                          }}
-                          className="accent-primary"
-                        />
-                        {t("doctor.fullAuto")}
-                      </label>
-                      <Button variant="outline" size="sm" onClick={() => {
-                        void handleStopDiagnosis("zeroclaw");
-                      }}>
-                        {t("doctor.stopDiagnosis")}
-                      </Button>
-                    </div>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={zeroclawDoctor.fullAuto}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setFullAutoConfirmOpen(true);
+                          } else {
+                            zeroclawDoctor.setFullAuto(false);
+                          }
+                        }}
+                        className="accent-primary"
+                      />
+                      {t("doctor.fullAuto")}
+                    </label>
                   </div>
                   <DoctorChat
                     messages={zeroclawDoctor.messages}
                     loading={zeroclawDoctor.loading}
                     error={zeroclawDoctor.error}
-                    connected={zeroclawDoctor.connected}
+                    connected={zeroclawChatConnected}
                     onSendMessage={zeroclawDoctor.sendMessage}
                     onApproveInvoke={zeroclawDoctor.approveInvoke}
                     onRejectInvoke={zeroclawDoctor.rejectInvoke}

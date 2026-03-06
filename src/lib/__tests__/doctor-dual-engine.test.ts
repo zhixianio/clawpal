@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 
 import {
   hasZeroclawSession,
+  resolveDoctorChatConnected,
   resolveEngineConnectionState,
   shouldDisableOpenclawStart,
   shouldDisableZeroclawStart,
+  shouldShowDoctorDisconnectUi,
+  shouldSurfaceDisconnectError,
 } from "../doctor-dual-engine";
 
 describe("resolveEngineConnectionState", () => {
@@ -48,5 +51,31 @@ describe("hasZeroclawSession", () => {
     expect(hasZeroclawSession({ connected: false, messageCount: 0 })).toBe(false);
     expect(hasZeroclawSession({ connected: true, messageCount: 0 })).toBe(true);
     expect(hasZeroclawSession({ connected: false, messageCount: 1 })).toBe(true);
+  });
+});
+
+describe("embedded zeroclaw UI", () => {
+  test("never shows disconnect ui for zeroclaw sessions", () => {
+    expect(
+      shouldShowDoctorDisconnectUi({
+        engine: "zeroclaw",
+        connected: false,
+        messageCount: 3,
+      }),
+    ).toBe(false);
+  });
+
+  test("keeps zeroclaw chat interactive even when transport drops", () => {
+    expect(
+      resolveDoctorChatConnected({
+        engine: "zeroclaw",
+        connected: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not surface transport disconnect errors for zeroclaw", () => {
+    expect(shouldSurfaceDisconnectError({ engine: "zeroclaw" })).toBe(false);
+    expect(shouldSurfaceDisconnectError({ engine: "openclaw" })).toBe(true);
   });
 });
