@@ -1,5 +1,5 @@
 use crate::agent_fallback::explain_operation_error;
-use crate::bug_report::{get_bug_report_stats, test_bug_report_connection};
+use crate::bug_report::{capture_frontend_error, get_bug_report_stats, test_bug_report_connection};
 use crate::cli_runner::{
     apply_queued_commands, discard_queued_commands, list_queued_commands, preview_queued_commands,
     queue_command, queued_commands_count, remote_apply_queued_commands,
@@ -131,6 +131,7 @@ pub fn run() {
             set_bug_report_settings,
             get_bug_report_stats,
             test_bug_report_connection,
+            capture_frontend_error,
             get_zeroclaw_usage_stats,
             get_session_usage_stats,
             get_zeroclaw_runtime_target,
@@ -301,6 +302,15 @@ pub fn run() {
         ])
         .setup(|_app| {
             crate::bug_report::install_panic_hook();
+            let settings = crate::commands::preferences::load_bug_report_settings_from_paths(
+                &crate::models::resolve_paths(),
+            );
+            if let Err(err) = crate::bug_report::queue::cleanup_old_logs() {
+                eprintln!("[bug-report] cleanup failed: {err}");
+            }
+            if let Err(err) = crate::bug_report::queue::flush(&settings) {
+                eprintln!("[bug-report] startup flush failed: {err}");
+            }
             // Run PATH fix in background so it doesn't block window creation.
             // openclaw commands won't fire until user interaction, giving this
             // plenty of time to complete.

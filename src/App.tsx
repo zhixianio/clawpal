@@ -615,6 +615,13 @@ export function App() {
         rawError: reason,
         emitEvent: true,
       });
+      void api.captureFrontendError(
+        typeof reason === "string" ? reason : String(reason),
+        undefined,
+        "error",
+      ).catch(() => {
+        // ignore
+      });
     };
 
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {

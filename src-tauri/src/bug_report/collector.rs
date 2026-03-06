@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::reporter::{send_report, BugReportEvent};
 use super::sanitize::{sanitize_optional_text, sanitize_text};
 use super::settings::{BugReportSettings, BugReportSeverity};
+use super::{os_info, queue};
 use crate::commands::preferences::load_bug_report_settings_from_paths;
 use crate::models::resolve_paths;
 
@@ -23,6 +24,8 @@ pub struct BugReportStats {
     pub dropped_rate_limited: u64,
     pub send_failures: u64,
     pub last_sent_at: Option<String>,
+    pub persisted_pending: u64,
+    pub dead_letter_count: u64,
 }
 
 #[derive(Debug)]
@@ -71,6 +74,7 @@ struct QueuedBugReport {
     event: BugReportEvent,
     now_epoch_secs: i64,
     sent_at: String,
+    queue_entry_id: Option<String>,
 }
 
 fn sender() -> &'static Sender<QueuedBugReport> {
@@ -87,10 +91,18 @@ fn sender() -> &'static Sender<QueuedBugReport> {
                             guard.sent_timestamps.push_back(queued.now_epoch_secs);
                             guard.total_sent += 1;
                             guard.last_sent_at = Some(queued.sent_at);
+                            if let Some(id) = queued.queue_entry_id.as_deref() {
+                                if let Err(err) = queue::mark_sent(id) {
+                                    eprintln!("[bug-report] queue mark_sent failed: {err}");
+                                }
+                            }
                         }
                         Err(err) => {
                             guard.send_failures += 1;
                             eprintln!("[bug-report] send failed: {err}");
+                            if let Err(log_err) = queue::log_send_failure(&err) {
+                                eprintln!("[bug-report] failure log write failed: {log_err}");
+                            }
                         }
                     }
                 }
@@ -98,12 +110,6 @@ fn sender() -> &'static Sender<QueuedBugReport> {
         });
         tx
     })
-}
-
-fn os_version_string() -> String {
-    std::env::var("OSTYPE")
-        .or_else(|_| std::env::var("OS"))
-        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn build_event(
@@ -124,7 +130,7 @@ fn build_event(
         session_id,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         os_type: std::env::consts::OS.to_string(),
-        os_version: os_version_string(),
+        os_version: os_info::os_version_string(),
     }
 }
 
@@ -138,6 +144,7 @@ fn prepare_event(
     level: BugReportSeverity,
     message: &str,
     stack_trace: Option<&str>,
+    queue_entry_id: Option<String>,
     ignore_rate_limit: bool,
     ignore_enabled: bool,
     ignore_threshold: bool,
@@ -169,6 +176,7 @@ fn prepare_event(
         sent_at: event.timestamp.clone(),
         event,
         now_epoch_secs,
+        queue_entry_id,
     }))
 }
 
@@ -176,6 +184,7 @@ fn enqueue_event(
     level: BugReportSeverity,
     message: &str,
     stack_trace: Option<&str>,
+    queue_entry_id: Option<String>,
     ignore_rate_limit: bool,
     ignore_enabled: bool,
     ignore_threshold: bool,
@@ -184,6 +193,7 @@ fn enqueue_event(
         level,
         message,
         stack_trace,
+        queue_entry_id,
         ignore_rate_limit,
         ignore_enabled,
         ignore_threshold,
@@ -204,6 +214,7 @@ fn send_event_sync(
     level: BugReportSeverity,
     message: &str,
     stack_trace: Option<&str>,
+    queue_entry_id: Option<String>,
     ignore_rate_limit: bool,
     ignore_enabled: bool,
     ignore_threshold: bool,
@@ -212,6 +223,7 @@ fn send_event_sync(
         level,
         message,
         stack_trace,
+        queue_entry_id.clone(),
         ignore_rate_limit,
         ignore_enabled,
         ignore_threshold,
@@ -226,6 +238,11 @@ fn send_event_sync(
             guard.sent_timestamps.push_back(queued.now_epoch_secs);
             guard.total_sent += 1;
             guard.last_sent_at = Some(queued.sent_at);
+            if let Some(id) = queue_entry_id.as_deref() {
+                if let Err(err) = queue::mark_sent(id) {
+                    eprintln!("[bug-report] queue mark_sent failed: {err}");
+                }
+            }
             Ok(())
         }
         Err(err) => {
@@ -233,13 +250,39 @@ fn send_event_sync(
                 guard.pending_reports = guard.pending_reports.saturating_sub(1);
             }
             record_send_failure();
+            if let Err(log_err) = queue::log_send_failure(&err) {
+                eprintln!("[bug-report] failure log write failed: {log_err}");
+            }
             Err(err)
         }
     }
 }
 
 pub fn capture(level: BugReportSeverity, message: &str, stack_trace: Option<&str>) {
-    if let Err(err) = enqueue_event(level, message, stack_trace, false, false, false) {
+    // Sanitise once here so both the disk copy (queue) and the network copy
+    // (Sentry/backend) are produced from the same sanitised source.
+    let sanitised_message = sanitize_text(message);
+    let sanitised_stack = sanitize_optional_text(stack_trace);
+    let persisted_id = match queue::enqueue(
+        level.as_str(),
+        &sanitised_message,
+        sanitised_stack.as_deref(),
+    ) {
+        Ok(id) => Some(id),
+        Err(err) => {
+            eprintln!("[bug-report] queue enqueue failed: {err}");
+            None
+        }
+    };
+    if let Err(err) = enqueue_event(
+        level,
+        &sanitised_message,
+        sanitised_stack.as_deref(),
+        persisted_id,
+        false,
+        false,
+        false,
+    ) {
         eprintln!("[bug-report] send failed: {err}");
     }
 }
@@ -253,6 +296,7 @@ pub fn send_test_report() -> Result<(), String> {
         BugReportSeverity::Error,
         "Bug report connection test from ClawPal",
         Some("test_stack: simulated"),
+        None,
         true,
         true,
         true,
@@ -271,10 +315,13 @@ pub fn get_stats() -> BugReportStats {
                 dropped_rate_limited: 0,
                 send_failures: 0,
                 last_sent_at: None,
+                persisted_pending: 0,
+                dead_letter_count: 0,
             };
         }
     };
     guard.prune(now_epoch_secs);
+    let queue_stats = queue::stats();
     BugReportStats {
         session_id: guard.session_id.clone(),
         total_sent: guard.total_sent,
@@ -282,5 +329,7 @@ pub fn get_stats() -> BugReportStats {
         dropped_rate_limited: guard.dropped_rate_limited,
         send_failures: guard.send_failures,
         last_sent_at: guard.last_sent_at.clone(),
+        persisted_pending: queue_stats.persisted_pending,
+        dead_letter_count: queue_stats.dead_letter_count,
     }
 }

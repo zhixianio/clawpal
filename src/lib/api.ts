@@ -16,6 +16,8 @@ export const api = {
     invoke("get_bug_report_stats", {}),
   testBugReportConnection: (): Promise<boolean> =>
     invoke("test_bug_report_connection", {}),
+  captureFrontendError: (message: string, stack?: string, level?: string) =>
+    invoke("capture_frontend_error", { message, stack, level }),
   getZeroclawUsageStats: (): Promise<ZeroclawUsageStats> =>
     invoke("get_zeroclaw_usage_stats", {}),
   getZeroclawRuntimeTarget: (): Promise<ZeroclawRuntimeTarget> =>

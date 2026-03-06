@@ -1,4 +1,6 @@
 pub mod collector;
+pub mod os_info;
+pub mod queue;
 pub mod reporter;
 pub mod sanitize;
 pub mod settings;
@@ -16,6 +18,23 @@ pub fn get_bug_report_stats() -> Result<BugReportStats, String> {
 #[tauri::command]
 pub fn test_bug_report_connection() -> Result<bool, String> {
     collector::send_test_report().map(|_| true)
+}
+
+#[tauri::command]
+pub fn capture_frontend_error(
+    message: String,
+    stack: Option<String>,
+    level: Option<String>,
+) -> Result<(), String> {
+    use settings::BugReportSeverity;
+    let severity = match level.as_deref() {
+        Some("critical") => BugReportSeverity::Critical,
+        Some("warn") => BugReportSeverity::Warn,
+        Some("info") => BugReportSeverity::Info,
+        _ => BugReportSeverity::Error,
+    };
+    collector::capture(severity, &message, stack.as_deref());
+    Ok(())
 }
 
 pub fn install_panic_hook() {

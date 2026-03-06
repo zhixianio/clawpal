@@ -255,6 +255,8 @@ export interface BugReportStats {
   droppedRateLimited: number;
   sendFailures: number;
   lastSentAt: string | null;
+  persistedPending: number;
+  deadLetterCount: number;
 }
 
 export interface ZeroclawUsageStats {
