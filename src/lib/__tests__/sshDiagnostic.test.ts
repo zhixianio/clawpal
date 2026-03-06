@@ -111,3 +111,43 @@ describe("sshDiagnostic", () => {
     expect(message).toBe("GENERIC_FAILURE");
   });
 });
+
+import { repairActionToLabel } from "../sshDiagnostic";
+
+describe("repairActionToLabel", () => {
+  const t = (key: string): string => key.replace("ssh.repair", "").toUpperCase();
+
+  test("promptPassphrase", () => {
+    expect(repairActionToLabel("promptPassphrase", t)).toBe("PROMPTPASSPHRASE");
+  });
+  test("retryWithBackoff", () => {
+    expect(repairActionToLabel("retryWithBackoff", t)).toBe("RETRYWITHBACKOFF");
+  });
+  test("switchAuthMethodToSshConfig", () => {
+    expect(repairActionToLabel("switchAuthMethodToSshConfig", t)).toBe(
+      "SWITCHAUTHMETHODTOSSHCONFIG",
+    );
+  });
+  test("suggestKnownHostsBootstrap", () => {
+    expect(repairActionToLabel("suggestKnownHostsBootstrap", t)).toBe(
+      "SUGGESTKNOWNHOSTSBOOTSTRAP",
+    );
+  });
+  test("suggestAuthorizedKeysCheck", () => {
+    expect(repairActionToLabel("suggestAuthorizedKeysCheck", t)).toBe(
+      "SUGGESTAUTHORIZEDKEYSCHECK",
+    );
+  });
+  test("suggestPortHostValidation", () => {
+    expect(repairActionToLabel("suggestPortHostValidation", t)).toBe(
+      "SUGGESTPORTHOSTVALIDATION",
+    );
+  });
+  test("reconnectSession", () => {
+    expect(repairActionToLabel("reconnectSession", t)).toBe("RECONNECTSESSION");
+  });
+  test("unknown action falls back to raw value", () => {
+    // @ts-expect-error intentional unknown action
+    expect(repairActionToLabel("unknownAction", t)).toBe("unknownAction");
+  });
+});

@@ -429,3 +429,76 @@ mod tests {
         }
     }
 }
+
+    #[test]
+    #[cfg(unix)]
+    fn remote_ssh_failure_populates_ssh_diagnostic() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let dir = std::env::temp_dir()
+            .join(format!("clawpal-core-health-diag-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let ssh_bin = dir.join("ssh");
+        std::fs::write(
+            &ssh_bin,
+            "#!/bin/sh\necho 'connection refused' >&2\nexit 1\n",
+        )
+        .expect("write fake ssh");
+        std::fs::set_permissions(&ssh_bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake ssh");
+
+        let original_path = std::env::var_os("PATH");
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                dir.display(),
+                original_path
+                    .as_ref()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or_default()
+            ),
+        );
+
+        let instance = Instance {
+            id: "ssh:diag-test".to_string(),
+            instance_type: InstanceType::RemoteSsh,
+            label: "Diag Test".to_string(),
+            openclaw_home: None,
+            clawpal_data_dir: None,
+            ssh_host_config: Some(SshHostConfig {
+                id: "ssh:diag-test".to_string(),
+                label: "Diag Test".to_string(),
+                host: "vm1".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                auth_method: "key".to_string(),
+                key_path: None,
+                password: None,
+                passphrase: None,
+            }),
+        };
+
+        let status = check_instance(&instance).expect("should return HealthStatus even on SSH failure");
+
+        assert!(!status.healthy, "status must be unhealthy");
+        let diag = status
+            .ssh_diagnostic
+            .expect("ssh_diagnostic must be populated on SSH failure");
+        assert_eq!(
+            diag.error_code,
+            Some(crate::ssh::diagnostic::SshErrorCode::ConnectionRefused),
+            "error code should be classified from stderr"
+        );
+
+        if let Some(path) = original_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+    }
+}
