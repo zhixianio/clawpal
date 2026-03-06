@@ -428,7 +428,6 @@ mod tests {
             std::env::remove_var("PATH");
         }
     }
-}
 
     #[test]
     #[cfg(unix)]
