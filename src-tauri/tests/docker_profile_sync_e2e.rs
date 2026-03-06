@@ -81,28 +81,34 @@ RUN cat > /root/.openclaw/agents/main/agent/auth-profiles.json <<'AUTHEOF'
     "anthropic:default": {
       "type": "token",
       "provider": "anthropic",
-      "token": "sk-ant-e2e-test-key-1234567890"
+      "token": "e2e-anthropic-fake-key-00000000"
     },
     "openai:default": {
       "type": "token",
       "provider": "openai",
-      "token": "sk-openai-e2e-test-key-0987654321"
+      "token": "e2e-openai-fake-key-11111111"
     }
   }
 }
 AUTHEOF
 
-# Install Node.js (LTS) and the latest real openclaw CLI from npm
+# Install Node.js (pinned) + openclaw CLI (pinned) for reproducible builds.
+# Node: official binary tarball — no apt source or remote script execution.
+# openclaw: exact published version — no floating @latest tag.
+ARG NODE_VERSION=24.13.0
+ARG OPENCLAW_VERSION=2026.3.2
 RUN apt-get update && \
-    apt-get install -y curl ca-certificates && \
-    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g openclaw@latest && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y curl ca-certificates xz-utils && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      -o /tmp/node.tar.xz && \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && \
+    rm /tmp/node.tar.xz && \
+    npm install -g "openclaw@${OPENCLAW_VERSION}"
 
 # Set env vars that ClawPal profile sync checks
-RUN echo "export ANTHROPIC_API_KEY=sk-ant-e2e-test-key-1234567890" >> /root/.bashrc && \
-    echo "export OPENAI_API_KEY=sk-openai-e2e-test-key-0987654321" >> /root/.bashrc
+RUN echo "export ANTHROPIC_API_KEY=e2e-anthropic-fake-key-00000000" >> /root/.bashrc && \
+    echo "export OPENAI_API_KEY=e2e-openai-fake-key-11111111" >> /root/.bashrc
 
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D"]
@@ -309,13 +315,13 @@ async fn e2e_docker_profile_sync_and_doctor() {
         .pointer("/profiles/anthropic:default/token")
         .and_then(|v| v.as_str())
         .expect("anthropic:default token should exist");
-    assert_eq!(anthropic_token, "sk-ant-e2e-test-key-1234567890");
+    assert_eq!(anthropic_token, "e2e-anthropic-fake-key-00000000");
 
     let openai_token = auth
         .pointer("/profiles/openai:default/token")
         .and_then(|v| v.as_str())
         .expect("openai:default token should exist");
-    assert_eq!(openai_token, "sk-openai-e2e-test-key-0987654321");
+    assert_eq!(openai_token, "e2e-openai-fake-key-11111111");
     eprintln!("[e2e] Auth store verified: 2 provider credentials found");
 
     // --- Step 4: Extract model profiles from config ---
@@ -398,7 +404,7 @@ async fn e2e_docker_profile_sync_and_doctor() {
         .expect("should read env var");
     assert_eq!(
         env_result.stdout.trim(),
-        "sk-ant-e2e-test-key-1234567890",
+        "e2e-anthropic-fake-key-00000000",
         "ANTHROPIC_API_KEY should be set in remote env"
     );
     eprintln!("[e2e] Remote env vars verified");
