@@ -218,7 +218,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: clawpal-${{ matrix.label }}
+          name: clawpal-${{ matrix.label }}-${{ github.run_id }}
           path: artifacts/*
           retention-days: 7
           if-no-files-found: warn
@@ -230,7 +230,7 @@ jobs:
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           ARTIFACT_LIST_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
-          ARTIFACT_NAME="clawpal-${{ matrix.label }}"
+          ARTIFACT_NAME="clawpal-${{ matrix.label }}-${{ github.run_id }}"
 
           echo "## Artifact Download" >> "$GITHUB_STEP_SUMMARY"
           echo "请在此 Action Summary 页面下方的 **Artifacts** 区域下载，当前为 repo 成员专用。" >> "$GITHUB_STEP_SUMMARY"
