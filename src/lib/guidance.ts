@@ -1,6 +1,6 @@
 import { api } from "./api";
 import i18n from "../i18n";
-import { extractErrorText } from "./sshDiagnostic";
+import { extractErrorText, parseSshCommandError } from "./sshDiagnostic";
 
 // ── Throttle / filter logic (shared by withGuidance and use-api dispatch) ──
 
@@ -154,6 +154,7 @@ export async function explainAndBuildGuidanceError({
             instanceId,
             transport,
             rawError: original,
+            sshDiagnostic: parseSshCommandError(rawError)?.diagnostic ?? null,
             createdAt: Date.now(),
           },
         }),

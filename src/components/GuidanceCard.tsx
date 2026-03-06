@@ -2,7 +2,6 @@ import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GuidanceAction } from "../lib/types";
 import { useTranslation } from "react-i18next";
-import { parseSshCommandError } from "@/lib/sshDiagnostic";
 import { SshRepairPanel } from "@/components/SshRepairPanel";
 
 export interface AgentGuidanceItem {
@@ -16,6 +15,7 @@ export interface AgentGuidanceItem {
   instanceId: string;
   transport: string;
   rawError: string;
+  sshDiagnostic?: import("../lib/types").SshDiagnosticReport | null;
   createdAt: number;
 }
 
@@ -40,8 +40,7 @@ export function GuidanceCard({
 }: GuidanceCardProps) {
   const { t } = useTranslation();
 
-  const sshError = parseSshCommandError(guidance.rawError);
-  const repairPlan = sshError?.diagnostic?.repairPlan ?? [];
+  const repairPlan = guidance.sshDiagnostic?.repairPlan ?? [];
 
   return (
     <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card shadow-xl p-4 space-y-3">
