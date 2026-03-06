@@ -358,7 +358,10 @@ mod tests {
         let saved = load_bug_report_settings_from_paths(&paths);
         assert_eq!(saved.enabled, false);
         assert_eq!(saved.backend, BugReportBackend::Sentry);
-        assert_eq!(saved.endpoint.as_deref(), Some("https://example.com/report"));
+        assert_eq!(
+            saved.endpoint.as_deref(),
+            Some("https://example.com/report")
+        );
         assert_eq!(saved.severity_threshold, BugReportSeverity::Critical);
         assert_eq!(saved.max_reports_per_hour, 42);
         let _ = std::fs::remove_dir_all(root);
