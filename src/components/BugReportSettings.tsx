@@ -110,7 +110,7 @@ export function BugReportSettings() {
             <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>{t("settings.bugReportBackend")}</Label>
-                <p className="text-sm text-muted-foreground">Sentry</p>
+                <span className="text-sm text-muted-foreground">Sentry</span>
               </div>
 
               <div className="space-y-1.5">

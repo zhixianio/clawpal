@@ -68,7 +68,7 @@ impl Default for BugReportSettings {
         Self {
             enabled: default_enabled(),
             backend: BugReportBackend::default(),
-            endpoint: default_sentry_dsn(),
+            endpoint: built_in_sentry_dsn(),
             severity_threshold: default_severity_threshold(),
             max_reports_per_hour: default_max_reports_per_hour(),
         }
@@ -87,10 +87,6 @@ fn default_max_reports_per_hour() -> u32 {
     DEFAULT_MAX_REPORTS_PER_HOUR
 }
 
-fn default_sentry_dsn() -> Option<String> {
-    built_in_sentry_dsn()
-}
-
 fn normalize_endpoint(value: Option<String>) -> Option<String> {
     value
         .map(|raw| raw.trim().to_string())
@@ -99,7 +95,7 @@ fn normalize_endpoint(value: Option<String>) -> Option<String> {
 
 pub fn normalize_settings(mut settings: BugReportSettings) -> BugReportSettings {
     settings.backend = BugReportBackend::Sentry;
-    settings.endpoint = normalize_endpoint(settings.endpoint).or_else(default_sentry_dsn);
+    settings.endpoint = normalize_endpoint(settings.endpoint).or_else(built_in_sentry_dsn);
     settings.max_reports_per_hour = settings
         .max_reports_per_hour
         .clamp(MIN_MAX_REPORTS_PER_HOUR, MAX_MAX_REPORTS_PER_HOUR);
