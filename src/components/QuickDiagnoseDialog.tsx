@@ -11,18 +11,18 @@ import {
 } from "@/components/ui/dialog";
 import { useInstance } from "@/lib/instance-context";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
+import {
+  getQuickDiagnoseTransport,
+  buildPrefillMessage,
+  shouldSeedContext,
+  handleQuickDiagnoseDialogOpenChange,
+} from "@/components/quick-diagnose-utils";
+
 
 interface QuickDiagnoseDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   context?: string | null;
-}
-
-export function handleQuickDiagnoseDialogOpenChange(
-  onOpenChange: (open: boolean) => void,
-  open: boolean,
-) {
-  onOpenChange(open);
 }
 
 export function QuickDiagnoseDialog({
@@ -49,11 +49,7 @@ export function QuickDiagnoseDialog({
   const [bootstrapping, setBootstrapping] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const seededRef = useRef<string>("");
-  const transport = useMemo(() => {
-    if (isRemote) return "remote_ssh" as const;
-    if (isDocker) return "docker_local" as const;
-    return "local" as const;
-  }, [isDocker, isRemote]);
+  const transport = useMemo(() => getQuickDiagnoseTransport(isRemote, isDocker), [isDocker, isRemote]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     handleQuickDiagnoseDialogOpenChange(onOpenChange, nextOpen);
@@ -70,7 +66,7 @@ export function QuickDiagnoseDialog({
     setBootstrapping(true);
 
     let cancelled = false;
-    const initialContext = (context || "").trim();
+    const initialContext = buildPrefillMessage(context);
 
     const start = async () => {
       reset();
@@ -85,7 +81,7 @@ export function QuickDiagnoseDialog({
         "doctor",
         "zeroclaw",
       );
-      if (initialContext && seededRef.current !== initialContext) {
+      if (shouldSeedContext(initialContext, seededRef.current)) {
         seededRef.current = initialContext;
         await sendMessage(initialContext);
       }
