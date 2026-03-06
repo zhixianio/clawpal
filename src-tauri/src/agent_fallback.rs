@@ -98,10 +98,10 @@ fn rules_fallback(
                     .to_string(),
             actions: vec![
                 "重新进入该实例并等待 1-2 秒后自动刷新。".to_string(),
-                "若仍失败，打开 Doctor 让 Agent继续执行更细粒度修复。".to_string(),
+                "若仍失败，打开 Doctor 让 AI 继续帮你排查并给下一步建议。".to_string(),
             ],
             structured_actions: vec![GuidanceAction {
-                label: "让小龙虾修复".to_string(),
+                label: "让 AI 继续排查".to_string(),
                 action_type: "doctor_handoff".to_string(),
                 tool: None,
                 args: None,
@@ -124,7 +124,7 @@ fn rules_fallback(
                 "如需更换密钥，前往能力档案页面更新对应的 Provider 配置。".to_string(),
             ],
             structured_actions: vec![GuidanceAction {
-                label: "让小龙虾修复".to_string(),
+                label: "让 AI 继续排查".to_string(),
                 action_type: "doctor_handoff".to_string(),
                 tool: None,
                 args: None,
@@ -143,10 +143,10 @@ fn rules_fallback(
             summary: "实例对应的 Docker 容器已不存在，可能已被手动删除。".to_string(),
             actions: vec![
                 "重新安装该实例，或从实例列表中移除。".to_string(),
-                "打开 Doctor 页面让小龙虾诊断并修复。".to_string(),
+                "打开 Doctor 页面让 AI 继续排查并修复。".to_string(),
             ],
             structured_actions: vec![GuidanceAction {
-                label: "让小龙虾修复".to_string(),
+                label: "让 AI 继续排查".to_string(),
                 action_type: "doctor_handoff".to_string(),
                 tool: None,
                 args: None,
@@ -183,12 +183,12 @@ fn rules_fallback(
             actions.push("在目标实例执行 openclaw 安装/修复脚本，并重新登录 shell。".to_string());
             actions.push("确认 `command -v openclaw` 可返回路径后，再重试当前操作。".to_string());
         }
-        actions.push("进入 Doctor 页面并点击诊断，让内置 Agent 继续自动排查。".to_string());
+        actions.push("进入 Doctor 页面点击“继续诊断”，让 AI 自动帮你继续排查。".to_string());
         return GuidanceBody {
             summary,
             actions,
             structured_actions: vec![GuidanceAction {
-                label: "让小龙虾修复".to_string(),
+                label: "让 AI 继续排查".to_string(),
                 action_type: "doctor_handoff".to_string(),
                 tool: None,
                 args: None,
@@ -204,10 +204,10 @@ fn rules_fallback(
                 "确认 ~/.ssh/config 里的 User 与目标实例实际登录用户一致（例如 root 账号通常被禁用）。".to_string(),
                 "确认对应 IdentityFile 的公钥已写入远端 ~/.ssh/authorized_keys。".to_string(),
                 "可先在终端运行 `ssh <alias>` 验证后再返回重试。".to_string(),
-                "若仍失败，请先打开 Doctor 页面执行自动诊断并按建议修复。".to_string(),
+                "若仍失败，请先打开 Doctor 页面执行自动诊断并按建议继续处理。".to_string(),
             ],
             structured_actions: vec![GuidanceAction {
-                label: "让小龙虾修复".to_string(),
+                label: "让 AI 继续排查".to_string(),
                 action_type: "doctor_handoff".to_string(),
                 tool: None,
                 args: None,
@@ -241,7 +241,7 @@ fn rules_fallback(
             actions: vec![
                 format!("先在实例页重连 {target_hint} 的 SSH 并确认网络可达。"),
                 "执行一次健康检查，确认网关和配置目录可访问。".to_string(),
-                "若仍失败，请先打开 Doctor 页面执行自动诊断并按建议修复。".to_string(),
+                "若仍失败，请先打开 Doctor 页面执行自动诊断并按建议继续处理。".to_string(),
             ],
             structured_actions: vec![
                 GuidanceAction {
@@ -253,7 +253,7 @@ fn rules_fallback(
                     context: None,
                 },
                 GuidanceAction {
-                    label: "让小龙虾修复".to_string(),
+                    label: "让 AI 继续排查".to_string(),
                     action_type: "doctor_handoff".to_string(),
                     tool: None,
                     args: None,
@@ -271,7 +271,7 @@ fn rules_fallback(
             "按诊断结果优先处理阻塞项后，再重试当前操作。".to_string(),
         ],
         structured_actions: vec![GuidanceAction {
-            label: "让小龙虾修复".to_string(),
+            label: "让 AI 继续排查".to_string(),
             action_type: "doctor_handoff".to_string(),
             tool: None,
             args: None,
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn guidance_action_serializes_doctor_handoff() {
         let action = GuidanceAction {
-            label: "让小龙虾修复".to_string(),
+            label: "让 AI 继续排查".to_string(),
             action_type: "doctor_handoff".to_string(),
             tool: None,
             args: None,

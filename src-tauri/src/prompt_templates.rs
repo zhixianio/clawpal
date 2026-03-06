@@ -86,6 +86,8 @@ mod tests {
         assert!(prompt.contains("If `docGuidance` exists in context"));
         assert!(prompt.contains("root_cause_hypothesis"));
         assert!(prompt.contains("version_awareness"));
+        assert!(prompt.contains("non-technical"));
+        assert!(prompt.contains("plain words"));
     }
 
     #[test]
@@ -111,6 +113,7 @@ mod tests {
         assert!(prompt.contains("root_cause_hypothesis"));
         assert!(prompt.contains("docGuidance"));
         assert!(prompt.contains("citations"));
+        assert!(prompt.contains("beginner-friendly"));
     }
 
     #[test]

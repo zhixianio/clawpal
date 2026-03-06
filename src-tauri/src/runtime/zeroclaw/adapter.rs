@@ -46,6 +46,10 @@ impl ZeroclawDoctorAdapter {
         )
     }
 
+    fn looks_like_chinese(message: &str) -> bool {
+        Self::infer_language_rule(message) == "Simplified Chinese (简体中文)"
+    }
+
     fn normalize_doctor_output(raw: String) -> String {
         let trimmed = raw.trim();
         let mut candidates = vec![trimmed.to_string()];
@@ -59,9 +63,16 @@ impl ZeroclawDoctorAdapter {
                 let step = v.get("step").and_then(|x| x.as_str());
                 let reason = v.get("reason").and_then(|x| x.as_str());
                 if step.is_some() && reason.is_some() {
+                    let reason = reason.unwrap_or("先做一次快速排查，再继续。").trim();
+                    if Self::looks_like_chinese(reason) {
+                        return format!(
+                            "我先把这次会话当作“诊断模式”处理：只负责先检查和给建议，不会直接改配置。下一步建议先{}。",
+                            reason
+                        );
+                    }
                     return format!(
-                        "当前是 Doctor 诊断模式，不执行安装编排。诊断建议：{}",
-                        reason.unwrap_or("请先收集错误日志并确认运行状态。")
+                        "I’m running in diagnosis-only mode: I’ll check first and suggest fixes, not make risky changes yet. Next suggestion: {}",
+                        reason
                     );
                 }
             }
@@ -86,7 +97,8 @@ impl ZeroclawDoctorAdapter {
         let intent = crate::runtime::zeroclaw::tool_intent::parse_tool_intent(raw)?;
         let reason = intent
             .reason
-            .unwrap_or_else(|| "需要执行命令以继续诊断。".to_string());
+            .unwrap_or_else(|| "先跑一条检查命令，确认问题点。".to_string());
+        let friendly_reason = reason.trim();
         let invoke_type =
             crate::runtime::zeroclaw::tool_intent::classify_invoke_type(&intent.tool, &intent.args);
         let payload = json!({
@@ -98,12 +110,24 @@ impl ZeroclawDoctorAdapter {
             },
             "type": invoke_type,
         });
-        let note = format!(
-            "建议执行诊断命令：`{} {}`\n原因：{}",
+        let raw_cmd = format!(
+            "{} {}",
             payload["command"].as_str().unwrap_or(""),
-            payload["args"]["args"].as_str().unwrap_or(""),
-            reason
+            payload["args"]["args"].as_str().unwrap_or("")
         );
+        let note = if Self::looks_like_chinese(friendly_reason) {
+            format!(
+                "我先跑一条检查命令：`{}`，方便确认当前问题。原因：{}",
+                raw_cmd.trim(),
+                friendly_reason
+            )
+        } else {
+            format!(
+                "I will run one diagnostic command: `{}`, because {}. So we can confirm what’s blocking things.",
+                raw_cmd.trim(),
+                friendly_reason
+            )
+        };
         Some((RuntimeEvent::Invoke { payload }, note))
     }
 
@@ -203,6 +227,36 @@ mod tests {
             parsed.is_some(),
             "should parse tool JSON even if another JSON appears first"
         );
+    }
+
+    #[test]
+    fn normalize_doctor_output_prefers_friendly_chinese() {
+        let raw = r#"{"step":"x","reason":"先收集日志再确认错误点"}"#;
+        let parsed = ZeroclawDoctorAdapter::normalize_doctor_output(raw.to_string());
+        assert!(parsed.contains("诊断模式"));
+        assert!(parsed.contains("先收集日志"));
+        assert!(!parsed.contains("不执行安装编排"));
+    }
+
+    #[test]
+    fn normalize_doctor_output_prefers_friendly_english() {
+        let raw = r#"{"step":"x","reason":"check gateway logs to confirm error context."}"#;
+        let parsed = ZeroclawDoctorAdapter::normalize_doctor_output(raw.to_string());
+        assert!(parsed.contains("diagnosis-only mode"));
+        assert!(parsed.contains("check gateway logs"));
+    }
+
+    #[test]
+    fn parse_tool_intent_note_is_user_friendly() {
+        let raw = r#"我先说明一下。{"tool":"clawpal","args":"health check --all","reason":"确认服务是否启动"}"#;
+        let parsed = ZeroclawDoctorAdapter::parse_tool_intent(raw);
+        assert!(
+            parsed.is_some(),
+            "should parse tool intent and provide friendly note"
+        );
+        let (_invoke, note) = parsed.unwrap();
+        assert!(note.contains("我先跑一条检查命令"));
+        assert!(!note.contains("建议执行诊断命令"));
     }
 
     #[test]
