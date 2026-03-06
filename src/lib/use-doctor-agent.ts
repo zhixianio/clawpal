@@ -4,6 +4,14 @@ import i18n from "../i18n";
 import { api } from "./api";
 import { doctorStartPromptTemplate, renderPromptTemplate } from "./prompt-templates";
 import type { DiagnosisReportItem, DoctorChatMessage, DoctorInvoke } from "./types";
+import {
+  extractApprovalPattern,
+  sanitizeDoctorCacheMessages,
+  buildDoctorCacheKey,
+  extractOpenclawText,
+  extractOpenclawSessionId,
+  isDoctorAutoSafeInvoke,
+} from "./doctor-agent-utils";
 
 let msgCounter = 0;
 function nextMsgId(): string {
@@ -45,52 +53,10 @@ type DoctorSessionCache = {
   updatedAt: number;
 };
 
-const DOCTOR_CHAT_CACHE_PREFIX = "clawpal-doctor-chat-v1";
 const DOCTOR_CHAT_CACHE_MAX_MESSAGES = 220;
 const DOCTOR_CHAT_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DOCTOR_CHAT_CACHE_VERSION = 1;
-
-function buildDoctorCacheKey(context: DoctorSessionContext): string {
-  const scope = encodeURIComponent(context.instanceScope);
-  const agent = encodeURIComponent(context.agentId);
-  return `${DOCTOR_CHAT_CACHE_PREFIX}-${context.domain}-${context.engine}-${scope}-${agent}`;
-}
-
-function sanitizeDoctorCacheMessages(rawMessages: unknown): DoctorChatMessage[] {
-  if (!Array.isArray(rawMessages)) return [];
-  return rawMessages.flatMap((raw) => {
-    if (!raw || typeof raw !== "object") return [];
-    const item = raw as Partial<DoctorChatMessage> & Record<string, unknown>;
-    const role = item.role;
-    if (role !== "assistant" && role !== "user" && role !== "tool-call" && role !== "tool-result") return [];
-    const id = typeof item.id === "string" ? item.id : "";
-    if (!id) return [];
-    const content = typeof item.content === "string" ? item.content : "";
-    const next: DoctorChatMessage = {
-      id,
-      role,
-      content,
-    };
-    if (item.invoke && typeof item.invoke === "object") {
-      next.invoke = item.invoke as DoctorInvoke;
-    }
-    if (typeof item.invokeId === "string") {
-      next.invokeId = item.invokeId;
-    }
-    if (item.invokeResult !== undefined) {
-      next.invokeResult = item.invokeResult;
-    }
-    const status = item.status;
-    if (status === "pending" || status === "approved" || status === "rejected" || status === "auto") {
-      next.status = status;
-    }
-    const diagnosisReport = item.diagnosisReport;
-    if (diagnosisReport && typeof diagnosisReport === "object" && Array.isArray((diagnosisReport as { items?: unknown }).items)) {
-      next.diagnosisReport = { items: ((diagnosisReport as { items: unknown }).items as DiagnosisReportItem[]) };
-    }
-    return [next];
-  });
-}
+const DOCTOR_CHAT_CACHE_PREFIX = "clawpal-doctor-chat-v1";
 
 function normalizeDoctorMessages(messages: DoctorChatMessage[]): DoctorChatMessage[] {
   return messages.slice(-DOCTOR_CHAT_CACHE_MAX_MESSAGES);

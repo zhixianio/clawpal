@@ -163,7 +163,6 @@ export function Doctor({
 
   // Backups state
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
-  const [backingUp, setBackingUp] = useState(false);
   const [backupMessage, setBackupMessage] = useState("");
   const [deletingBackupName, setDeletingBackupName] = useState<string | null>(null);
   const [fadingOutBackupName, setFadingOutBackupName] = useState<string | null>(null);
@@ -1487,24 +1486,23 @@ export function Doctor({
       <div className="mt-8">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold">{t("doctor.backups")}</h3>
-          <Button
+          <AsyncActionButton
             size="sm"
             variant="outline"
-            disabled={backingUp}
-            onClick={() => {
-              setBackingUp(true);
+            loadingText={t("home.creating")}
+            onClick={async () => {
               setBackupMessage("");
-              ua.backupBeforeUpgrade()
-                .then((info) => {
-                  setBackupMessage(t("home.backupCreated", { name: info.name }));
-                  refreshBackups();
-                })
-                .catch((e) => { if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.backupFailed", { error: String(e) })); })
-                .finally(() => setBackingUp(false));
+              try {
+                const info = await ua.backupBeforeUpgrade();
+                setBackupMessage(t("home.backupCreated", { name: info.name }));
+                refreshBackups();
+              } catch (e) {
+                if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.backupFailed", { error: String(e) }));
+              }
             }}
           >
-            {backingUp ? t("home.creating") : t("home.createBackup")}
-          </Button>
+            {t("home.createBackup")}
+          </AsyncActionButton>
         </div>
         {backupMessage && (
           <p className="text-sm text-muted-foreground mb-2">{backupMessage}</p>

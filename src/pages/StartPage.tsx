@@ -17,7 +17,7 @@ import { InstanceCard } from "@/components/InstanceCard";
 import { InstallHub } from "@/components/InstallHub";
 import { api } from "@/lib/api";
 import { withGuidance } from "@/lib/guidance";
-import type { DockerInstance, SshHost, InstallSession, RegisteredInstance, DiscoveredInstance } from "@/lib/types";
+import type { DockerInstance, SshHost, InstallSession, RegisteredInstance, DiscoveredInstance, SshConnectionProfile } from "@/lib/types";
 
 const DEFAULT_DOCKER_OPENCLAW_HOME = "~/.clawpal/docker-local";
 const DEFAULT_DOCKER_CLAWPAL_DATA_DIR = "~/.clawpal/docker-local/data";
@@ -137,6 +137,7 @@ export function StartPage({
   // SSH manual check state: tracks which hosts have been checked / are checking
   const [sshChecked, setSshChecked] = useState<Record<string, boolean>>({});
   const [sshChecking, setSshChecking] = useState<Record<string, boolean>>({});
+  const [sshConnectionProfiles, setSshConnectionProfiles] = useState<Record<string, SshConnectionProfile>>({});
   const healthPollInFlightRef = useRef(false);
   const localHealthCursorRef = useRef(0);
   const dockerHealthCursorRef = useRef(0);
@@ -290,21 +291,32 @@ export function StartPage({
           "remote_ssh",
         );
       }
-      const status = await withGuidance(
-        () => api.remoteGetInstanceStatus(hostId),
-        "remoteGetInstanceStatus",
+      const profile = await withGuidance(
+        () => api.remoteGetSshConnectionProfile(hostId),
+        "remoteGetSshConnectionProfile",
         hostId,
         "remote_ssh",
       );
       setHealthMap((prev) => ({
         ...prev,
-        [hostId]: { healthy: status.healthy, agentCount: status.activeAgents },
+        [hostId]: {
+          healthy: profile.status.healthy,
+          agentCount: profile.status.activeAgents,
+        },
+      }));
+      setSshConnectionProfiles((prev) => ({
+        ...prev,
+        [hostId]: profile,
       }));
     } catch {
       setHealthMap((prev) => ({
         ...prev,
         [hostId]: { healthy: null, agentCount: 0 },
       }));
+      setSshConnectionProfiles((prev) => {
+        const { [hostId]: _removed, ...rest } = prev;
+        return rest;
+      });
     } finally {
       setSshChecking((prev) => ({ ...prev, [hostId]: false }));
       setSshChecked((prev) => ({ ...prev, [hostId]: true }));
@@ -425,6 +437,7 @@ export function StartPage({
               checking={inst.type === "ssh" ? sshChecking[inst.id] ?? false : undefined}
               onCheck={inst.type === "ssh" ? () => handleSshCheck(inst.id) : undefined}
               onClick={() => onOpenInstance(inst.id)}
+              sshConnectionProfile={inst.type === "ssh" ? sshConnectionProfiles[inst.id] : undefined}
               onRename={
                 inst.type === "docker" && dockerInst
                   ? () => openDockerRename(dockerInst)

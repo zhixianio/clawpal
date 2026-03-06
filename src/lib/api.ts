@@ -241,6 +241,8 @@ export const api = {
     invoke("remote_read_raw_config", { hostId }),
   remoteGetInstanceStatus: (hostId: string): Promise<InstanceStatus> =>
     invoke("remote_get_system_status", { hostId }),
+  remoteGetSshConnectionProfile: (hostId: string): Promise<SshConnectionProfile> =>
+    invoke("remote_get_ssh_connection_profile", { hostId }),
   remoteGetStatusExtra: (hostId: string): Promise<StatusExtra> =>
     invoke("remote_get_status_extra", { hostId }),
   remoteListAgentsOverview: (hostId: string): Promise<AgentOverview[]> =>

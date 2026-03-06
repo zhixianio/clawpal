@@ -334,6 +334,24 @@ export interface InstanceStatus {
   sshDiagnostic?: SshDiagnosticReport | null;
 }
 
+export type SshConnectionQuality = "excellent" | "good" | "fair" | "poor" | "unknown";
+export type SshConnectionBottleneckStage = "connect" | "gateway" | "config" | "version" | "other";
+
+export interface SshConnectionProfile {
+  status: InstanceStatus;
+  connectLatencyMs: number;
+  gatewayLatencyMs: number;
+  configLatencyMs: number;
+  versionLatencyMs: number;
+  totalLatencyMs: number;
+  quality: SshConnectionQuality;
+  qualityScore: number;
+  bottleneck: {
+    stage: SshConnectionBottleneckStage;
+    latencyMs: number;
+  };
+}
+
 export interface StatusExtra {
   openclawVersion?: string;
   duplicateInstalls?: string[];
