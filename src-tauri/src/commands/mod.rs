@@ -22,7 +22,7 @@ use crate::install::types::InstallState;
 use crate::models::resolve_paths;
 use crate::ssh::{SftpEntry, SshConnectionPool, SshExecResult, SshHostConfig, SshTransferStats};
 use clawpal_core::ssh::diagnostic::{
-    from_any_error, SshDiagnosticReport, SshErrorCode, SshIntent, SshStage,
+    from_any_error, SshDiagnosticReport, SshDiagnosticStatus, SshErrorCode, SshIntent, SshStage,
 };
 
 pub mod agent;
@@ -7138,15 +7138,51 @@ fn make_ssh_command_error(
     message
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshDiagnosticSuccessTrigger {
+    ConnectEstablished,
+    ConnectReuse,
+    ExplicitProbe,
+    RoutineOperation,
+}
+
+fn should_emit_success_ssh_diagnostic(trigger: SshDiagnosticSuccessTrigger) -> bool {
+    matches!(
+        trigger,
+        SshDiagnosticSuccessTrigger::ConnectEstablished
+            | SshDiagnosticSuccessTrigger::ExplicitProbe
+    )
+}
+
 fn success_ssh_diagnostic(
     app: &AppHandle,
     stage: SshStage,
     intent: SshIntent,
     summary: impl Into<String>,
+    trigger: SshDiagnosticSuccessTrigger,
 ) -> SshDiagnosticReport {
     let report = SshDiagnosticReport::success(stage, intent, summary);
-    emit_ssh_diagnostic(app, &report);
+    if should_emit_success_ssh_diagnostic(trigger) {
+        emit_ssh_diagnostic(app, &report);
+    }
     report
+}
+
+fn skipped_probe_diagnostic(
+    stage: SshStage,
+    intent: SshIntent,
+    summary: impl Into<String>,
+) -> SshDiagnosticReport {
+    SshDiagnosticReport {
+        stage,
+        intent,
+        status: SshDiagnosticStatus::Degraded,
+        error_code: None,
+        summary: summary.into(),
+        evidence: Vec::new(),
+        repair_plan: Vec::new(),
+        confidence: 0.5,
+    }
 }
 
 fn ssh_stage_for_error_code(code: SshErrorCode) -> SshStage {
@@ -7178,6 +7214,46 @@ fn ssh_stage_for_intent(intent: SshIntent) -> SshStage {
     }
 }
 
+#[cfg(test)]
+mod ssh_diagnostic_policy_tests {
+    use super::{
+        should_emit_success_ssh_diagnostic, skipped_probe_diagnostic, SshDiagnosticSuccessTrigger,
+    };
+    use clawpal_core::ssh::diagnostic::{SshDiagnosticStatus, SshIntent, SshStage};
+
+    #[test]
+    fn suppresses_routine_success_diagnostics() {
+        assert!(!should_emit_success_ssh_diagnostic(
+            SshDiagnosticSuccessTrigger::RoutineOperation
+        ));
+        assert!(!should_emit_success_ssh_diagnostic(
+            SshDiagnosticSuccessTrigger::ConnectReuse
+        ));
+    }
+
+    #[test]
+    fn keeps_meaningful_success_diagnostics() {
+        assert!(should_emit_success_ssh_diagnostic(
+            SshDiagnosticSuccessTrigger::ConnectEstablished
+        ));
+        assert!(should_emit_success_ssh_diagnostic(
+            SshDiagnosticSuccessTrigger::ExplicitProbe
+        ));
+    }
+
+    #[test]
+    fn skipped_probes_report_degraded_status() {
+        let report = skipped_probe_diagnostic(
+            SshStage::SftpWrite,
+            SshIntent::SftpWrite,
+            "SFTP write probe skipped (no-op)",
+        );
+
+        assert_eq!(report.status, SshDiagnosticStatus::Degraded);
+        assert_eq!(report.error_code, None);
+    }
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     pool: State<'_, SshConnectionPool>,
@@ -7195,6 +7271,7 @@ pub async fn ssh_connect(
             SshStage::SessionOpen,
             SshIntent::Connect,
             "SSH session already connected",
+            SshDiagnosticSuccessTrigger::ConnectReuse,
         );
         return Ok(true);
     }
@@ -7255,6 +7332,7 @@ pub async fn ssh_connect(
         SshStage::SessionOpen,
         SshIntent::Connect,
         "SSH connection established",
+        SshDiagnosticSuccessTrigger::ConnectEstablished,
     );
     Ok(true)
 }
@@ -7278,6 +7356,7 @@ pub async fn ssh_connect_with_passphrase(
             SshStage::SessionOpen,
             SshIntent::Connect,
             "SSH session already connected",
+            SshDiagnosticSuccessTrigger::ConnectReuse,
         );
         return Ok(true);
     }
@@ -7330,6 +7409,7 @@ pub async fn ssh_connect_with_passphrase(
         SshStage::SessionOpen,
         SshIntent::Connect,
         "SSH connection established",
+        SshDiagnosticSuccessTrigger::ConnectEstablished,
     );
     Ok(true)
 }
@@ -7382,6 +7462,7 @@ pub async fn ssh_exec(
                 SshStage::RemoteExec,
                 SshIntent::Exec,
                 "Remote SSH command executed",
+                SshDiagnosticSuccessTrigger::RoutineOperation,
             );
             result
         })
@@ -7403,6 +7484,7 @@ pub async fn sftp_read_file(
                 SshStage::SftpRead,
                 SshIntent::SftpRead,
                 "SFTP read succeeded",
+                SshDiagnosticSuccessTrigger::RoutineOperation,
             );
             result
         })
@@ -7429,6 +7511,7 @@ pub async fn sftp_write_file(
         SshStage::SftpWrite,
         SshIntent::SftpWrite,
         "SFTP write succeeded",
+        SshDiagnosticSuccessTrigger::RoutineOperation,
     );
     Ok(true)
 }
@@ -7448,6 +7531,7 @@ pub async fn sftp_list_dir(
                 SshStage::SftpRead,
                 SshIntent::SftpRead,
                 "SFTP list succeeded",
+                SshDiagnosticSuccessTrigger::RoutineOperation,
             );
             result
         })
@@ -7471,6 +7555,7 @@ pub async fn sftp_remove_file(
         SshStage::SftpRemove,
         SshIntent::SftpRemove,
         "SFTP remove succeeded",
+        SshDiagnosticSuccessTrigger::RoutineOperation,
     );
     Ok(true)
 }
@@ -7499,6 +7584,7 @@ pub async fn diagnose_ssh(
                 stage,
                 intent,
                 "SSH connection is healthy",
+                SshDiagnosticSuccessTrigger::ExplicitProbe,
             ));
         }
         let hosts = read_hosts_from_registry().map_err(|error| {
@@ -7518,6 +7604,7 @@ pub async fn diagnose_ssh(
                 SshStage::SessionOpen,
                 SshIntent::Connect,
                 "SSH connect probe succeeded",
+                SshDiagnosticSuccessTrigger::ExplicitProbe,
             ),
             Err(error) => {
                 let mut report =
@@ -7552,10 +7639,10 @@ pub async fn diagnose_ssh(
             Err(error) => from_any_error(stage, intent, error),
         },
         SshIntent::SftpWrite => {
-            SshDiagnosticReport::success(stage, intent, "SFTP write probe skipped (no-op)")
+            skipped_probe_diagnostic(stage, intent, "SFTP write probe skipped (no-op)")
         }
         SshIntent::SftpRemove => {
-            SshDiagnosticReport::success(stage, intent, "SFTP remove probe skipped (no-op)")
+            skipped_probe_diagnostic(stage, intent, "SFTP remove probe skipped (no-op)")
         }
         SshIntent::Connect => unreachable!(),
     };
