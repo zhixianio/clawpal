@@ -65,14 +65,38 @@ mod tests {
     #[test]
     fn classify_connection_quality_respects_tuned_thresholds() {
         assert_eq!(classify_connection_quality(0), ("excellent", 100));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS), ("excellent", 100));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS + 1), ("good", 84));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS), ("good", 84));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS + 1), ("fair", 66));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS), ("fair", 66));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS + 1), ("poor", 42));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_POOR_MAX_MS), ("poor", 42));
-        assert_eq!(classify_connection_quality(SSH_QUALITY_POOR_MAX_MS + 1), ("poor", 18));
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS),
+            ("excellent", 100)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS + 1),
+            ("good", 84)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS),
+            ("good", 84)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS + 1),
+            ("fair", 66)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS),
+            ("fair", 66)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS + 1),
+            ("poor", 42)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_POOR_MAX_MS),
+            ("poor", 42)
+        );
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_POOR_MAX_MS + 1),
+            ("poor", 18)
+        );
     }
 
     #[test]
@@ -252,10 +276,7 @@ pub async fn remote_get_ssh_connection_profile(
         let model = cfg
             .pointer("/defaults/model")
             .and_then(|v| read_model_value(v))
-            .or_else(|| {
-                cfg.pointer("/default/model")
-                    .and_then(read_model_value)
-            });
+            .or_else(|| cfg.pointer("/default/model").and_then(read_model_value));
         let fallbacks = cfg
             .pointer("/defaults/model/fallbacks")
             .and_then(Value::as_array)
@@ -284,8 +305,12 @@ pub async fn remote_get_ssh_connection_profile(
 
     let total_latency_ms = total_start.elapsed().as_millis() as u64;
     let (quality, quality_score) = classify_connection_quality(total_latency_ms);
-    let (bottleneck_stage, bottleneck_latency_ms) =
-        pick_bottleneck_stage(connect_latency_ms, gateway_latency_ms, config_latency_ms, version_latency_ms);
+    let (bottleneck_stage, bottleneck_latency_ms) = pick_bottleneck_stage(
+        connect_latency_ms,
+        gateway_latency_ms,
+        config_latency_ms,
+        version_latency_ms,
+    );
 
     Ok(SshConnectionProfile {
         status: StatusLight {
