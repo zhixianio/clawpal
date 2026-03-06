@@ -11,7 +11,7 @@ async fn timed_exec_login(
     pool: &SshConnectionPool,
     host_id: &str,
     command: &str,
-) -> Result<(crate::cli_runner::CliOutput, u64), String> {
+) -> Result<(crate::ssh::SshExecResult, u64), String> {
     let start = Instant::now();
     let output = pool.exec_login(host_id, command).await?;
     Ok((output, start.elapsed().as_millis() as u64))
@@ -30,9 +30,9 @@ async fn timed_openclaw_remote_with_autofix(
 fn classify_connection_quality(total_ms: u64) -> (&'static str, u8) {
     match total_ms {
         0..=SSH_QUALITY_EXCELLENT_MAX_MS => ("excellent", 100),
-        (SSH_QUALITY_EXCELLENT_MAX_MS + 1)..=SSH_QUALITY_GOOD_MAX_MS => ("good", 84),
-        (SSH_QUALITY_GOOD_MAX_MS + 1)..=SSH_QUALITY_FAIR_MAX_MS => ("fair", 66),
-        (SSH_QUALITY_FAIR_MAX_MS + 1)..=SSH_QUALITY_POOR_MAX_MS => ("poor", 42),
+        latency_ms if latency_ms <= SSH_QUALITY_GOOD_MAX_MS => ("good", 84),
+        latency_ms if latency_ms <= SSH_QUALITY_FAIR_MAX_MS => ("fair", 66),
+        latency_ms if latency_ms <= SSH_QUALITY_POOR_MAX_MS => ("poor", 42),
         _ => ("poor", 18),
     }
 }
@@ -66,25 +66,13 @@ mod tests {
     fn classify_connection_quality_respects_tuned_thresholds() {
         assert_eq!(classify_connection_quality(0), ("excellent", 100));
         assert_eq!(classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS), ("excellent", 100));
-        assert_eq!(
-            classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS + 1),
-            ("good", 84)
-        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS + 1), ("good", 84));
         assert_eq!(classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS), ("good", 84));
-        assert_eq!(
-            classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS + 1),
-            ("fair", 66)
-        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS + 1), ("fair", 66));
         assert_eq!(classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS), ("fair", 66));
-        assert_eq!(
-            classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS + 1),
-            ("poor", 42)
-        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS + 1), ("poor", 42));
         assert_eq!(classify_connection_quality(SSH_QUALITY_POOR_MAX_MS), ("poor", 42));
-        assert_eq!(
-            classify_connection_quality(SSH_QUALITY_POOR_MAX_MS + 1),
-            ("poor", 18)
-        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_POOR_MAX_MS + 1), ("poor", 18));
     }
 
     #[test]
@@ -240,70 +228,64 @@ pub async fn remote_get_ssh_connection_profile(
         timed_exec_login(&pool, &host_id, "openclaw --version"),
     );
 
-    let (connect_res, connect_latency_ms) = connect_result?;
+    let (_connect_res, connect_latency_ms) = connect_result?;
     let (gateway_res, gateway_latency_ms) = gateway_result?;
     let (config_res, config_latency_ms) = config_result?;
     let (version_res, version_latency_ms) = version_result?;
 
-    let config_ok = matches!(&config_res, Ok(output) if output.exit_code == 0);
-    let (active_agents, global_default_model, fallback_models) = match config_res {
-        Ok(ref output) if output.exit_code == 0 => {
-            let cfg: Value = crate::cli_runner::parse_json_output(output).unwrap_or(Value::Null);
-            let explicit = cfg
-                .pointer("/list")
-                .and_then(Value::as_array)
-                .map(|a| a.len() as u32)
-                .unwrap_or(0);
-            let agents = if explicit == 0 { 1 } else { explicit };
-            let model = cfg
-                .pointer("/defaults/model")
-                .and_then(|v| read_model_value(v))
-                .or_else(|| {
-                    cfg.pointer("/default/model")
-                        .and_then(read_model_value)
-                });
-            let fallbacks = cfg
-                .pointer("/defaults/model/fallbacks")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(String::from)
-                        .collect()
-                })
-                .unwrap_or_default();
-            (agents, model, fallbacks)
-        }
-        _ => (0, None, Vec::new()),
+    let config_ok = config_res.exit_code == 0;
+    let (active_agents, global_default_model, fallback_models) = if config_ok {
+        let cfg: Value = {
+            let output = crate::cli_runner::CliOutput {
+                stdout: config_res.stdout.clone(),
+                stderr: config_res.stderr.clone(),
+                exit_code: config_res.exit_code as i32,
+            };
+            crate::cli_runner::parse_json_output(&output).unwrap_or(Value::Null)
+        };
+        let explicit = cfg
+            .pointer("/list")
+            .and_then(Value::as_array)
+            .map(|a| a.len() as u32)
+            .unwrap_or(0);
+        let agents = if explicit == 0 { 1 } else { explicit };
+        let model = cfg
+            .pointer("/defaults/model")
+            .and_then(|v| read_model_value(v))
+            .or_else(|| {
+                cfg.pointer("/default/model")
+                    .and_then(read_model_value)
+            });
+        let fallbacks = cfg
+            .pointer("/defaults/model/fallbacks")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (agents, model, fallbacks)
+    } else {
+        (0, None, Vec::new())
     };
 
-    let _openclaw_version = match version_res {
-        Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),
-        Ok(r) => {
-            let trimmed = r.stdout.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
+    let _openclaw_version = {
+        let trimmed = version_res.stdout.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
         }
-        Err(_) => None,
     };
 
-    let healthy = match gateway_res {
-        Ok(r) => r.exit_code == 0,
-        Err(_) if config_ok => true,
-        Err(_) => false,
-    };
+    let healthy = gateway_res.exit_code == 0 || config_ok;
 
     let total_latency_ms = total_start.elapsed().as_millis() as u64;
     let (quality, quality_score) = classify_connection_quality(total_latency_ms);
-    let (bottleneck_stage, bottleneck_latency_ms) = pick_bottleneck_stage(
-        connect_latency_ms,
-        gateway_latency_ms,
-        config_latency_ms,
-        version_latency_ms,
-    );
+    let (bottleneck_stage, bottleneck_latency_ms) =
+        pick_bottleneck_stage(connect_latency_ms, gateway_latency_ms, config_latency_ms, version_latency_ms);
 
     Ok(SshConnectionProfile {
         status: StatusLight {

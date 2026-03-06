@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { MonitorIcon, ContainerIcon, ServerIcon, LaptopIcon, EllipsisIcon, PencilIcon, Trash2Icon, RefreshCwIcon, LinkIcon, StethoscopeIcon } from "lucide-react";
+import type { TFunction } from "i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
@@ -27,6 +28,7 @@ interface InstanceCardProps {
   discoveredSource?: string;
   onConnect?: () => void;
   onQuickDiagnose?: (() => void) | null;
+  sshConnectionProfile?: SshConnectionProfile;
 }
 
 const typeIcons: Record<InstanceType, typeof MonitorIcon> = {
@@ -150,6 +152,7 @@ export function InstanceCard({
   discoveredSource,
   onConnect,
   onQuickDiagnose,
+  sshConnectionProfile,
 }: InstanceCardProps) {
   const { t } = useTranslation();
   const TypeIcon = typeIcons[type];
