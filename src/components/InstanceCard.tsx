@@ -7,6 +7,9 @@ import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { SshConnectionProfile, SshConnectionBottleneckStage } from "@/lib/types";
+import {
+  formatSshConnectionLatency,
+} from "@/lib/sshConnectionProfile";
 
 type InstanceType = "local" | "docker" | "ssh" | "wsl2";
 
@@ -50,12 +53,6 @@ function HealthDot({ healthy, offline }: { healthy: boolean | null; offline: boo
       )}
     />
   );
-}
-
-function formatLatency(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "-";
-  if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
-  return `${Math.round(ms)} ms`;
 }
 
 function getConnectionQualityLabel(quality: string, t: TFunction): string {
@@ -107,19 +104,34 @@ function SshConnectionDot({ profile, t }: { profile: SshConnectionProfile; t: TF
   const qualityText = getConnectionQualityLabel(profile.quality, t);
   const qualityClass = getSshDotClass(profile.quality);
   const bottleneckStageLabel = getConnectionStageLabel(profile.bottleneck.stage, t);
-  const bottleneckLatencyText = formatLatency(profile.bottleneck.latencyMs);
-  const totalLatencyText = formatLatency(profile.totalLatencyMs);
+  const bottleneckLatencyText = formatSshConnectionLatency(profile.bottleneck.latencyMs);
+  const totalLatencyText = formatSshConnectionLatency(profile.totalLatencyMs);
 
   return (
-    <span className="relative inline-flex items-center justify-center group/ssh-dot">
-      <span
-        tabIndex={0}
-        className={cn(
-          "size-2 rounded-full shrink-0 animate-ssh-dot-jitter",
-          qualityClass,
-        )}
-      />
-      <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-2 w-max max-w-56 -translate-x-1/2 rounded-md border border-border bg-popover px-2.5 py-2 text-xs text-popover-foreground shadow-[0_8px_24px_rgba(0,0,0,0.18)] opacity-0 invisible transition-all duration-150 group-hover/ssh-dot:opacity-100 group-hover/ssh-dot:visible group-focus-within/ssh-dot:opacity-100 group-focus-within/ssh-dot:visible">
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          aria-label={qualityText}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span
+            className={cn(
+              "size-2 rounded-full shrink-0 animate-ssh-dot-jitter",
+              qualityClass,
+            )}
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={8}
+        className="w-60 p-3 text-xs"
+        onClick={(e) => e.stopPropagation()}
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         <p className="font-semibold text-[12px] mb-1">{t("start.sshConnectionMetrics")}</p>
         <p>
           {t("start.sshSpeed")}: {totalLatencyText}
@@ -130,8 +142,8 @@ function SshConnectionDot({ profile, t }: { profile: SshConnectionProfile; t: TF
         <p>
           {t("start.sshBottleneck")}: {bottleneckStageLabel} ({bottleneckLatencyText})
         </p>
-      </span>
-    </span>
+      </PopoverContent>
+    </Popover>
   );
 }
 

@@ -17,6 +17,11 @@ import { InstanceCard } from "@/components/InstanceCard";
 import { InstallHub } from "@/components/InstallHub";
 import { api } from "@/lib/api";
 import { withGuidance } from "@/lib/guidance";
+import { extractErrorText } from "@/lib/sshDiagnostic";
+import {
+  shouldAutoProbeSshConnectionProfile,
+  shouldDeferInteractiveSshAutoProbe,
+} from "@/lib/sshConnectionProfile";
 import type { DockerInstance, SshHost, InstallSession, RegisteredInstance, DiscoveredInstance, SshConnectionProfile } from "@/lib/types";
 
 const DEFAULT_DOCKER_OPENCLAW_HOME = "~/.clawpal/docker-local";
@@ -137,12 +142,13 @@ export function StartPage({
   // SSH manual check state: tracks which hosts have been checked / are checking
   const [sshChecked, setSshChecked] = useState<Record<string, boolean>>({});
   const [sshChecking, setSshChecking] = useState<Record<string, boolean>>({});
+  const [sshDeferredInteractiveProbe, setSshDeferredInteractiveProbe] = useState<Record<string, boolean>>({});
   const [sshConnectionProfiles, setSshConnectionProfiles] = useState<Record<string, SshConnectionProfile>>({});
-  const openedSshHostIds = sshHosts
-    .filter((host) => openTabIds.has(host.id))
+  const sshHostIdsKey = sshHosts
     .map((host) => host.id)
-    .sort();
-  const openedSshHostIdsKey = openedSshHostIds.join("|");
+    .sort()
+    .join("|");
+  const sshProbeInFlightRef = useRef(false);
   const healthPollInFlightRef = useRef(false);
   const localHealthCursorRef = useRef(0);
   const dockerHealthCursorRef = useRef(0);
@@ -282,9 +288,36 @@ export function StartPage({
     };
   }, [dockerInstances, registeredInstances]);
 
-  // Manual SSH health check
+  const applySshConnectionProfile = useCallback((hostId: string, profile: SshConnectionProfile) => {
+    setHealthMap((prev) => ({
+      ...prev,
+      [hostId]: {
+        healthy: profile.status.healthy,
+        agentCount: profile.status.activeAgents,
+      },
+    }));
+    setSshConnectionProfiles((prev) => ({
+      ...prev,
+      [hostId]: profile,
+    }));
+    setSshChecked((prev) => ({ ...prev, [hostId]: true }));
+    setSshDeferredInteractiveProbe((prev) => ({ ...prev, [hostId]: false }));
+  }, []);
+
+  const clearSshConnectionProfile = useCallback((hostId: string) => {
+    setHealthMap((prev) => ({
+      ...prev,
+      [hostId]: { healthy: null, agentCount: 0 },
+    }));
+    setSshConnectionProfiles((prev) => {
+      const { [hostId]: _removed, ...rest } = prev;
+      return rest;
+    });
+  }, []);
+
   const handleSshCheck = useCallback(async (hostId: string) => {
     setSshChecking((prev) => ({ ...prev, [hostId]: true }));
+    setSshDeferredInteractiveProbe((prev) => ({ ...prev, [hostId]: false }));
     try {
       if (connectRemoteHost) {
         await connectRemoteHost(hostId);
@@ -302,75 +335,80 @@ export function StartPage({
         hostId,
         "remote_ssh",
       );
-      setHealthMap((prev) => ({
-        ...prev,
-        [hostId]: {
-          healthy: profile.status.healthy,
-          agentCount: profile.status.activeAgents,
-        },
-      }));
-      setSshConnectionProfiles((prev) => ({
-        ...prev,
-        [hostId]: profile,
-      }));
+      applySshConnectionProfile(hostId, profile);
     } catch {
-      setHealthMap((prev) => ({
-        ...prev,
-        [hostId]: { healthy: null, agentCount: 0 },
-      }));
-      setSshConnectionProfiles((prev) => {
-        const { [hostId]: _removed, ...rest } = prev;
-        return rest;
-      });
+      clearSshConnectionProfile(hostId);
+      setSshChecked((prev) => ({ ...prev, [hostId]: true }));
     } finally {
       setSshChecking((prev) => ({ ...prev, [hostId]: false }));
-      setSshChecked((prev) => ({ ...prev, [hostId]: true }));
     }
-  }, [connectRemoteHost]);
+  }, [applySshConnectionProfile, clearSshConnectionProfile, connectRemoteHost]);
 
   useEffect(() => {
     let cancelled = false;
 
-    const hydrateOpenedSshProfiles = async () => {
-      for (const hostId of openedSshHostIds) {
+    const hydrateSshProfiles = async () => {
+      if (sshProbeInFlightRef.current) return;
+
+      const nextHostId = sshHosts
+        .map((host) => host.id)
+        .find((hostId) =>
+          shouldAutoProbeSshConnectionProfile({
+            checked: !!sshChecked[hostId],
+            checking: !!sshChecking[hostId],
+            hasProfile: !!sshConnectionProfiles[hostId],
+            deferredInteractive: !!sshDeferredInteractiveProbe[hostId],
+          }),
+        );
+
+      if (!nextHostId) return;
+
+      sshProbeInFlightRef.current = true;
+      setSshChecking((prev) => ({ ...prev, [nextHostId]: true }));
+
+      try {
+        const status = await api.sshStatus(nextHostId);
         if (cancelled) return;
-        if (sshChecking[hostId] || sshConnectionProfiles[hostId]) continue;
+        if (status !== "connected") {
+          await api.sshConnect(nextHostId);
+        }
+        if (cancelled) return;
 
-        try {
-          const status = await api.sshStatus(hostId);
-          if (cancelled || status !== "connected") continue;
-
-          setSshChecking((prev) => ({ ...prev, [hostId]: true }));
-          const profile = await api.remoteGetSshConnectionProfile(hostId);
-          if (cancelled) return;
-
-          setHealthMap((prev) => ({
-            ...prev,
-            [hostId]: {
-              healthy: profile.status.healthy,
-              agentCount: profile.status.activeAgents,
-            },
-          }));
-          setSshConnectionProfiles((prev) => ({
-            ...prev,
-            [hostId]: profile,
-          }));
-          setSshChecked((prev) => ({ ...prev, [hostId]: true }));
-        } catch {
-          if (cancelled) return;
-        } finally {
-          if (!cancelled) {
-            setSshChecking((prev) => ({ ...prev, [hostId]: false }));
-          }
+        const profile = await api.remoteGetSshConnectionProfile(nextHostId);
+        if (cancelled) return;
+        applySshConnectionProfile(nextHostId, profile);
+      } catch (error) {
+        if (cancelled) return;
+        clearSshConnectionProfile(nextHostId);
+        const rawError = extractErrorText(error);
+        if (shouldDeferInteractiveSshAutoProbe(rawError)) {
+          setSshDeferredInteractiveProbe((prev) => ({ ...prev, [nextHostId]: true }));
+          setSshChecked((prev) => ({ ...prev, [nextHostId]: false }));
+        } else {
+          setSshChecked((prev) => ({ ...prev, [nextHostId]: true }));
+        }
+      } finally {
+        sshProbeInFlightRef.current = false;
+        if (!cancelled) {
+          setSshChecking((prev) => ({ ...prev, [nextHostId]: false }));
         }
       }
     };
 
-    void hydrateOpenedSshProfiles();
+    void hydrateSshProfiles();
     return () => {
       cancelled = true;
     };
-  }, [openedSshHostIdsKey, sshChecking, sshConnectionProfiles]);
+  }, [
+    applySshConnectionProfile,
+    clearSshConnectionProfile,
+    sshChecked,
+    sshChecking,
+    sshConnectionProfiles,
+    sshDeferredInteractiveProbe,
+    sshHostIdsKey,
+    sshHosts,
+  ]);
 
   const toCardType = useCallback((instanceType: string, instanceId: string): "local" | "docker" | "ssh" | "wsl2" => {
     if (instanceType === "remote_ssh") return "ssh";
