@@ -21,6 +21,7 @@ import type {
   ZeroclawUsageStats,
 } from "@/lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { BugReportSettings } from "@/components/BugReportSettings";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1073,6 +1074,8 @@ export function Settings({
               </CardContent>
             </Card>
             )}
+
+            {showPreferences && <BugReportSettings />}
 
             {/* Profiles list */}
             {showProfiles && (

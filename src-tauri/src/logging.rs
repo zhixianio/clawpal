@@ -46,6 +46,7 @@ pub fn log_info(msg: &str) {
 pub fn log_error(msg: &str) {
     append_line("app.log", &format!("ERROR: {msg}"));
     append_line("error.log", msg);
+    crate::bug_report::collector::capture_error(msg);
 }
 
 pub fn read_log_tail(filename: &str, lines: usize) -> Result<String, String> {
