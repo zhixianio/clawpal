@@ -1,5 +1,104 @@
 use super::*;
 use clawpal_core::ssh::diagnostic::{from_any_error, SshIntent, SshStage};
+use std::time::Instant;
+
+const SSH_QUALITY_EXCELLENT_MAX_MS: u64 = 250;
+const SSH_QUALITY_GOOD_MAX_MS: u64 = 550;
+const SSH_QUALITY_FAIR_MAX_MS: u64 = 1100;
+const SSH_QUALITY_POOR_MAX_MS: u64 = 1900;
+
+async fn timed_exec_login(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    command: &str,
+) -> Result<(crate::cli_runner::CliOutput, u64), String> {
+    let start = Instant::now();
+    let output = pool.exec_login(host_id, command).await?;
+    Ok((output, start.elapsed().as_millis() as u64))
+}
+
+async fn timed_openclaw_remote_with_autofix(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    args: &[&str],
+) -> Result<(crate::cli_runner::CliOutput, u64), String> {
+    let start = Instant::now();
+    let output = run_openclaw_remote_with_autofix(pool, host_id, args).await?;
+    Ok((output, start.elapsed().as_millis() as u64))
+}
+
+fn classify_connection_quality(total_ms: u64) -> (&'static str, u8) {
+    match total_ms {
+        0..=SSH_QUALITY_EXCELLENT_MAX_MS => ("excellent", 100),
+        (SSH_QUALITY_EXCELLENT_MAX_MS + 1)..=SSH_QUALITY_GOOD_MAX_MS => ("good", 84),
+        (SSH_QUALITY_GOOD_MAX_MS + 1)..=SSH_QUALITY_FAIR_MAX_MS => ("fair", 66),
+        (SSH_QUALITY_FAIR_MAX_MS + 1)..=SSH_QUALITY_POOR_MAX_MS => ("poor", 42),
+        _ => ("poor", 18),
+    }
+}
+
+fn pick_bottleneck_stage(
+    connect_ms: u64,
+    gateway_ms: u64,
+    config_ms: u64,
+    version_ms: u64,
+) -> (&'static str, u64) {
+    let samples = [
+        ("connect", connect_ms),
+        ("gateway", gateway_ms),
+        ("config", config_ms),
+        ("version", version_ms),
+    ];
+    let mut bottleneck = ("other", 0_u64);
+    for (stage, latency_ms) in samples {
+        if latency_ms > bottleneck.1 {
+            bottleneck = (stage, latency_ms);
+        }
+    }
+    bottleneck
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_connection_quality_respects_tuned_thresholds() {
+        assert_eq!(classify_connection_quality(0), ("excellent", 100));
+        assert_eq!(classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS), ("excellent", 100));
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_EXCELLENT_MAX_MS + 1),
+            ("good", 84)
+        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS), ("good", 84));
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_GOOD_MAX_MS + 1),
+            ("fair", 66)
+        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS), ("fair", 66));
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_FAIR_MAX_MS + 1),
+            ("poor", 42)
+        );
+        assert_eq!(classify_connection_quality(SSH_QUALITY_POOR_MAX_MS), ("poor", 42));
+        assert_eq!(
+            classify_connection_quality(SSH_QUALITY_POOR_MAX_MS + 1),
+            ("poor", 18)
+        );
+    }
+
+    #[test]
+    fn pick_bottleneck_stage_prefers_largest_latency() {
+        let (stage, latency) = pick_bottleneck_stage(120, 90, 400, 250);
+        assert_eq!((stage, latency), ("config", 400));
+    }
+
+    #[test]
+    fn pick_bottleneck_stage_keeps_other_on_empty_measurements() {
+        let (stage, latency) = pick_bottleneck_stage(0, 0, 0, 0);
+        assert_eq!((stage, latency), ("other", 0));
+    }
+}
 
 #[tauri::command]
 pub async fn remote_run_doctor(
@@ -121,6 +220,110 @@ pub async fn remote_get_system_status(
         global_default_model,
         fallback_models,
         ssh_diagnostic,
+    })
+}
+
+#[tauri::command]
+pub async fn remote_get_ssh_connection_profile(
+    pool: State<'_, SshConnectionPool>,
+    host_id: String,
+) -> Result<SshConnectionProfile, String> {
+    let total_start = Instant::now();
+    let (connect_result, gateway_result, config_result, version_result) = tokio::join!(
+        timed_exec_login(&pool, &host_id, "true"),
+        timed_exec_login(
+            &pool,
+            &host_id,
+            "pgrep -f '[o]penclaw-gateway' >/dev/null 2>&1",
+        ),
+        timed_openclaw_remote_with_autofix(&pool, &host_id, &["config", "get", "agents", "--json"]),
+        timed_exec_login(&pool, &host_id, "openclaw --version"),
+    );
+
+    let (connect_res, connect_latency_ms) = connect_result?;
+    let (gateway_res, gateway_latency_ms) = gateway_result?;
+    let (config_res, config_latency_ms) = config_result?;
+    let (version_res, version_latency_ms) = version_result?;
+
+    let config_ok = matches!(&config_res, Ok(output) if output.exit_code == 0);
+    let (active_agents, global_default_model, fallback_models) = match config_res {
+        Ok(ref output) if output.exit_code == 0 => {
+            let cfg: Value = crate::cli_runner::parse_json_output(output).unwrap_or(Value::Null);
+            let explicit = cfg
+                .pointer("/list")
+                .and_then(Value::as_array)
+                .map(|a| a.len() as u32)
+                .unwrap_or(0);
+            let agents = if explicit == 0 { 1 } else { explicit };
+            let model = cfg
+                .pointer("/defaults/model")
+                .and_then(|v| read_model_value(v))
+                .or_else(|| {
+                    cfg.pointer("/default/model")
+                        .and_then(read_model_value)
+                });
+            let fallbacks = cfg
+                .pointer("/defaults/model/fallbacks")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (agents, model, fallbacks)
+        }
+        _ => (0, None, Vec::new()),
+    };
+
+    let _openclaw_version = match version_res {
+        Ok(r) if r.exit_code == 0 => Some(r.stdout.trim().to_string()),
+        Ok(r) => {
+            let trimmed = r.stdout.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Err(_) => None,
+    };
+
+    let healthy = match gateway_res {
+        Ok(r) => r.exit_code == 0,
+        Err(_) if config_ok => true,
+        Err(_) => false,
+    };
+
+    let total_latency_ms = total_start.elapsed().as_millis() as u64;
+    let (quality, quality_score) = classify_connection_quality(total_latency_ms);
+    let (bottleneck_stage, bottleneck_latency_ms) = pick_bottleneck_stage(
+        connect_latency_ms,
+        gateway_latency_ms,
+        config_latency_ms,
+        version_latency_ms,
+    );
+
+    Ok(SshConnectionProfile {
+        status: StatusLight {
+            healthy,
+            active_agents,
+            global_default_model,
+            fallback_models,
+            ssh_diagnostic: None,
+        },
+        connect_latency_ms,
+        gateway_latency_ms,
+        config_latency_ms,
+        version_latency_ms,
+        total_latency_ms,
+        quality: quality.to_string(),
+        quality_score,
+        bottleneck: SshBottleneck {
+            stage: bottleneck_stage.to_string(),
+            latency_ms: bottleneck_latency_ms,
+        },
     })
 }
 

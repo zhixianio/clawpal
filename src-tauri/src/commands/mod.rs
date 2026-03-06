@@ -450,6 +450,27 @@ pub struct StatusExtra {
     pub duplicate_installs: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshBottleneck {
+    pub stage: String,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConnectionProfile {
+    pub status: StatusLight,
+    pub connect_latency_ms: u64,
+    pub gateway_latency_ms: u64,
+    pub config_latency_ms: u64,
+    pub version_latency_ms: u64,
+    pub total_latency_ms: u64,
+    pub quality: String,
+    pub quality_score: u8,
+    pub bottleneck: SshBottleneck,
+}
+
 /// Clear cached openclaw version — call after upgrade so status shows new version.
 pub fn clear_openclaw_version_cache() {
     *OPENCLAW_VERSION_CACHE.lock().unwrap() = None;
