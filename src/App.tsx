@@ -79,7 +79,6 @@ const DEFAULT_DOCKER_INSTANCE_ID = "docker:local";
 type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "doctor" | "logs" | "context" | "orchestrator";
 const INSTANCE_ROUTES: Route[] = ["home", "channels", "recipes", "cron", "doctor", "context", "history"];
 const OPEN_TABS_STORAGE_KEY = "clawpal_open_tabs";
-const WATCHDOG_LATE_GRACE_MS = 5 * 60 * 1000;
 const APP_PREFERENCES_CACHE_KEY = buildCacheKey("__global__", "getAppPreferences", []);
 const CHAT_PANEL_WIDTH = 380;
 
@@ -152,16 +151,6 @@ function hashInstanceToken(raw: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
-}
-
-function watchdogJobLikelyLate(job: { lastScheduledAt?: string; lastRunAt?: string | null } | undefined): boolean {
-  if (!job?.lastScheduledAt) return false;
-  const scheduledAt = Date.parse(job.lastScheduledAt);
-  if (!Number.isFinite(scheduledAt)) return false;
-  const runAt = job.lastRunAt ? Date.parse(job.lastRunAt) : Number.NaN;
-  const missedThisSchedule = !Number.isFinite(runAt) || runAt + 1000 < scheduledAt;
-  const overdue = Date.now() - scheduledAt > WATCHDOG_LATE_GRACE_MS;
-  return missedThisSchedule && overdue;
 }
 
 function normalizeDockerInstance(instance: DockerInstance): DockerInstance {
@@ -353,7 +342,6 @@ export function App() {
   }, []);
 
   const [appUpdateAvailable, setAppUpdateAvailable] = useState(false);
-  const [hasEscalatedCron, setHasEscalatedCron] = useState(false);
   const [appVersion, setAppVersion] = useState("");
 
   // Startup: check for updates + analytics ping
@@ -1280,33 +1268,6 @@ export function App() {
     refreshDiscordChannelsCache,
   ]);
 
-  // Poll watchdog status for escalated cron jobs (red dot badge)
-  useEffect(() => {
-    const check = () => {
-      const p = isRemote
-        ? api.remoteGetWatchdogStatus(activeInstance)
-        : api.getWatchdogStatus();
-      p.then((status: any) => {
-        if (status?.jobs) {
-          const hasLikelyLateJob = Object.values(status.jobs).some((j: any) => watchdogJobLikelyLate(j));
-          setHasEscalatedCron(hasLikelyLateJob);
-        } else {
-          setHasEscalatedCron(false);
-        }
-      }).catch((error) => {
-        logDevIgnoredError("watchdog status fetch", error);
-        setHasEscalatedCron(false);
-      });
-    };
-    const initialDelayMs = isRemote ? 5000 : 500;
-    const initial = setTimeout(check, initialDelayMs);
-    const interval = setInterval(check, 30000);
-    return () => {
-      clearTimeout(initial);
-      clearInterval(interval);
-    };
-  }, [activeInstance, isRemote]);
-
   const bumpConfigVersion = useCallback(() => {
     setConfigVersion((v) => v + 1);
   }, []);
@@ -1494,7 +1455,6 @@ export function App() {
         active: route === "cron",
         icon: <ClockIcon className="size-4" />,
         label: t("nav.cron"),
-        badge: hasEscalatedCron ? <span className="ml-auto w-2 h-2 rounded-full bg-red-500 animate-pulse" /> : undefined,
         onClick: () => navigateRoute("cron"),
       },
       {

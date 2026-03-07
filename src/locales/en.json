@@ -868,6 +868,7 @@
   "start.check": "Check",
   "start.unreachable": "Unreachable",
   "start.offline": "Offline",
+  "start.notInstalled": "Not installed",
   "start.agents_zero": "No agents",
   "start.agents_one": "{{count}} agent",
   "start.agents_other": "{{count}} agents",

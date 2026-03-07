@@ -25,6 +25,7 @@ interface InstanceCardProps {
   healthy: boolean | null; // null = unknown/loading
   agentCount: number;
   opened: boolean; // whether this instance is currently open in tab bar
+  notInstalled?: boolean;
   checked?: boolean; // whether health has been checked (SSH only)
   checking?: boolean; // whether a check is in progress (SSH only)
   onCheck?: () => void; // trigger manual health check (SSH only)
@@ -114,6 +115,7 @@ export function InstanceCard({
   healthy,
   agentCount,
   opened,
+  notInstalled = false,
   checked,
   checking,
   onCheck,
@@ -232,7 +234,9 @@ export function InstanceCard({
         {/* Bottom row: health + agent count */}
         {!discovered && (
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            {needsCheck ? (
+            {notInstalled ? (
+              <span>{t("start.notInstalled")}</span>
+            ) : needsCheck ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -267,11 +271,6 @@ export function InstanceCard({
                   {t("start.agents", { count: agentCount })}
                 </Badge>
               </>
-            )}
-            {opened && (
-              <Badge variant="outline" className="text-xs">
-                {t("start.opened")}
-              </Badge>
             )}
           </div>
         )}

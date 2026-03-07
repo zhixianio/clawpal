@@ -185,7 +185,7 @@ describe("InstanceCard SSH connection profile", () => {
     expect(html).toContain("lucide-refresh-cw");
   });
 
-  test("shows checking state and opened badge while a check is running", async () => {
+  test("shows checking state while a check is running without an opened badge", async () => {
     await i18n.changeLanguage("en");
 
     const html = renderToStaticMarkup(
@@ -206,8 +206,32 @@ describe("InstanceCard SSH connection profile", () => {
     );
 
     expect(html).toContain(">Checking...</span>");
-    expect(html).toContain(">Open<");
+    expect(html).not.toContain(">Open<");
     expect(html).toContain("animate-spin");
+  });
+
+  test("renders a local not-installed summary without health or agent badges", async () => {
+    await i18n.changeLanguage("en");
+
+    const html = renderToStaticMarkup(
+      React.createElement(I18nextProvider, {
+        i18n,
+        children: React.createElement(InstanceCard, {
+          id: "local",
+          label: "Local",
+          type: "local",
+          healthy: false,
+          agentCount: 1,
+          opened: false,
+          notInstalled: true,
+          onClick: () => {},
+        }),
+      }),
+    );
+
+    expect(html).toContain(">Not installed<");
+    expect(html).not.toContain(">Unhealthy<");
+    expect(html).not.toContain(">1 agent<");
   });
 
   test("renders discovered instance source and connect call to action", async () => {

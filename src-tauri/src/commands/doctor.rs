@@ -110,6 +110,25 @@ mod tests {
         let (stage, latency) = pick_bottleneck_stage(0, 0, 0, 0);
         assert_eq!((stage, latency), ("other", 0));
     }
+
+    #[test]
+    fn count_agent_entries_from_cli_json_uses_real_list_length() {
+        let json = serde_json::json!([
+            { "id": "main" },
+            { "id": "agent-2" },
+            { "id": "agent-3" },
+            { "id": "agent-4" }
+        ]);
+
+        assert_eq!(count_agent_entries_from_cli_json(&json).unwrap(), 4);
+    }
+
+    #[test]
+    fn count_agent_entries_from_cli_json_keeps_empty_lists_empty() {
+        let json = serde_json::json!([]);
+
+        assert_eq!(count_agent_entries_from_cli_json(&json).unwrap(), 0);
+    }
 }
 
 #[tauri::command]
@@ -165,20 +184,26 @@ pub async fn remote_get_system_status(
     pool: State<'_, SshConnectionPool>,
     host_id: String,
 ) -> Result<StatusLight, String> {
-    // Tier 1: fast, essential — health check + agents config (2 SSH calls in parallel)
-    let (config_res, pgrep_res) = tokio::join!(
+    // Tier 1: fast, essential — health check + config + real agent list.
+    let (config_res, agents_res, pgrep_res) = tokio::join!(
         run_openclaw_remote_with_autofix(&pool, &host_id, &["config", "get", "agents", "--json"]),
+        run_openclaw_remote_with_autofix(&pool, &host_id, &["agents", "list", "--json"]),
         pool.exec(&host_id, "pgrep -f '[o]penclaw-gateway' >/dev/null 2>&1"),
     );
 
     let config_ok = matches!(&config_res, Ok(output) if output.exit_code == 0);
-    let ssh_diagnostic = match (&config_res, &pgrep_res) {
-        (Err(error), _) => Some(from_any_error(
+    let ssh_diagnostic = match (&config_res, &agents_res, &pgrep_res) {
+        (Err(error), _, _) => Some(from_any_error(
             SshStage::RemoteExec,
             SshIntent::HealthCheck,
             error.clone(),
         )),
-        (_, Err(error)) => Some(from_any_error(
+        (_, Err(error), _) => Some(from_any_error(
+            SshStage::RemoteExec,
+            SshIntent::HealthCheck,
+            error.clone(),
+        )),
+        (_, _, Err(error)) => Some(from_any_error(
             SshStage::RemoteExec,
             SshIntent::HealthCheck,
             error.clone(),
@@ -186,15 +211,17 @@ pub async fn remote_get_system_status(
         _ => None,
     };
 
-    let (active_agents, global_default_model, fallback_models) = match config_res {
+    let active_agents = match &agents_res {
+        Ok(output) if output.exit_code == 0 => {
+            let json = crate::cli_runner::parse_json_output(output).unwrap_or(Value::Null);
+            count_agent_entries_from_cli_json(&json).unwrap_or(0)
+        }
+        _ => 0,
+    };
+
+    let (global_default_model, fallback_models) = match config_res {
         Ok(ref output) if output.exit_code == 0 => {
             let cfg: Value = crate::cli_runner::parse_json_output(output).unwrap_or(Value::Null);
-            let explicit = cfg
-                .pointer("/list")
-                .and_then(Value::as_array)
-                .map(|a| a.len() as u32)
-                .unwrap_or(0);
-            let agents = if explicit == 0 { 1 } else { explicit };
             let model = cfg
                 .pointer("/defaults/model")
                 .and_then(|v| read_model_value(v))
@@ -212,9 +239,9 @@ pub async fn remote_get_system_status(
                         .collect()
                 })
                 .unwrap_or_default();
-            (agents, model, fallbacks)
+            (model, fallbacks)
         }
-        _ => (0, None, Vec::new()),
+        _ => (None, Vec::new()),
     };
 
     // Avoid false negatives from transient SSH exec failures:
@@ -241,7 +268,7 @@ pub async fn remote_get_ssh_connection_profile(
     host_id: String,
 ) -> Result<SshConnectionProfile, String> {
     let total_start = Instant::now();
-    let (connect_result, gateway_result, config_result, version_result) = tokio::join!(
+    let (connect_result, gateway_result, config_result, agents_result, version_result) = tokio::join!(
         timed_exec_login(&pool, &host_id, "true"),
         timed_exec_login(
             &pool,
@@ -249,16 +276,29 @@ pub async fn remote_get_ssh_connection_profile(
             "pgrep -f '[o]penclaw-gateway' >/dev/null 2>&1",
         ),
         timed_openclaw_remote_with_autofix(&pool, &host_id, &["config", "get", "agents", "--json"]),
+        run_openclaw_remote_with_autofix(&pool, &host_id, &["agents", "list", "--json"]),
         timed_exec_login(&pool, &host_id, "openclaw --version"),
     );
 
     let (_connect_res, connect_latency_ms) = connect_result?;
     let (gateway_res, gateway_latency_ms) = gateway_result?;
     let (config_res, config_latency_ms) = config_result?;
+    let agents_res = agents_result?;
     let (version_res, version_latency_ms) = version_result?;
 
     let config_ok = config_res.exit_code == 0;
-    let (active_agents, global_default_model, fallback_models) = if config_ok {
+    let active_agents = if agents_res.exit_code == 0 {
+        let output = crate::cli_runner::CliOutput {
+            stdout: agents_res.stdout.clone(),
+            stderr: agents_res.stderr.clone(),
+            exit_code: agents_res.exit_code as i32,
+        };
+        let json = crate::cli_runner::parse_json_output(&output).unwrap_or(Value::Null);
+        count_agent_entries_from_cli_json(&json).unwrap_or(0)
+    } else {
+        0
+    };
+    let (global_default_model, fallback_models) = if config_ok {
         let cfg: Value = {
             let output = crate::cli_runner::CliOutput {
                 stdout: config_res.stdout.clone(),
@@ -267,12 +307,6 @@ pub async fn remote_get_ssh_connection_profile(
             };
             crate::cli_runner::parse_json_output(&output).unwrap_or(Value::Null)
         };
-        let explicit = cfg
-            .pointer("/list")
-            .and_then(Value::as_array)
-            .map(|a| a.len() as u32)
-            .unwrap_or(0);
-        let agents = if explicit == 0 { 1 } else { explicit };
         let model = cfg
             .pointer("/defaults/model")
             .and_then(|v| read_model_value(v))
@@ -287,9 +321,9 @@ pub async fn remote_get_ssh_connection_profile(
                     .collect()
             })
             .unwrap_or_default();
-        (agents, model, fallbacks)
+        (model, fallbacks)
     } else {
-        (0, None, Vec::new())
+        (None, Vec::new())
     };
 
     let _openclaw_version = {
@@ -399,18 +433,11 @@ pub async fn get_status_light() -> Result<StatusLight, String> {
         let cfg = read_openclaw_config(&paths)?;
         let local_health = clawpal_core::health::check_instance(&local_health_instance())
             .map_err(|e| e.to_string())?;
-        let explicit_count = cfg
-            .get("agents")
-            .and_then(|a| a.get("list"))
-            .and_then(|a| a.as_array())
-            .map(|a| a.len() as u32)
+        let active_agents = crate::cli_runner::run_openclaw(&["agents", "list", "--json"])
+            .ok()
+            .and_then(|output| crate::cli_runner::parse_json_output(&output).ok())
+            .and_then(|json| count_agent_entries_from_cli_json(&json).ok())
             .unwrap_or(0);
-        // At least 1 agent (implicit "main") when agents section exists
-        let active_agents = if explicit_count == 0 && cfg.get("agents").is_some() {
-            1
-        } else {
-            explicit_count
-        };
         let global_default_model = cfg
             .pointer("/agents/defaults/model")
             .and_then(read_model_value)
@@ -432,11 +459,7 @@ pub async fn get_status_light() -> Result<StatusLight, String> {
 
         Ok(StatusLight {
             healthy: local_health.healthy,
-            active_agents: if local_health.active_agents == 0 {
-                active_agents
-            } else {
-                local_health.active_agents
-            },
+            active_agents,
             global_default_model,
             fallback_models,
             ssh_diagnostic: None,

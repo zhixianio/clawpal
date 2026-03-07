@@ -868,6 +868,7 @@
   "start.check": "检查",
   "start.unreachable": "不可达",
   "start.offline": "离线",
+  "start.notInstalled": "未安装",
   "start.agents_zero": "无 agent",
   "start.agents_one": "{{count}} 个 agent",
   "start.agents_other": "{{count}} 个 agent",

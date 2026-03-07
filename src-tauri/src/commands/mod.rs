@@ -640,16 +640,23 @@ fn agent_has_sessions(base_dir: &std::path::Path, agent_id: &str) -> bool {
     }
 }
 
+fn agent_entries_from_cli_json(json: &Value) -> Result<&Vec<Value>, String> {
+    json.as_array()
+        .or_else(|| json.get("agents").and_then(Value::as_array))
+        .ok_or("agents list output is not an array".into())
+}
+
+pub(crate) fn count_agent_entries_from_cli_json(json: &Value) -> Result<u32, String> {
+    Ok(agent_entries_from_cli_json(json)?.len() as u32)
+}
+
 /// Parse the JSON output of `openclaw agents list --json` into Vec<AgentOverview>.
 /// `online_set`: if Some, use it to determine online status; if None, check local sessions.
 fn parse_agents_cli_output(
     json: &Value,
     online_set: Option<&std::collections::HashSet<String>>,
 ) -> Result<Vec<AgentOverview>, String> {
-    let arr = json
-        .as_array()
-        .or_else(|| json.get("agents").and_then(Value::as_array))
-        .ok_or("agents list output is not an array")?;
+    let arr = agent_entries_from_cli_json(json)?;
     let paths = if online_set.is_none() {
         Some(resolve_paths())
     } else {
@@ -692,18 +699,25 @@ fn parse_agents_cli_output(
             workspace,
         });
     }
-    if agents.is_empty() {
-        agents.push(AgentOverview {
-            id: "main".into(),
-            name: None,
-            emoji: None,
-            model: None,
-            channels: Vec::new(),
-            online: false,
-            workspace: None,
-        });
-    }
     Ok(agents)
+}
+
+#[cfg(test)]
+mod parse_agents_cli_output_tests {
+    use super::{count_agent_entries_from_cli_json, parse_agents_cli_output};
+    use serde_json::json;
+
+    #[test]
+    fn keeps_empty_agent_lists_empty() {
+        let parsed = parse_agents_cli_output(&json!([]), None).unwrap();
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn counts_real_agent_entries_without_implicit_main() {
+        let count = count_agent_entries_from_cli_json(&json!([])).unwrap();
+        assert_eq!(count, 0);
+    }
 }
 
 fn expand_tilde(path: &str) -> String {

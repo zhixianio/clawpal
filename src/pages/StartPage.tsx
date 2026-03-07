@@ -23,6 +23,7 @@ import {
   shouldDeferInteractiveSshAutoProbe,
 } from "@/lib/sshConnectionProfile";
 import type { DockerInstance, SshHost, InstallSession, RegisteredInstance, DiscoveredInstance, SshConnectionProfile } from "@/lib/types";
+import { shouldShowLocalNotInstalled } from "./start-page-instance-health";
 
 const DEFAULT_DOCKER_OPENCLAW_HOME = "~/.clawpal/docker-local";
 const DEFAULT_DOCKER_CLAWPAL_DATA_DIR = "~/.clawpal/docker-local/data";
@@ -504,6 +505,7 @@ export function StartPage({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {instances.map((inst) => {
           const health = healthMap[inst.id];
+          const localNotInstalled = shouldShowLocalNotInstalled(inst.id, health);
           const dockerInst = inst.type === "docker"
             ? dockerInstances.find((d) => d.id === inst.id)
             : undefined;
@@ -520,6 +522,7 @@ export function StartPage({
               healthy={health?.healthy ?? null}
               agentCount={health?.agentCount ?? 0}
               opened={openTabIds.has(inst.id)}
+              notInstalled={localNotInstalled}
               checked={inst.type === "ssh" ? sshChecked[inst.id] ?? false : undefined}
               checking={inst.type === "ssh" ? sshChecking[inst.id] ?? false : undefined}
               onCheck={inst.type === "ssh" ? () => handleSshCheck(inst.id) : undefined}
