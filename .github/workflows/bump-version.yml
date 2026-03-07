@@ -506,14 +506,9 @@ jobs:
           done
 
           if [ -n "$BUNDLE_DIR" ]; then
-            find "$BUNDLE_DIR" -type f \( \
-              -name "*.dmg" -o \
-              -name "*.deb" -o \
-              -name "*.AppImage" -o \
-              -name "*.msi" -o \
-              -name "*.exe" -o \
-              -name "*.rpm" \
-            \) -exec cp {} artifacts/ \; 2>/dev/null || true
+            find "$BUNDLE_DIR" -type f \
+              \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" -o -name "*.rpm" \) \
+              -exec cp {} artifacts/ \; 2>/dev/null || true
           fi
 
           if [ "${{ matrix.platform }}" = "windows-latest" ]; then

@@ -1025,14 +1025,10 @@ jobs:
           FILES=()
           while IFS= read -r file; do
             FILES+=("$file")
-          done < <(find "$BUNDLE_DIR" -type f \( \
-            -name "*.dmg" -o \
-            -name "*.deb" -o \
-            -name "*.AppImage" -o \
-            -name "*.msi" -o \
-            -name "*.exe" -o \
-            -name "*.rpm" \
-          \))
+          done < <(
+            find "$BUNDLE_DIR" -type f \
+              \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" -o -name "*.rpm" \)
+          )
 
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "::error::No bundle assets found to rename as unsigned"
@@ -1112,14 +1108,9 @@ jobs:
             done
 
             if [ -n "$BUNDLE_DIR" ]; then
-              find "$BUNDLE_DIR" -type f \( \
-                -name "*.dmg" -o \
-                -name "*.deb" -o \
-                -name "*.AppImage" -o \
-                -name "*.msi" -o \
-                -name "*.exe" -o \
-                -name "*.rpm" \
-              \) -exec cp {} final-artifacts/ \;
+              find "$BUNDLE_DIR" -type f \
+                \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" -o -name "*.rpm" \) \
+                -exec cp {} final-artifacts/ \;
             fi
           fi
 
