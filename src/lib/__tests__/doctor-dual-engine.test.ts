@@ -115,7 +115,7 @@ describe("launch guidance handoff", () => {
     });
 
     expect(result.shouldQueue).toBe(true);
-    expect(result.engine).toBe("openclaw");
+    expect(result.engine).toBe("zeroclaw");
     expect(result.nextLaunchKey).toBe(
       buildDoctorLaunchGuidanceKey({
         instanceId: "ssh:hetzner",

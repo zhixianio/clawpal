@@ -1,19 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FileTextIcon, DownloadIcon } from "lucide-react";
 import { toast } from "sonner";
-import { buildCacheKey, hasGuidanceEmitted, subscribeToCacheKey, useApi } from "@/lib/use-api";
-import { api } from "@/lib/api";
+import { hasGuidanceEmitted, useApi } from "@/lib/use-api";
 import { useInstance } from "@/lib/instance-context";
 import { useDoctorAgent } from "@/lib/use-doctor-agent";
 import type {
   RescuePrimaryDiagnosisResult,
   RescuePrimaryIssue,
   RescuePrimaryRepairResult,
-  ModelProfile,
 } from "@/lib/types";
-import { profileToModelValue } from "@/lib/model-value";
 import {
   Card,
   CardHeader,
@@ -39,14 +35,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Skeleton } from "@/components/ui/skeleton";
 import { DoctorChat } from "@/components/DoctorChat";
-import { TokenBadge } from "@/components/TokenBadge";
-import { ModelSwitcher } from "@/components/ModelSwitcher";
-import { SessionAnalysisPanel } from "@/components/SessionAnalysisPanel";
+import { DoctorChatToolbar } from "@/components/DoctorChatToolbar";
 import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
-import type { BackupInfo } from "@/lib/types";
-import { formatTime, formatBytes } from "@/lib/utils";
+import { resolveDoctorPageFeatureVisibility } from "@/lib/doctor-page-features";
 import {
   buildDoctorLaunchGuidanceKey,
   hasZeroclawSession as hasZeroclawSessionState,
@@ -104,6 +96,7 @@ interface PendingDoctorLaunch {
 
 interface DoctorProps {
   active?: boolean;
+  showGatewayLogsUi?: boolean;
   launchGuidance?: DoctorLaunchGuidance | null;
   onLaunchGuidanceConsumed?: (instanceId: string) => void;
   connectRemoteHost?: (hostId: string) => Promise<void>;
@@ -153,6 +146,7 @@ function buildLaunchGuidanceContext(guidance: DoctorLaunchGuidance): string {
 
 export function Doctor({
   active = false,
+  showGatewayLogsUi = false,
   launchGuidance = null,
   onLaunchGuidanceConsumed,
   connectRemoteHost,
@@ -162,34 +156,22 @@ export function Doctor({
   const { instanceId, isDocker, isRemote, isConnected } = useInstance();
   const zeroclawDoctor = useDoctorAgent();
   const openclawDoctor = useDoctorAgent({ enableBridgeEvents: false });
-  const [runtimeModel, setRuntimeModel] = useState<string | undefined>(undefined);
-  const [sessionModelOverride, setSessionModelOverride] = useState<string | undefined>(undefined);
-  const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [zeroclawDiagnosing, setZeroclawDiagnosing] = useState(false);
   const [zeroclawStartupStage, setZeroclawStartupStage] = useState<"idle" | "connecting" | "collecting" | "starting">("idle");
   const [zeroclawStartError, setZeroclawStartError] = useState<string | null>(null);
   const [openclawDiagnosing, setOpenclawDiagnosing] = useState(false);
   const [openclawStartError, setOpenclawStartError] = useState<string | null>(null);
 
-  // Backups state
-  const [backups, setBackups] = useState<BackupInfo[] | null>(null);
-  const [backupMessage, setBackupMessage] = useState("");
-  const [deletingBackupName, setDeletingBackupName] = useState<string | null>(null);
-  const [fadingOutBackupName, setFadingOutBackupName] = useState<string | null>(null);
-
   // Full-auto confirmation dialog
   const [fullAutoConfirmOpen, setFullAutoConfirmOpen] = useState(false);
 
   // Logs state
   const [logsOpen, setLogsOpen] = useState(false);
-  const [logsSource, setLogsSource] = useState<"clawpal" | "gateway">("clawpal");
   const [logsTab, setLogsTab] = useState<"app" | "error">("app");
   const [logsContent, setLogsContent] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState("");
-  const [showZeroclawDiagnosis, setShowZeroclawDiagnosis] = useState(false);
-  const [showRescueBotUi, setShowRescueBotUi] = useState(false);
-  const [zeroclawDoctorUiLoaded, setZeroclawDoctorUiLoaded] = useState(false);
+  const [zeroclawDoctorUiLoaded] = useState(true);
   const [pendingDoctorLaunch, setPendingDoctorLaunch] = useState<PendingDoctorLaunch | null>(null);
   const logsContentRef = useRef<HTMLPreElement>(null);
   const [rescueState, setRescueState] = useState<RescueUiState>(createInitialRescueUiState);
@@ -304,66 +286,6 @@ export function Doctor({
     zeroclawDoctor.setTarget,
   ]);
 
-  // Fetch runtime target model for TokenBadge / ModelSwitcher.
-  // Subscribe to cache invalidation so the model updates when changed in Settings.
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      ua.getZeroclawRuntimeTarget()
-        .then((target) => {
-          if (!cancelled && target?.model) setRuntimeModel(target.model);
-        })
-        .catch(() => {});
-    };
-    load();
-    const cacheKey = buildCacheKey("__global__", "getZeroclawRuntimeTarget", []);
-    const unsubscribe = subscribeToCacheKey(cacheKey, load);
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [ua]);
-
-  useEffect(() => {
-    let cancelled = false;
-    ua.listModelProfiles()
-      .then((profiles) => {
-        if (cancelled) return;
-        setModelProfiles(profiles.filter((profile) => profile.enabled));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [ua]);
-
-  // Use instanceId as the stable session key for model override / usage tracking.
-  // This matches the backend which looks up overrides by instance_id.
-  const doctorSessionId = instanceId || "local";
-
-  // Track session model override so TokenBadge uses the effective model for cost.
-  useEffect(() => {
-    if (!doctorSessionId) return;
-    invoke<string | null>("get_session_model_override", { sessionId: doctorSessionId })
-      .then((m) => setSessionModelOverride(m ?? undefined))
-      .catch(() => {});
-  }, [doctorSessionId]);
-
-  // Effective model: session override takes priority over global runtime model.
-  const effectiveModel = sessionModelOverride ?? runtimeModel;
-  const availableModels = useMemo(() => {
-    const uniqueModels = new Map<string, string>();
-    for (const profile of modelProfiles) {
-      const model = profileToModelValue(profile);
-      if (!model) continue;
-      const normalized = model.trim();
-      if (!normalized) continue;
-      const key = normalized.toLowerCase();
-      if (!uniqueModels.has(key)) uniqueModels.set(key, normalized);
-    }
-    return Array.from(uniqueModels.values()).sort((a, b) => a.localeCompare(b));
-  }, [modelProfiles]);
-
   const handleStartDiagnosis = async (
     extraContext?: string,
     overrideEngine?: "zeroclaw" | "openclaw"
@@ -469,6 +391,22 @@ export function Doctor({
     }
   };
 
+  const handleClearDiagnosis = async (engine: "zeroclaw" | "openclaw" = "zeroclaw") => {
+    const doctorForEngine = engine === "zeroclaw" ? zeroclawDoctor : openclawDoctor;
+    if (doctorForEngine.connected || doctorForEngine.bridgeConnected) {
+      await doctorForEngine.disconnect();
+    }
+    doctorForEngine.clearHistory();
+    if (engine === "zeroclaw") {
+      setZeroclawDiagnosing(false);
+      setZeroclawStartupStage("idle");
+      setZeroclawStartError(null);
+    } else {
+      setOpenclawDiagnosing(false);
+      setOpenclawStartError(null);
+    }
+  };
+
   const pendingOpenclawLaunch = pendingDoctorLaunch?.engine === "openclaw"
     ? pendingDoctorLaunch
     : null;
@@ -490,12 +428,10 @@ export function Doctor({
   };
 
   // Logs helpers
-  const fetchLog = (source: "clawpal" | "gateway", which: "app" | "error") => {
+  const fetchLog = (which: "app" | "error") => {
     setLogsLoading(true);
     setLogsError("");
-    const fn = source === "clawpal"
-      ? (which === "app" ? api.readAppLog : api.readErrorLog)
-      : (which === "app" ? ua.readGatewayLog : ua.readGatewayErrorLog);
+    const fn = which === "app" ? ua.readGatewayLog : ua.readGatewayErrorLog;
     fn(200)
       .then((text) => {
         setLogsContent(text.trim() ? text : t("doctor.noLogs"));
@@ -513,8 +449,7 @@ export function Doctor({
       .finally(() => setLogsLoading(false));
   };
 
-  const openLogs = (source: "clawpal" | "gateway") => {
-    setLogsSource(source);
+  const openLogs = () => {
     setLogsTab("app");
     setLogsContent("");
     setLogsError("");
@@ -525,7 +460,7 @@ export function Doctor({
     try {
       const content = logsContent || logsError || t("doctor.noLogs");
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `${logsSource}-${logsTab}-${timestamp}.log`;
+      const filename = `gateway-${logsTab}-${timestamp}.log`;
       const blob = new Blob([content], { type: "text/plain" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -835,13 +770,14 @@ export function Doctor({
 
   useEffect(() => {
     let cancelled = false;
-    if (!showRescueBotUi) return;
+    const { showRescueBot } = resolveDoctorPageFeatureVisibility();
+    if (!showRescueBot) return;
     void refreshRescueStatus(() => cancelled);
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [instanceId, isRemote, isConnected, showRescueBotUi]);
+  }, [instanceId, isRemote, isConnected]);
 
   useEffect(() => {
     const resolved = resolvePendingDoctorLaunch({
@@ -863,51 +799,14 @@ export function Doctor({
   }, [active, launchGuidance, onLaunchGuidanceConsumed, zeroclawDoctorUiLoaded]);
 
   useEffect(() => {
-    if (logsOpen) fetchLog(logsSource, logsTab);
+    if (logsOpen) fetchLog(logsTab);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [logsOpen, logsSource, logsTab]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadZeroclawDoctorUiPreference = () => {
-      ua.getAppPreferences()
-        .then((prefs) => {
-          if (!cancelled) {
-            setShowZeroclawDiagnosis(Boolean(prefs.showZeroclawDoctorUi));
-            setShowRescueBotUi(Boolean(prefs.showRescueBotUi));
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setShowZeroclawDiagnosis(false);
-            setShowRescueBotUi(false);
-          }
-        })
-        .finally(() => {
-          if (!cancelled) {
-            setZeroclawDoctorUiLoaded(true);
-          }
-        });
-    };
-
-    loadZeroclawDoctorUiPreference();
-
-    const cacheKey = buildCacheKey("__global__", "getAppPreferences", []);
-    const unsubscribe = subscribeToCacheKey(cacheKey, loadZeroclawDoctorUiPreference);
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [ua]);
-
-  // Backups
-  const refreshBackups = useCallback(() => {
-    ua.listBackups().then(setBackups).catch((e) => console.error("Failed to load backups:", e));
-  }, [ua]);
-  useEffect(refreshBackups, [refreshBackups]);
-  const showRescueBotCards = showRescueBotUi;
+  }, [logsOpen, logsTab]);
+  const {
+    showDoctorClaw: showZeroclawDiagnosis,
+    showOtherAgentHelp: showOpenclawDoctorCard,
+    showRescueBot: showRescueBotCards,
+  } = resolveDoctorPageFeatureVisibility();
   const isWsl2 = instanceId.startsWith("wsl2:");
   const displayedDoctorTarget = isRemote || isDocker || isWsl2 ? instanceId : "local";
   const instanceTypeLabel = isRemote
@@ -917,7 +816,6 @@ export function Doctor({
       : isWsl2
         ? t("doctor.targetTypeWsl2")
         : t("doctor.targetTypeLocal");
-  const activeSourceLabel = t("doctor.engineZeroclaw");
   const isPureLocal = !isRemote && !isDocker && !isWsl2;
 
   return (
@@ -929,24 +827,18 @@ export function Doctor({
             <CardHeader className="pb-0">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <CardTitle className="text-base">{t("doctor.engineZeroclaw")}</CardTitle>
-                <div className="flex items-center gap-2 flex-wrap justify-end">
-                  <span className="text-xs text-muted-foreground">{t("doctor.targetExecutionLabel")}</span>
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{displayedDoctorTarget}</code>
-                  <Badge variant="outline" className="text-[10px]">{instanceTypeLabel}</Badge>
-                  {isPureLocal && (
-                    <span className="text-[11px] text-amber-700 dark:text-amber-300">
-                      {t("doctor.targetExecutionLocalWarning")}
-                    </span>
-                  )}
-                  <Button variant="outline" size="sm" onClick={() => openLogs("clawpal")}>
-                    <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
-                    {t("doctor.clawpalLogs")}
+                {showGatewayLogsUi ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={openLogs}
+                    aria-label={t("doctor.gatewayLogs")}
+                    title={t("doctor.gatewayLogs")}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <FileTextIcon className="size-3.5" />
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
-                    <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
-                    {t("doctor.gatewayLogs")}
-                  </Button>
-                </div>
+                ) : null}
               </div>
             </CardHeader>
             <CardContent>
@@ -1021,35 +913,20 @@ export function Doctor({
                       {startupHint}
                     </div>
                   )}
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Badge variant="outline" className="text-xs">
-                        {activeSourceLabel}
-                      </Badge>
-                      <TokenBadge sessionId={doctorSessionId} model={effectiveModel} />
-                      <ModelSwitcher
-                        sessionId={doctorSessionId}
-                        defaultModel={runtimeModel}
-                        availableModels={availableModels}
-                        onModelChange={setSessionModelOverride}
-                      />
-                    </div>
-                    <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={zeroclawDoctor.fullAuto}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setFullAutoConfirmOpen(true);
-                          } else {
-                            zeroclawDoctor.setFullAuto(false);
-                          }
-                        }}
-                        className="accent-primary"
-                      />
-                      {t("doctor.fullAuto")}
-                    </label>
-                  </div>
+                  <DoctorChatToolbar
+                    fullAuto={zeroclawDoctor.fullAuto}
+                    clearDisabled={zeroclawDoctor.loading || isZeroclawStarting}
+                    onFullAutoChange={(checked) => {
+                      if (checked) {
+                        setFullAutoConfirmOpen(true);
+                      } else {
+                        zeroclawDoctor.setFullAuto(false);
+                      }
+                    }}
+                    onClear={() => {
+                      void handleClearDiagnosis("zeroclaw");
+                    }}
+                  />
                   <DoctorChat
                     messages={zeroclawDoctor.messages}
                     loading={zeroclawDoctor.loading}
@@ -1065,6 +942,7 @@ export function Doctor({
           </Card>
         )}
 
+        {showOpenclawDoctorCard && (
         <Card className="gap-2 py-4 mb-4">
           <CardHeader className="pb-0">
             <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1088,7 +966,7 @@ export function Doctor({
                     {t("doctor.targetExecutionLocalWarning")}
                   </span>
                 )}
-                <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                <Button variant="outline" size="sm" onClick={openLogs}>
                   <FileTextIcon className="h-3.5 w-3.5 mr-1.5" />
                   {t("doctor.gatewayLogs")}
                 </Button>
@@ -1125,6 +1003,7 @@ export function Doctor({
             </Button>
           </CardContent>
         </Card>
+        )}
 
         {showRescueBotCards && (
           <Card className="mb-4 gap-2 py-4">
@@ -1210,7 +1089,7 @@ export function Doctor({
                   <div>{rescueMessage}</div>
                   {rescueMessageTone === "error" && (
                     <div className="mt-2">
-                      <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                      <Button variant="outline" size="sm" onClick={openLogs}>
                         {t("doctor.viewGatewayLogs")}
                       </Button>
                     </div>
@@ -1254,7 +1133,7 @@ export function Doctor({
                 <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   <div>{primaryCheckError}</div>
                   <div className="mt-2">
-                    <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                    <Button variant="outline" size="sm" onClick={openLogs}>
                       {t("doctor.viewGatewayLogs")}
                     </Button>
                   </div>
@@ -1264,7 +1143,7 @@ export function Doctor({
                 <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                   <div>{primaryRepairError}</div>
                   <div className="mt-2">
-                    <Button variant="outline" size="sm" onClick={() => openLogs("gateway")}>
+                    <Button variant="outline" size="sm" onClick={openLogs}>
                       {t("doctor.viewGatewayLogs")}
                     </Button>
                   </div>
@@ -1444,9 +1323,7 @@ export function Doctor({
       <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>
-              {logsSource === "clawpal" ? t("doctor.clawpalLogs") : t("doctor.gatewayLogs")}
-            </DialogTitle>
+            <DialogTitle>{t("doctor.gatewayLogs")}</DialogTitle>
           </DialogHeader>
           <div className="flex items-center gap-2 flex-wrap mb-2">
             <Button
@@ -1466,7 +1343,7 @@ export function Doctor({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => fetchLog(logsSource, logsTab)}
+              onClick={() => fetchLog(logsTab)}
               disabled={logsLoading}
             >
               {t("doctor.refreshLogs")}
@@ -1495,161 +1372,6 @@ export function Doctor({
         </DialogContent>
       </Dialog>
 
-      {/* Sessions */}
-      <div className="mt-8">
-        <h3 className="text-lg font-semibold mb-4">{t("doctor.sessions")}</h3>
-        <SessionAnalysisPanel />
-      </div>
-
-      {/* Backups */}
-      <div className="mt-8">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold">{t("doctor.backups")}</h3>
-          <AsyncActionButton
-            size="sm"
-            variant="outline"
-            loadingText={t("home.creating")}
-            onClick={async () => {
-              setBackupMessage("");
-              try {
-                const info = await ua.backupBeforeUpgrade();
-                setBackupMessage(t("home.backupCreated", { name: info.name }));
-                refreshBackups();
-              } catch (e) {
-                if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.backupFailed", { error: String(e) }));
-              }
-            }}
-          >
-            {t("home.createBackup")}
-          </AsyncActionButton>
-        </div>
-        {backupMessage && (
-          <p className="text-sm text-muted-foreground mb-2">{backupMessage}</p>
-        )}
-        {backups === null ? (
-          <div className="space-y-2">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
-          </div>
-        ) : backups.length === 0 ? (
-          <p className="text-muted-foreground text-sm">{t("doctor.noBackups")}</p>
-        ) : (
-          <div className="space-y-2">
-            {backups.map((backup) => (
-              <Card
-                key={backup.name}
-                className={`overflow-hidden transition-all duration-300 ease-out ${
-                  fadingOutBackupName === backup.name
-                    ? "opacity-0 max-h-0"
-                    : "opacity-100 max-h-40"
-                }`}
-              >
-                <CardContent className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-sm">{backup.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatTime(backup.createdAt)} — {formatBytes(backup.sizeBytes)}
-                    </div>
-                    {ua.isRemote && backup.path && (
-                      <div className="text-xs text-muted-foreground mt-0.5 font-mono">{backup.path}</div>
-                    )}
-                  </div>
-                  <div className="flex gap-1.5">
-                    {!ua.isRemote && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={deletingBackupName != null}
-                        onClick={() => ua.openUrl(backup.path)}
-                      >
-                        {t("home.show")}
-                      </Button>
-                    )}
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button size="sm" variant="outline" disabled={deletingBackupName != null}>
-                          {t("home.restore")}
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>{t("home.restoreTitle")}</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            {t("home.restoreDescription", { name: backup.name })}
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => {
-                              ua.restoreFromBackup(backup.name)
-                                .then((msg) => setBackupMessage(msg))
-                                .catch((e) => { if (!hasGuidanceEmitted(e)) setBackupMessage(t("home.restoreFailed", { error: String(e) })); });
-                            }}
-                          >
-                            {t("home.restore")}
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          disabled={deletingBackupName != null || fadingOutBackupName === backup.name}
-                        >
-                          {t("home.delete")}
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>{t("home.deleteBackupTitle")}</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            {t("home.deleteBackupDescription", { name: backup.name })}
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
-                          <AlertDialogAction asChild>
-                            <AsyncActionButton
-                              variant="destructive"
-                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                              loadingText={t("home.deleting")}
-                              disabled={deletingBackupName != null}
-                              onClick={async () => {
-                                setDeletingBackupName(backup.name);
-                                try {
-                                  await ua.deleteBackup(backup.name);
-                                  setFadingOutBackupName(backup.name);
-                                  setBackupMessage(t("home.deletedBackup", { name: backup.name }));
-                                  setTimeout(() => {
-                                    setBackups((prev) => prev?.filter((b) => b.name !== backup.name) ?? null);
-                                    setFadingOutBackupName((prev) => (prev === backup.name ? null : prev));
-                                    refreshBackups();
-                                  }, 350);
-                                } catch (e) {
-                                  if (!hasGuidanceEmitted(e)) {
-                                    setBackupMessage(t("home.deleteBackupFailed", { error: String(e) }));
-                                  }
-                                } finally {
-                                  setDeletingBackupName(null);
-                                }
-                              }}
-                            >
-                              {t("home.delete")}
-                            </AsyncActionButton>
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
     </section>
   );
 }

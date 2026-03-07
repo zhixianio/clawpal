@@ -9,6 +9,11 @@ export type ProfileCredentialView = {
   resolved: boolean;
 };
 
+export type ProfilePushEligibility = {
+  allowed: boolean;
+  reason: "oauth" | "missing_static_credential" | null;
+};
+
 const STATUS_LOADING = "...";
 const STATUS_NOT_SET = "not set";
 
@@ -25,6 +30,18 @@ function normalizeProvider(provider: string): string {
 
 function providerUsesOauth(provider: string): boolean {
   return OAUTH_PROVIDER_ALIASES.has(normalizeProvider(provider));
+}
+
+function providerSupportsOptionalApiKey(provider: string): boolean {
+  return [
+    "ollama",
+    "lmstudio",
+    "lm-studio",
+    "localai",
+    "vllm",
+    "llamacpp",
+    "llama.cpp",
+  ].includes(normalizeProvider(provider));
 }
 
 function isOauthAuthRef(provider: string, authRef: string): boolean {
@@ -69,5 +86,28 @@ export function resolveProfileCredentialView(
     authRef,
     status,
     resolved,
+  };
+}
+
+export function getProfilePushEligibility(
+  profile: ModelProfile,
+  entry?: ResolvedApiKey,
+): ProfilePushEligibility {
+  const credential = resolveProfileCredentialView(profile, entry);
+  if (credential.kind === "oauth") {
+    return {
+      allowed: false,
+      reason: "oauth",
+    };
+  }
+  if (credential.resolved || providerSupportsOptionalApiKey(profile.provider)) {
+    return {
+      allowed: true,
+      reason: null,
+    };
+  }
+  return {
+    allowed: false,
+    reason: "missing_static_credential",
   };
 }

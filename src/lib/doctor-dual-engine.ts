@@ -87,6 +87,6 @@ export function resolvePendingDoctorLaunch(params: {
   return {
     shouldQueue: nextLaunchKey !== params.lastLaunchKey,
     nextLaunchKey,
-    engine: params.launchGuidance.preferredEngine ?? "openclaw",
+    engine: "zeroclaw",
   };
 }

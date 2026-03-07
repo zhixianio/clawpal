@@ -213,6 +213,14 @@ export interface RemoteAuthSyncResult {
   failedKeyResolves: number;
 }
 
+export interface ProfilePushResult {
+  requestedProfiles: number;
+  pushedProfiles: number;
+  writtenModelEntries: number;
+  writtenAuthEntries: number;
+  blockedProfiles: number;
+}
+
 export interface RelatedSecretPushResult {
   totalRelatedProviders: number;
   resolvedSecrets: number;
@@ -226,6 +234,9 @@ export interface AppPreferences {
   showZeroclawDoctorUi: boolean;
   showRescueBotUi: boolean;
   showSshTransferSpeedUi: boolean;
+  showClawpalLogsUi: boolean;
+  showGatewayLogsUi: boolean;
+  showOpenclawContextUi: boolean;
 }
 
 export interface SshTransferStats {

@@ -20,6 +20,12 @@ pub struct AppPreferences {
     pub show_rescue_bot_ui: bool,
     #[serde(default)]
     pub show_ssh_transfer_speed_ui: bool,
+    #[serde(default)]
+    pub show_clawpal_logs_ui: bool,
+    #[serde(default)]
+    pub show_gateway_logs_ui: bool,
+    #[serde(default)]
+    pub show_openclaw_context_ui: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -33,6 +39,12 @@ struct StoredAppPreferences {
     show_rescue_bot_ui: bool,
     #[serde(default)]
     show_ssh_transfer_speed_ui: bool,
+    #[serde(default)]
+    show_clawpal_logs_ui: bool,
+    #[serde(default)]
+    show_gateway_logs_ui: bool,
+    #[serde(default)]
+    show_openclaw_context_ui: bool,
     #[serde(default)]
     bug_report: BugReportSettings,
 }
@@ -81,6 +93,9 @@ fn app_preferences_from_stored(stored: &StoredAppPreferences) -> AppPreferences 
         show_zeroclaw_doctor_ui: stored.show_zeroclaw_doctor_ui,
         show_rescue_bot_ui: stored.show_rescue_bot_ui,
         show_ssh_transfer_speed_ui: stored.show_ssh_transfer_speed_ui,
+        show_clawpal_logs_ui: stored.show_clawpal_logs_ui,
+        show_gateway_logs_ui: stored.show_gateway_logs_ui,
+        show_openclaw_context_ui: stored.show_openclaw_context_ui,
     }
 }
 
@@ -114,6 +129,9 @@ fn save_app_preferences_from_paths(
     stored.show_zeroclaw_doctor_ui = prefs.show_zeroclaw_doctor_ui;
     stored.show_rescue_bot_ui = prefs.show_rescue_bot_ui;
     stored.show_ssh_transfer_speed_ui = prefs.show_ssh_transfer_speed_ui;
+    stored.show_clawpal_logs_ui = prefs.show_clawpal_logs_ui;
+    stored.show_gateway_logs_ui = prefs.show_gateway_logs_ui;
+    stored.show_openclaw_context_ui = prefs.show_openclaw_context_ui;
     save_stored_preferences_from_paths(paths, &stored)
 }
 
@@ -187,6 +205,33 @@ pub fn set_ssh_transfer_speed_ui_preference(show_ui: bool) -> Result<AppPreferen
     let paths = resolve_paths();
     let mut prefs = load_app_preferences_from_paths(&paths);
     prefs.show_ssh_transfer_speed_ui = show_ui;
+    save_app_preferences_from_paths(&paths, &prefs)?;
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_clawpal_logs_ui_preference(show_ui: bool) -> Result<AppPreferences, String> {
+    let paths = resolve_paths();
+    let mut prefs = load_app_preferences_from_paths(&paths);
+    prefs.show_clawpal_logs_ui = show_ui;
+    save_app_preferences_from_paths(&paths, &prefs)?;
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_gateway_logs_ui_preference(show_ui: bool) -> Result<AppPreferences, String> {
+    let paths = resolve_paths();
+    let mut prefs = load_app_preferences_from_paths(&paths);
+    prefs.show_gateway_logs_ui = show_ui;
+    save_app_preferences_from_paths(&paths, &prefs)?;
+    Ok(prefs)
+}
+
+#[tauri::command]
+pub fn set_openclaw_context_ui_preference(show_ui: bool) -> Result<AppPreferences, String> {
+    let paths = resolve_paths();
+    let mut prefs = load_app_preferences_from_paths(&paths);
+    prefs.show_openclaw_context_ui = show_ui;
     save_app_preferences_from_paths(&paths, &prefs)?;
     Ok(prefs)
 }
@@ -351,6 +396,9 @@ mod tests {
                 show_zeroclaw_doctor_ui: true,
                 show_rescue_bot_ui: true,
                 show_ssh_transfer_speed_ui: false,
+                show_clawpal_logs_ui: true,
+                show_gateway_logs_ui: false,
+                show_openclaw_context_ui: true,
             },
         )
         .unwrap();
@@ -377,6 +425,9 @@ mod tests {
                 show_zeroclaw_doctor_ui: true,
                 show_rescue_bot_ui: false,
                 show_ssh_transfer_speed_ui: true,
+                show_clawpal_logs_ui: true,
+                show_gateway_logs_ui: true,
+                show_openclaw_context_ui: true,
             },
         )
         .unwrap();
@@ -398,6 +449,27 @@ mod tests {
         assert!(app_prefs.show_zeroclaw_doctor_ui);
         assert!(!app_prefs.show_rescue_bot_ui);
         assert!(app_prefs.show_ssh_transfer_speed_ui);
+        assert!(app_prefs.show_clawpal_logs_ui);
+        assert!(app_prefs.show_gateway_logs_ui);
+        assert!(app_prefs.show_openclaw_context_ui);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_log_visibility_preferences_default_to_hidden() {
+        let (paths, root) = test_paths();
+        let prefs_path = app_preferences_path(&paths);
+        std::fs::write(
+            &prefs_path,
+            r#"{"showSshTransferSpeedUi":true}"#,
+        )
+        .unwrap();
+
+        let app_prefs = load_app_preferences_from_paths(&paths);
+        assert!(app_prefs.show_ssh_transfer_speed_ui);
+        assert!(!app_prefs.show_clawpal_logs_ui);
+        assert!(!app_prefs.show_gateway_logs_ui);
+        assert!(!app_prefs.show_openclaw_context_ui);
         let _ = std::fs::remove_dir_all(root);
     }
 }

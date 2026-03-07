@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveProfileCredentialView } from "../profile-credential";
+import { getProfilePushEligibility, resolveProfileCredentialView } from "../profile-credential";
 import type { ModelProfile, ResolvedApiKey } from "../types";
 
 function makeProfile(partial: Partial<ModelProfile>): ModelProfile {
@@ -79,5 +79,74 @@ describe("resolveProfileCredentialView", () => {
     const view = resolveProfileCredentialView(profile, resolved);
     expect(view.kind).toBe("unset");
     expect(view.resolved).toBe(false);
+  });
+});
+
+describe("getProfilePushEligibility", () => {
+  test("blocks oauth-backed profiles from automatic push", () => {
+    const profile = makeProfile({
+      provider: "openai-codex",
+      model: "gpt-5.3-codex",
+      authRef: "openai-codex:default",
+    });
+    const resolved = makeResolved({
+      credentialKind: "oauth",
+      authRef: "openai-codex:default",
+      maskedKey: "oauth-ready",
+      resolved: true,
+    });
+
+    expect(getProfilePushEligibility(profile, resolved)).toEqual({
+      allowed: false,
+      reason: "oauth",
+    });
+  });
+
+  test("allows static resolved credentials to be pushed", () => {
+    const profile = makeProfile({ authRef: "OPENAI_API_KEY" });
+    const resolved = makeResolved({
+      credentialKind: "env_ref",
+      authRef: "OPENAI_API_KEY",
+      maskedKey: "sk-a...z9x8",
+      resolved: true,
+    });
+
+    expect(getProfilePushEligibility(profile, resolved)).toEqual({
+      allowed: true,
+      reason: null,
+    });
+  });
+
+  test("allows providers with optional api keys even when unresolved", () => {
+    const profile = makeProfile({
+      provider: "ollama",
+      model: "qwen3:latest",
+      authRef: "",
+    });
+    const resolved = makeResolved({
+      credentialKind: "unset",
+      maskedKey: "not set",
+      resolved: false,
+    });
+
+    expect(getProfilePushEligibility(profile, resolved)).toEqual({
+      allowed: true,
+      reason: null,
+    });
+  });
+
+  test("blocks unresolved static credentials", () => {
+    const profile = makeProfile({ authRef: "OPENAI_API_KEY" });
+    const resolved = makeResolved({
+      credentialKind: "env_ref",
+      authRef: "OPENAI_API_KEY",
+      maskedKey: "not set",
+      resolved: false,
+    });
+
+    expect(getProfilePushEligibility(profile, resolved)).toEqual({
+      allowed: false,
+      reason: "missing_static_credential",
+    });
   });
 });

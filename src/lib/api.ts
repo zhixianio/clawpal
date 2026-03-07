@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, CronJob, CronRun, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus, ZeroclawOauthCompleteResult, ZeroclawOauthLoginStartResult, ZeroclawRuntimeTarget, ZeroclawUsageStats } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, CronJob, CronRun, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus, ZeroclawOauthCompleteResult, ZeroclawOauthLoginStartResult, ZeroclawRuntimeTarget, ZeroclawUsageStats } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
@@ -30,6 +30,12 @@ export const api = {
     invoke("set_rescue_bot_ui_preference", { showUi }),
   setSshTransferSpeedUiPreference: (showUi: boolean): Promise<AppPreferences> =>
     invoke("set_ssh_transfer_speed_ui_preference", { showUi }),
+  setClawpalLogsUiPreference: (showUi: boolean): Promise<AppPreferences> =>
+    invoke("set_clawpal_logs_ui_preference", { showUi }),
+  setGatewayLogsUiPreference: (showUi: boolean): Promise<AppPreferences> =>
+    invoke("set_gateway_logs_ui_preference", { showUi }),
+  setOpenclawContextUiPreference: (showUi: boolean): Promise<AppPreferences> =>
+    invoke("set_openclaw_context_ui_preference", { showUi }),
   explainOperationError: (
     instanceId: string,
     operation: string,
@@ -299,6 +305,10 @@ export const api = {
     invoke("remote_resolve_api_keys", { hostId }),
   remoteSyncProfilesToLocalAuth: (hostId: string): Promise<RemoteAuthSyncResult> =>
     invoke("remote_sync_profiles_to_local_auth", { hostId }),
+  pushModelProfilesToLocalOpenclaw: (profileIds: string[]): Promise<ProfilePushResult> =>
+    invoke("push_model_profiles_to_local_openclaw", { profileIds }),
+  pushModelProfilesToRemoteOpenclaw: (hostId: string, profileIds: string[]): Promise<ProfilePushResult> =>
+    invoke("push_model_profiles_to_remote_openclaw", { hostId, profileIds }),
   pushRelatedSecretsToRemote: (hostId: string): Promise<RelatedSecretPushResult> =>
     invoke("push_related_secrets_to_remote", { hostId }),
   remoteExtractModelProfilesFromConfig: (hostId: string): Promise<{ created: number; reused: number; skippedInvalid: number }> =>

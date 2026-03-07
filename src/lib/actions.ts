@@ -26,7 +26,7 @@ async function callWithLobsterGuidance<T>(
   }
 }
 
-/** Resolve a profile ID to a "provider/model" string by loading profiles from local or remote. */
+/** Resolve a profile ID to a "provider/model" string from the local ClawPal profile hub. */
 async function resolveProfileToModelValue(
   profileId: string | undefined,
   ctx?: ActionContext,
@@ -35,9 +35,7 @@ async function resolveProfileToModelValue(
   const profiles: ModelProfile[] = await callWithLobsterGuidance(
     "resolveProfileToModelValue",
     ctx,
-    () => (ctx?.isRemote
-      ? api.remoteListModelProfiles(ctx.instanceId)
-      : api.listModelProfiles()),
+    () => api.listModelProfiles(),
   );
   const profile = profiles.find((p) => p.id === profileId);
   if (!profile) return profileId; // fallback: use raw string

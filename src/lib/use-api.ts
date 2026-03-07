@@ -755,6 +755,18 @@ export function useApi() {
         api.setSshTransferSpeedUiPreference,
         ["getAppPreferences"],
       ),
+      setClawpalLogsUiPreference: withGlobalInvalidation(
+        api.setClawpalLogsUiPreference,
+        ["getAppPreferences"],
+      ),
+      setGatewayLogsUiPreference: withGlobalInvalidation(
+        api.setGatewayLogsUiPreference,
+        ["getAppPreferences"],
+      ),
+      setOpenclawContextUiPreference: withGlobalInvalidation(
+        api.setOpenclawContextUiPreference,
+        ["getAppPreferences"],
+      ),
       ensureAccessProfile: api.ensureAccessProfile,
       recordInstallExperience: api.recordInstallExperience,
       openUrl: api.openUrl,

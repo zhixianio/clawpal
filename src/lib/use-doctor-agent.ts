@@ -879,6 +879,7 @@ export function useDoctorAgent(options: UseDoctorAgentOptions = {}) {
   const reset = useCallback(() => {
     sessionActiveRef.current = false;
     wasConnectedRef.current = false;
+    setConnected(false);
     setMessages([]);
     setPendingInvokes(new Map());
     setLoading(false);
@@ -890,6 +891,29 @@ export function useDoctorAgent(options: UseDoctorAgentOptions = {}) {
     openclawSessionIdRef.current = undefined;
     sessionKeyRef.current = `agent:${agentIdRef.current}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
   }, []);
+
+  const clearHistory = useCallback(() => {
+    const context = buildDoctorContext();
+    const cacheKey = buildDoctorCacheKey(context);
+    try {
+      localStorage.removeItem(cacheKey);
+    } catch (error) {
+      console.warn("Failed to clear doctor chat cache:", error);
+    }
+    sessionActiveRef.current = false;
+    wasConnectedRef.current = false;
+    setConnected(false);
+    setMessages([]);
+    setPendingInvokes(new Map());
+    setLoading(false);
+    setError(null);
+    setBridgeConnected(false);
+    setApprovedPatterns(new Set());
+    streamingRef.current = "";
+    streamEndedRef.current = false;
+    openclawSessionIdRef.current = undefined;
+    sessionKeyRef.current = `agent:${agentIdRef.current}:clawpal-doctor:${instanceScopeRef.current}:${crypto.randomUUID()}`;
+  }, [buildDoctorContext]);
 
   return {
     connected,
@@ -912,5 +936,6 @@ export function useDoctorAgent(options: UseDoctorAgentOptions = {}) {
     rejectInvoke,
     restoreFromCache,
     reset,
+    clearHistory,
   };
 }

@@ -5,17 +5,19 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { toast } from "sonner";
+import { api } from "@/lib/api";
 import { hasGuidanceEmitted, useApi } from "@/lib/use-api";
 import { isAlreadyExplainedGuidanceError } from "@/lib/guidance";
 import { useTheme } from "@/lib/use-theme";
 import { useFont } from "@/lib/use-font";
 import type { UiFont } from "@/lib/use-font";
 import { profileToModelValue } from "@/lib/model-value";
-import { resolveProfileCredentialView } from "@/lib/profile-credential";
+import { getProfilePushEligibility, resolveProfileCredentialView } from "@/lib/profile-credential";
 import type {
   ModelCatalogProvider,
   ModelProfile,
   ProviderAuthSuggestion,
+  RegisteredInstance,
   ResolvedApiKey,
   ZeroclawRuntimeTarget,
   ZeroclawUsageStats,
@@ -27,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SettingsAlphaFeaturesCard } from "@/components/SettingsAlphaFeaturesCard";
 import {
   Select,
   SelectContent,
@@ -66,10 +69,18 @@ type ProfileForm = {
 
 type CredentialSource = "oauth" | "env" | "manual";
 
+type ProfilePushTarget = {
+  id: string;
+  label: string;
+  kind: "local" | "remote";
+  connected: boolean;
+};
+
 const MODEL_CATALOG_CACHE_TTL_MS = 5 * 60_000;
 const ENABLE_PROFILE_TEST_BUTTON = true;
 let modelCatalogCache: { value: ModelCatalogProvider[]; expiresAt: number } | null = null;
 let profilesExtractedOnce = false;
+const LOCAL_PUSH_TARGET_ID = "__local_openclaw__";
 const PROVIDER_FALLBACK_OPTIONS = [
   "openai",
   "openai-codex",
@@ -272,15 +283,31 @@ export function Settings({
   const [oauthStarting, setOauthStarting] = useState(false);
   const [oauthCompleting, setOauthCompleting] = useState(false);
   const [testingProfileId, setTestingProfileId] = useState<string | null>(null);
+  const [pushDialogOpen, setPushDialogOpen] = useState(false);
+  const [pushTargets, setPushTargets] = useState<ProfilePushTarget[]>([
+    {
+      id: LOCAL_PUSH_TARGET_ID,
+      label: "Local OpenClaw",
+      kind: "local",
+      connected: true,
+    },
+  ]);
+  const [pushTargetsLoading, setPushTargetsLoading] = useState(false);
+  const [selectedPushTargetId, setSelectedPushTargetId] = useState(LOCAL_PUSH_TARGET_ID);
+  const [selectedPushProfileIds, setSelectedPushProfileIds] = useState<string[]>([]);
+  const [pushingProfiles, setPushingProfiles] = useState(false);
+  const [importingLocalProfiles, setImportingLocalProfiles] = useState(false);
+  const [importingRemoteProfiles, setImportingRemoteProfiles] = useState(false);
   const [zeroclawModel, setZeroclawModel] = useState("");
 
   const [zeroclawUsage, setZeroclawUsage] = useState<ZeroclawUsageStats | null>(null);
   const [zeroclawUsageLoading, setZeroclawUsageLoading] = useState(true);
   const [zeroclawTarget, setZeroclawTarget] = useState<ZeroclawRuntimeTarget | null>(null);
   const [zeroclawTargetLoading, setZeroclawTargetLoading] = useState(true);
-  const [showZeroclawDoctorUi, setShowZeroclawDoctorUi] = useState(false);
-  const [showRescueBotUi, setShowRescueBotUi] = useState(false);
   const [showSshTransferSpeedUi, setShowSshTransferSpeedUi] = useState(false);
+  const [showClawpalLogsUi, setShowClawpalLogsUi] = useState(false);
+  const [showGatewayLogsUi, setShowGatewayLogsUi] = useState(false);
+  const [showOpenclawContextUi, setShowOpenclawContextUi] = useState(false);
   const zeroclawPrefsLoadedRef = useRef(false);
   const zeroclawLastSavedRef = useRef("");
 
@@ -380,7 +407,74 @@ export function Settings({
       });
   };
 
+  const loadPushTargets = useCallback(async () => {
+    setPushTargetsLoading(true);
+    try {
+      const registered = await api.listRegisteredInstances();
+      const remoteInstances = registered.filter(
+        (instance: RegisteredInstance) => instance.instanceType === "remote_ssh",
+      );
+      const remoteStatuses = await Promise.all(
+        remoteInstances.map(async (instance) => {
+          try {
+            const status = await api.sshStatus(instance.id);
+            return {
+              id: instance.id,
+              connected: status === "connected",
+            };
+          } catch {
+            return {
+              id: instance.id,
+              connected: false,
+            };
+          }
+        }),
+      );
+      const statusMap = new Map(remoteStatuses.map((item) => [item.id, item.connected]));
+      const nextTargets: ProfilePushTarget[] = [
+        {
+          id: LOCAL_PUSH_TARGET_ID,
+          label: t("settings.pushTargetLocal"),
+          kind: "local",
+          connected: true,
+        },
+        ...remoteInstances.map((instance) => ({
+          id: instance.id,
+          label: instance.label?.trim() || instance.id,
+          kind: "remote" as const,
+          connected: statusMap.get(instance.id) === true,
+        })),
+      ];
+      setPushTargets(nextTargets);
+      setSelectedPushTargetId((current) => {
+        if (nextTargets.some((target) => target.id === current && target.connected)) {
+          return current;
+        }
+        return nextTargets.find((target) => target.connected)?.id ?? LOCAL_PUSH_TARGET_ID;
+      });
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      toast.error(t("settings.pushTargetsLoadFailed", { error: errorText }));
+      setPushTargets([
+        {
+          id: LOCAL_PUSH_TARGET_ID,
+          label: t("settings.pushTargetLocal"),
+          kind: "local",
+          connected: true,
+        },
+      ]);
+      setSelectedPushTargetId(LOCAL_PUSH_TARGET_ID);
+    } finally {
+      setPushTargetsLoading(false);
+    }
+  }, [t]);
+
   useEffect(refreshProfiles, [ua]);
+
+  useEffect(() => {
+    if (!pushDialogOpen) return;
+    void loadPushTargets();
+  }, [loadPushTargets, pushDialogOpen]);
 
   useEffect(() => {
     ua.getAppPreferences()
@@ -389,11 +483,10 @@ export function Settings({
         setZeroclawModel(value);
         zeroclawLastSavedRef.current = value.trim();
         zeroclawPrefsLoadedRef.current = true;
-
-        const nextShowZeroclawUi = Boolean(prefs.showZeroclawDoctorUi);
-        setShowZeroclawDoctorUi(nextShowZeroclawUi);
-        setShowRescueBotUi(Boolean(prefs.showRescueBotUi));
         setShowSshTransferSpeedUi(Boolean(prefs.showSshTransferSpeedUi));
+        setShowClawpalLogsUi(Boolean(prefs.showClawpalLogsUi));
+        setShowGatewayLogsUi(Boolean(prefs.showGatewayLogsUi));
+        setShowOpenclawContextUi(Boolean(prefs.showOpenclawContextUi));
       })
       .catch((e) => console.error("Failed to load app preferences:", e));
   }, [ua]);
@@ -489,6 +582,22 @@ export function Settings({
     }
     return map;
   }, [apiKeys]);
+
+  const pushEligibilityMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getProfilePushEligibility>>();
+    for (const profile of profiles || []) {
+      map.set(
+        profile.id,
+        getProfilePushEligibility(profile, resolvedCredentialMap.get(profile.id)),
+      );
+    }
+    return map;
+  }, [profiles, resolvedCredentialMap]);
+
+  const selectedPushTarget = useMemo(
+    () => pushTargets.find((target) => target.id === selectedPushTargetId) ?? null,
+    [pushTargets, selectedPushTargetId],
+  );
 
   // Check for existing auth when provider changes
   useEffect(() => {
@@ -808,34 +917,98 @@ export function Settings({
     }
   };
 
+  const importLocalProfiles = async () => {
+    setImportingLocalProfiles(true);
+    try {
+      const result = await ua.extractModelProfilesFromConfig();
+      refreshProfiles();
+      toast.success(
+        t("settings.importLocalProfilesSuccess", {
+          created: result.created,
+          reused: result.reused,
+        }),
+      );
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      toast.error(t("settings.importLocalProfilesFailed", { error: errorText }));
+    } finally {
+      setImportingLocalProfiles(false);
+    }
+  };
+
+  const importActiveRemoteProfiles = async () => {
+    if (!ua.isRemote || !ua.isConnected) return;
+    setImportingRemoteProfiles(true);
+    try {
+      const result = await api.remoteSyncProfilesToLocalAuth(ua.instanceId);
+      refreshProfiles();
+      toast.success(
+        t("settings.importRemoteProfilesSuccess", {
+          synced: result.syncedProfiles,
+          target: ua.instanceId,
+        }),
+      );
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      toast.error(t("settings.importRemoteProfilesFailed", { error: errorText }));
+    } finally {
+      setImportingRemoteProfiles(false);
+    }
+  };
+
+  const openPushDialog = () => {
+    setSelectedPushProfileIds([]);
+    setSelectedPushTargetId(LOCAL_PUSH_TARGET_ID);
+    setPushDialogOpen(true);
+  };
+
+  const togglePushProfileSelection = (profileId: string, checked: boolean) => {
+    setSelectedPushProfileIds((current) => {
+      if (checked) {
+        return current.includes(profileId) ? current : [...current, profileId];
+      }
+      return current.filter((id) => id !== profileId);
+    });
+  };
+
+  const submitPushProfiles = async () => {
+    if (!selectedPushTarget || !selectedPushTarget.connected) {
+      toast.error(t("settings.pushProfilesTargetRequired"));
+      return;
+    }
+    const selectedIds = selectedPushProfileIds.filter((profileId) => {
+      const eligibility = pushEligibilityMap.get(profileId);
+      return eligibility?.allowed;
+    });
+    if (selectedIds.length === 0) {
+      toast.error(t("settings.pushProfilesSelectionRequired"));
+      return;
+    }
+
+    setPushingProfiles(true);
+    try {
+      const result = selectedPushTarget.kind === "local"
+        ? await api.pushModelProfilesToLocalOpenclaw(selectedIds)
+        : await api.pushModelProfilesToRemoteOpenclaw(selectedPushTarget.id, selectedIds);
+      toast.success(
+        t("settings.pushProfilesSuccess", {
+          target: selectedPushTarget.label,
+          pushed: result.pushedProfiles,
+          blocked: result.blockedProfiles,
+        }),
+      );
+      setPushDialogOpen(false);
+      setSelectedPushProfileIds([]);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      toast.error(t("settings.pushProfilesFailed", { error: errorText }));
+    } finally {
+      setPushingProfiles(false);
+    }
+  };
+
   const showProfiles = section !== "preferences";
   const showPreferences = section !== "profiles";
-
-  const handleZeroclawDoctorUiToggle = useCallback((nextChecked: boolean) => {
-    setShowZeroclawDoctorUi(nextChecked);
-    ua.setZeroclawDoctorUiPreference(nextChecked)
-      .then((prefs) => {
-        setShowZeroclawDoctorUi(Boolean(prefs.showZeroclawDoctorUi));
-      })
-      .catch((e) => {
-        setShowZeroclawDoctorUi((current) => !current);
-        const errorText = e instanceof Error ? e.message : String(e);
-        toast.error(t("settings.zeroclawDoctorUiSaveFailed", { error: errorText }));
-      });
-  }, [t, ua]);
-
-  const handleRescueBotUiToggle = useCallback((nextChecked: boolean) => {
-    setShowRescueBotUi(nextChecked);
-    ua.setRescueBotUiPreference(nextChecked)
-      .then((prefs) => {
-        setShowRescueBotUi(Boolean(prefs.showRescueBotUi));
-      })
-      .catch((e) => {
-        setShowRescueBotUi((current) => !current);
-        const errorText = e instanceof Error ? e.message : String(e);
-        toast.error(t("settings.rescueBotUiSaveFailed", { error: errorText }));
-      });
-  }, [t, ua]);
 
   const handleSshTransferSpeedUiToggle = useCallback((nextChecked: boolean) => {
     setShowSshTransferSpeedUi(nextChecked);
@@ -847,6 +1020,45 @@ export function Settings({
         setShowSshTransferSpeedUi((current) => !current);
         const errorText = e instanceof Error ? e.message : String(e);
         toast.error(t("settings.sshTransferSpeedUiSaveFailed", { error: errorText }));
+      });
+  }, [t, ua]);
+
+  const handleClawpalLogsUiToggle = useCallback((nextChecked: boolean) => {
+    setShowClawpalLogsUi(nextChecked);
+    ua.setClawpalLogsUiPreference(nextChecked)
+      .then((prefs) => {
+        setShowClawpalLogsUi(Boolean(prefs.showClawpalLogsUi));
+      })
+      .catch((e) => {
+        setShowClawpalLogsUi((current) => !current);
+        const errorText = e instanceof Error ? e.message : String(e);
+        toast.error(t("settings.clawpalLogsUiSaveFailed", { error: errorText }));
+      });
+  }, [t, ua]);
+
+  const handleGatewayLogsUiToggle = useCallback((nextChecked: boolean) => {
+    setShowGatewayLogsUi(nextChecked);
+    ua.setGatewayLogsUiPreference(nextChecked)
+      .then((prefs) => {
+        setShowGatewayLogsUi(Boolean(prefs.showGatewayLogsUi));
+      })
+      .catch((e) => {
+        setShowGatewayLogsUi((current) => !current);
+        const errorText = e instanceof Error ? e.message : String(e);
+        toast.error(t("settings.gatewayLogsUiSaveFailed", { error: errorText }));
+      });
+  }, [t, ua]);
+
+  const handleOpenclawContextUiToggle = useCallback((nextChecked: boolean) => {
+    setShowOpenclawContextUi(nextChecked);
+    ua.setOpenclawContextUiPreference(nextChecked)
+      .then((prefs) => {
+        setShowOpenclawContextUi(Boolean(prefs.showOpenclawContextUi));
+      })
+      .catch((e) => {
+        setShowOpenclawContextUi((current) => !current);
+        const errorText = e instanceof Error ? e.message : String(e);
+        toast.error(t("settings.openclawContextUiSaveFailed", { error: errorText }));
       });
   }, [t, ua]);
 
@@ -985,92 +1197,87 @@ export function Settings({
 
                 <div className="h-px bg-border" />
 
-                {showZeroclawDoctorUi && (
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <Label className="text-sm font-semibold shrink-0">{t("settings.zeroclawModel")}</Label>
-                    <div className="w-[320px] max-w-full">
-                      <Select
-                        value={
-                          zeroclawModel && zeroclawModelCandidates.includes(zeroclawModel)
-                            ? zeroclawModel
-                            : "__none__"
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Label className="text-sm font-semibold shrink-0">{t("settings.zeroclawModel")}</Label>
+                  <div className="w-[320px] max-w-full">
+                    <Select
+                      value={
+                        zeroclawModel && zeroclawModelCandidates.includes(zeroclawModel)
+                          ? zeroclawModel
+                          : "__none__"
+                      }
+                      onValueChange={(val) => {
+                        const model = val === "__none__" ? "" : val;
+                        setZeroclawModel(model);
+                        if (model) {
+                          const slashIdx = model.indexOf("/");
+                          const provider = slashIdx > 0 ? model.slice(0, slashIdx) : "";
+                          const modelName = slashIdx > 0 ? model.slice(slashIdx + 1) : model;
+                          setZeroclawTarget((prev) => ({
+                            ...prev,
+                            provider,
+                            model: modelName,
+                            source: "preferred",
+                            preferredModel: model,
+                            providerOrder: prev?.providerOrder ?? [],
+                          }));
                         }
-                        onValueChange={(val) => {
-                          const model = val === "__none__" ? "" : val;
-                          setZeroclawModel(model);
-                          // Optimistically update the displayed runtime target so
-                          // "current preferred model" reflects the choice instantly.
-                          if (model) {
-                            const slashIdx = model.indexOf("/");
-                            const provider = slashIdx > 0 ? model.slice(0, slashIdx) : "";
-                            const modelName = slashIdx > 0 ? model.slice(slashIdx + 1) : model;
-                            setZeroclawTarget((prev) => ({
-                              ...prev,
-                              provider,
-                              model: modelName,
-                              source: "preferred",
-                              preferredModel: model,
-                              providerOrder: prev?.providerOrder ?? [],
-                            }));
-                          }
-                        }}
-
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder={t("settings.zeroclawModelPlaceholder")} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__none__">
-                            <span className="text-muted-foreground">{t("home.notSet")}</span>
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={t("settings.zeroclawModelPlaceholder")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">
+                          <span className="text-muted-foreground">{t("home.notSet")}</span>
+                        </SelectItem>
+                        {zeroclawModelCandidates.map((model) => (
+                          <SelectItem key={model} value={model}>
+                            {model}
                           </SelectItem>
-                          {zeroclawModelCandidates.map((model) => (
-                            <SelectItem key={model} value={model}>
-                              {model}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {zeroclawModelCandidates.length === 0 && (
-                      <p className="text-xs text-muted-foreground basis-full mt-1">
-                        {onNavigateToProfiles ? (
-                          <button
-                            type="button"
-                            className="underline hover:text-foreground transition-colors"
-                            onClick={onNavigateToProfiles}
-                          >
-                            {t("settings.zeroclawNoProfilesLink")}
-                          </button>
-                        ) : (
-                          t("settings.zeroclawNoProfiles")
-                        )}
-                      </p>
-                    )}
-                    <div className="ml-auto text-right text-xs text-muted-foreground min-w-[240px]">
-                      {zeroclawUsageLoading ? (
-                        <div>{t("settings.zeroclawUsageLoading")}</div>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {zeroclawModelCandidates.length === 0 && (
+                    <p className="text-xs text-muted-foreground basis-full mt-1">
+                      {onNavigateToProfiles ? (
+                        <button
+                          type="button"
+                          className="underline hover:text-foreground transition-colors"
+                          onClick={onNavigateToProfiles}
+                        >
+                          {t("settings.zeroclawNoProfilesLink")}
+                        </button>
                       ) : (
-                        <>
-                          <div>
-                            {t("settings.zeroclawUsageTotalTokens", {
-                              count: zeroclawUsage?.totalTokens || 0,
-                            })}
-                          </div>
-                          <div>
-                            {t("settings.zeroclawUsageCalls", {
-                              count: zeroclawUsage?.totalCalls || 0,
-                            })}
-                          </div>
-                        </>
+                        t("settings.zeroclawNoProfiles")
                       )}
-                      <div>
-                        {t("settings.zeroclawEffectiveModelLabel", {
-                          model: zeroclawTargetText,
-                        })}
-                      </div>
+                    </p>
+                  )}
+                  <div className="ml-auto text-right text-xs text-muted-foreground min-w-[240px]">
+                    {zeroclawUsageLoading ? (
+                      <div>{t("settings.zeroclawUsageLoading")}</div>
+                    ) : (
+                      <>
+                        <div>
+                          {t("settings.zeroclawUsageTotalTokens", {
+                            count: zeroclawUsage?.totalTokens || 0,
+                          })}
+                        </div>
+                        <div>
+                          {t("settings.zeroclawUsageCalls", {
+                            count: zeroclawUsage?.totalCalls || 0,
+                          })}
+                        </div>
+                      </>
+                    )}
+                    <div>
+                      {t("settings.zeroclawEffectiveModelLabel", {
+                        model: zeroclawTargetText,
+                      })}
                     </div>
                   </div>
-                )}
+                </div>
               </CardContent>
             </Card>
             )}
@@ -1079,9 +1286,40 @@ export function Settings({
             {showProfiles && (
             <Card>
               <CardHeader>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <CardTitle>{t('settings.modelProfiles')}</CardTitle>
-                  <Button size="sm" onClick={openAddProfile}>{t('settings.addProfile')}</Button>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        void importLocalProfiles();
+                      }}
+                      disabled={importingLocalProfiles}
+                    >
+                      {importingLocalProfiles
+                        ? t("settings.importLocalProfilesRunning")
+                        : t("settings.importLocalProfiles")}
+                    </Button>
+                    {ua.isRemote && ua.isConnected && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          void importActiveRemoteProfiles();
+                        }}
+                        disabled={importingRemoteProfiles}
+                      >
+                        {importingRemoteProfiles
+                          ? t("settings.importRemoteProfilesRunning")
+                          : t("settings.importRemoteProfiles")}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={openPushDialog}>
+                      {t("settings.pushProfiles")}
+                    </Button>
+                    <Button size="sm" onClick={openAddProfile}>{t('settings.addProfile')}</Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -1202,56 +1440,16 @@ export function Settings({
             )}
 
             {showPreferences && (
-              <Card>
-                <CardContent>
-                  <details className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-                    <summary className="cursor-pointer text-sm font-semibold text-foreground">
-                      {t("settings.alphaFeatures")}
-                    </summary>
-                    <div className="mt-3 space-y-3">
-                      <p className="text-xs text-muted-foreground">
-                        {t("settings.alphaFeaturesDescription")}
-                      </p>
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <Label className="text-sm font-medium">{t("settings.alphaEnableZeroclawUi")}</Label>
-                        <Checkbox
-                          checked={showZeroclawDoctorUi}
-                          onCheckedChange={(checked) => handleZeroclawDoctorUiToggle(checked === true)}
-                          aria-label={t("settings.alphaEnableZeroclawUi")}
-                          className="h-5 w-5"
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {t("settings.alphaEnableZeroclawUiHint")}
-                      </p>
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <Label className="text-sm font-medium">{t("settings.alphaEnableRescueBotUi")}</Label>
-                        <Checkbox
-                          checked={showRescueBotUi}
-                          onCheckedChange={(checked) => handleRescueBotUiToggle(checked === true)}
-                          aria-label={t("settings.alphaEnableRescueBotUi")}
-                          className="h-5 w-5"
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {t("settings.alphaEnableRescueBotUiHint")}
-                      </p>
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <Label className="text-sm font-medium">{t("settings.alphaEnableSshTransferSpeedUi")}</Label>
-                        <Checkbox
-                          checked={showSshTransferSpeedUi}
-                          onCheckedChange={(checked) => handleSshTransferSpeedUiToggle(checked === true)}
-                          aria-label={t("settings.alphaEnableSshTransferSpeedUi")}
-                          className="h-5 w-5"
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {t("settings.alphaEnableSshTransferSpeedUiHint")}
-                      </p>
-                    </div>
-                  </details>
-                </CardContent>
-              </Card>
+              <SettingsAlphaFeaturesCard
+                showSshTransferSpeedUi={showSshTransferSpeedUi}
+                showClawpalLogsUi={showClawpalLogsUi}
+                showGatewayLogsUi={showGatewayLogsUi}
+                showOpenclawContextUi={showOpenclawContextUi}
+                onSshTransferSpeedUiToggle={handleSshTransferSpeedUiToggle}
+                onClawpalLogsUiToggle={handleClawpalLogsUiToggle}
+                onGatewayLogsUiToggle={handleGatewayLogsUiToggle}
+                onOpenclawContextUiToggle={handleOpenclawContextUiToggle}
+              />
             )}
 
             {showPreferences && <BugReportSettings />}
@@ -1260,6 +1458,145 @@ export function Settings({
       {message && (
         <p className="text-sm text-muted-foreground mt-3">{message}</p>
       )}
+
+      <Dialog
+        open={pushDialogOpen}
+        onOpenChange={(open) => {
+          setPushDialogOpen(open);
+          if (!open) {
+            setSelectedPushProfileIds([]);
+            setSelectedPushTargetId(LOCAL_PUSH_TARGET_ID);
+            setPushingProfiles(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t("settings.pushProfilesTitle")}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <div className="text-sm font-semibold">{t("settings.pushProfilesTargetStep")}</div>
+              {pushTargetsLoading ? (
+                <p className="text-sm text-muted-foreground">{t("settings.loading")}</p>
+              ) : (
+                <div className="grid gap-2">
+                  {pushTargets.map((target) => (
+                    <button
+                      key={target.id}
+                      type="button"
+                      className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                        selectedPushTargetId === target.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:border-primary/40"
+                      } ${target.connected ? "" : "opacity-60"}`}
+                      onClick={() => {
+                        if (!target.connected) return;
+                        setSelectedPushTargetId(target.id);
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{target.label}</span>
+                        <Badge variant="outline">
+                          {target.kind === "local"
+                            ? t("settings.pushTargetLocalBadge")
+                            : (target.connected
+                              ? t("settings.pushTargetRemoteConnected")
+                              : t("settings.pushTargetRemoteDisconnected"))}
+                        </Badge>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm font-semibold">{t("settings.pushProfilesProfileStep")}</div>
+              {!selectedPushTarget ? (
+                <p className="text-sm text-muted-foreground">
+                  {t("settings.pushProfilesSelectTargetFirst")}
+                </p>
+              ) : profiles === null ? (
+                <p className="text-sm text-muted-foreground">{t("settings.loadingProfiles")}</p>
+              ) : profiles.length === 0 ? (
+                <p className="text-sm text-muted-foreground">{t("settings.noProfiles")}</p>
+              ) : (
+                <div className="max-h-[360px] space-y-2 overflow-y-auto pr-1">
+                  {profiles.map((profile) => {
+                    const eligibility = pushEligibilityMap.get(profile.id) ?? {
+                      allowed: false,
+                      reason: "missing_static_credential" as const,
+                    };
+                    const disabled = !eligibility.allowed || !selectedPushTarget.connected;
+                    const checked = selectedPushProfileIds.includes(profile.id);
+                    const reasonText = eligibility.reason === "oauth"
+                      ? t("settings.pushProfileBlockedOauth")
+                      : eligibility.reason === "missing_static_credential"
+                        ? t("settings.pushProfileBlockedMissingCredential")
+                        : "";
+                    return (
+                      <label
+                        key={profile.id}
+                        className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 ${
+                          disabled ? "opacity-60" : "hover:border-primary/40"
+                        }`}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={disabled}
+                          onCheckedChange={(next) => {
+                            togglePushProfileSelection(profile.id, next === true);
+                          }}
+                          aria-label={`${profile.provider}/${profile.model}`}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="truncate font-medium">
+                              {profile.provider}/{profile.model}
+                            </div>
+                            {!eligibility.allowed && (
+                              <Badge variant="outline">{t("settings.pushProfileBlocked")}</Badge>
+                            )}
+                          </div>
+                          {profile.baseUrl && (
+                            <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                              URL: {profile.baseUrl}
+                            </div>
+                          )}
+                          {reasonText && (
+                            <div className="mt-0.5 text-xs text-muted-foreground">
+                              {reasonText}
+                            </div>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPushDialogOpen(false)}>
+              {t("settings.cancel")}
+            </Button>
+            <Button
+              onClick={() => {
+                void submitPushProfiles();
+              }}
+              disabled={
+                pushingProfiles
+                || !selectedPushTarget
+                || !selectedPushTarget.connected
+                || selectedPushProfileIds.length === 0
+              }
+            >
+              {pushingProfiles ? t("settings.pushProfilesRunning") : t("settings.pushProfilesConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add / Edit Profile Dialog */}
       <Dialog open={profileDialogOpen} onOpenChange={(open) => {

@@ -7,6 +7,7 @@ import {
   HashIcon,
   ClockIcon,
   HistoryIcon,
+  FileTextIcon,
   StethoscopeIcon,
   BookOpenIcon,
   KeyRoundIcon,
@@ -24,20 +25,10 @@ import { explainAndBuildGuidanceError, withGuidance } from "./lib/guidance";
 import { useFont } from "./lib/use-font";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn, formatBytes } from "@/lib/utils";
-import { Toaster } from "sonner";
+import { toast, Toaster } from "sonner";
 import type { ChannelNode, DiscordGuildChannel, DiscoveredInstance, DockerInstance, GuidanceAction, InstallSession, PrecheckIssue, RegisteredInstance, SshHost, SshTransferStats } from "./lib/types";
 import { GuidanceCard } from "./components/GuidanceCard";
 import { SshFormWidget } from "./components/SshFormWidget";
@@ -58,6 +49,8 @@ const Cook = lazy(() => import("./pages/Cook").then((m) => ({ default: m.Cook })
 const History = lazy(() => import("./pages/History").then((m) => ({ default: m.History })));
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Doctor = lazy(() => import("./pages/Doctor").then((m) => ({ default: m.Doctor })));
+const ClawpalLogs = lazy(() => import("./pages/ClawpalLogs").then((m) => ({ default: m.ClawpalLogs })));
+const OpenclawContext = lazy(() => import("./pages/OpenclawContext").then((m) => ({ default: m.OpenclawContext })));
 const Channels = lazy(() => import("./pages/Channels").then((m) => ({ default: m.Channels })));
 const Cron = lazy(() => import("./pages/Cron").then((m) => ({ default: m.Cron })));
 const Orchestrator = lazy(() => import("./pages/Orchestrator").then((m) => ({ default: m.Orchestrator })));
@@ -70,6 +63,8 @@ const preloadRouteModules = () =>
     import("./pages/Recipes"),
     import("./pages/Cron"),
     import("./pages/Doctor"),
+    import("./pages/ClawpalLogs"),
+    import("./pages/OpenclawContext"),
     import("./pages/History"),
     import("./components/Chat"),
     import("./components/PendingChangesBar"),
@@ -81,18 +76,12 @@ const DEFAULT_DOCKER_OPENCLAW_HOME = "~/.clawpal/docker-local";
 const DEFAULT_DOCKER_CLAWPAL_DATA_DIR = "~/.clawpal/docker-local/data";
 const DEFAULT_DOCKER_INSTANCE_ID = "docker:local";
 
-type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "doctor" | "orchestrator";
-const INSTANCE_ROUTES: Route[] = ["home", "channels", "recipes", "cron", "doctor", "history"];
+type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "doctor" | "logs" | "context" | "orchestrator";
+const INSTANCE_ROUTES: Route[] = ["home", "channels", "recipes", "cron", "doctor", "context", "history"];
 const OPEN_TABS_STORAGE_KEY = "clawpal_open_tabs";
 const WATCHDOG_LATE_GRACE_MS = 5 * 60 * 1000;
 const APP_PREFERENCES_CACHE_KEY = buildCacheKey("__global__", "getAppPreferences", []);
 const CHAT_PANEL_WIDTH = 380;
-
-interface ToastItem {
-  id: number;
-  message: string;
-  type: "success" | "error";
-}
 
 interface ProfileSyncStatus {
   phase: "idle" | "syncing" | "success" | "error";
@@ -111,8 +100,6 @@ function logDevIgnoredError(context: string, detail: unknown): void {
 }
 
 // AgentGuidanceItem is imported from ./components/GuidanceCard
-
-let toastIdCounter = 0;
 
 function sanitizeDockerPathSuffix(raw: string): string {
   const lowered = raw.toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -396,20 +383,20 @@ export function App() {
 
   }, []);
 
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [profileSyncStatus, setProfileSyncStatus] = useState<ProfileSyncStatus>({
     phase: "idle",
     message: "",
     instanceId: null,
   });
-  const [relatedSecretPushRunning, setRelatedSecretPushRunning] = useState(false);
-  const [pushRelatedSecretsConfirmOpen, setPushRelatedSecretsConfirmOpen] = useState(false);
   const [agentGuidanceByInstance, setAgentGuidanceByInstance] = useState<Record<string, AgentGuidanceItem>>({});
   const [doctorLaunchByInstance, setDoctorLaunchByInstance] = useState<Record<string, AgentGuidanceItem | null>>({});
   const [agentGuidanceOpen, setAgentGuidanceOpen] = useState(false);
   const [unreadGuidance, setUnreadGuidance] = useState(false);
-  const [showZeroclawDoctorFab, setShowZeroclawDoctorFab] = useState(false);
   const [showSshTransferSpeedUi, setShowSshTransferSpeedUi] = useState(false);
+  const [showClawpalLogsUi, setShowClawpalLogsUi] = useState(false);
+  const [showGatewayLogsUi, setShowGatewayLogsUi] = useState(false);
+  const [showOpenclawContextUi, setShowOpenclawContextUi] = useState(false);
+  const showZeroclawDoctorFab = true;
   const [sshTransferStats, setSshTransferStats] = useState<SshTransferStats | null>(null);
   const [doctorNavPulse, setDoctorNavPulse] = useState(false);
   const [quickDiagnoseOpen, setQuickDiagnoseOpen] = useState(false);
@@ -431,11 +418,11 @@ export function App() {
   }, [openTabIds]);
 
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
-    const id = ++toastIdCounter;
-    setToasts((prev) => [...prev, { id, message, type }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, type === "error" ? 5000 : 3000);
+    if (type === "error") {
+      toast.error(message, { duration: 5000 });
+      return;
+    }
+    toast.success(message, { duration: 3000 });
   }, []);
 
   const handleSshEditSave = useCallback(async (host: SshHost) => {
@@ -650,30 +637,46 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const loadZeroclawDoctorFabPreference = () => {
+    const loadUiPreferences = () => {
       api.getAppPreferences()
         .then((prefs) => {
           if (!cancelled) {
-            setShowZeroclawDoctorFab(Boolean(prefs.showZeroclawDoctorUi));
             setShowSshTransferSpeedUi(Boolean(prefs.showSshTransferSpeedUi));
+            setShowClawpalLogsUi(Boolean(prefs.showClawpalLogsUi));
+            setShowGatewayLogsUi(Boolean(prefs.showGatewayLogsUi));
+            setShowOpenclawContextUi(Boolean(prefs.showOpenclawContextUi));
           }
         })
         .catch(() => {
           if (!cancelled) {
-            setShowZeroclawDoctorFab(false);
             setShowSshTransferSpeedUi(false);
+            setShowClawpalLogsUi(false);
+            setShowGatewayLogsUi(false);
+            setShowOpenclawContextUi(false);
           }
         });
     };
 
-    loadZeroclawDoctorFabPreference();
-    const unsubscribe = subscribeToCacheKey(APP_PREFERENCES_CACHE_KEY, loadZeroclawDoctorFabPreference);
+    loadUiPreferences();
+    const unsubscribe = subscribeToCacheKey(APP_PREFERENCES_CACHE_KEY, loadUiPreferences);
 
     return () => {
       cancelled = true;
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (route === "logs" && !showClawpalLogsUi) {
+      navigateRoute("home");
+    }
+  }, [navigateRoute, route, showClawpalLogsUi]);
+
+  useEffect(() => {
+    if (route === "context" && !showOpenclawContextUi) {
+      navigateRoute("home");
+    }
+  }, [navigateRoute, route, showOpenclawContextUi]);
 
   const ensureAccessForInstance = useCallback((instanceId: string) => {
       const transport = resolveInstanceTransport(instanceId);
@@ -787,10 +790,6 @@ export function App() {
         console.error("Legacy instance migration failed:", e);
       });
   }, [readLegacyDockerInstances, readLegacyOpenTabs, refreshRegisteredInstances, refreshHosts]);
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
 
   const openQuickDiagnose = useCallback((context?: string | null, instanceId?: string) => {
     if (!showZeroclawDoctorFab) return;
@@ -966,35 +965,6 @@ export function App() {
       });
     }
   }, [showToast, t]);
-
-  const pushRelatedSecretsToActiveRemote = useCallback(async () => {
-    if (!activeInstance) return;
-    setRelatedSecretPushRunning(true);
-    try {
-      const result = await api.pushRelatedSecretsToRemote(activeInstance);
-      const message = t("doctor.pushRelatedSecretsSuccess", {
-        providers: result.totalRelatedProviders,
-        written: result.writtenSecrets,
-        skipped: result.skippedProviders,
-      });
-      showToast(message, "success");
-      setProfileSyncStatus({
-        phase: "success",
-        message,
-        instanceId: activeInstance,
-      });
-    } catch (error) {
-      const message = t("doctor.pushRelatedSecretsFailed", { error: String(error) });
-      showToast(message, "error");
-      setProfileSyncStatus({
-        phase: "error",
-        message,
-        instanceId: activeInstance,
-      });
-    } finally {
-      setRelatedSecretPushRunning(false);
-    }
-  }, [activeInstance, showToast, t]);
 
 
   const openTab = useCallback((id: string) => {
@@ -1380,8 +1350,6 @@ export function App() {
       return [];
     });
   }, [openTabIds, registeredInstances, t]);
-  const activeInstanceLabel =
-    openTabs.find((tab) => tab.id === activeInstance)?.label || activeInstance;
 
   // Handle install completion — register docker instance and open tab
   const handleInstallReady = useCallback(async (session: InstallSession) => {
@@ -1541,6 +1509,24 @@ export function App() {
           ? <span className="ml-auto h-2 w-2 rounded-full bg-primary animate-pulse" />
           : undefined,
       },
+      ...(showClawpalLogsUi
+        ? [{
+          key: "clawpal-logs",
+          active: route === "logs",
+          icon: <FileTextIcon className="size-4" />,
+          label: t("nav.clawpalLogs"),
+          onClick: () => navigateRoute("logs"),
+        }]
+        : []),
+      ...(showOpenclawContextUi
+        ? [{
+          key: "openclaw-context",
+          active: route === "context",
+          icon: <BookOpenIcon className="size-4" />,
+          label: t("nav.context"),
+          onClick: () => navigateRoute("context"),
+        }]
+        : []),
       {
         key: "history",
         active: route === "history",
@@ -1610,23 +1596,6 @@ export function App() {
 
         </nav>
 
-        <div className="px-5 pb-3 flex items-center gap-2 text-xs text-muted-foreground/70">
-          <a
-            href="#"
-            className="hover:text-foreground transition-colors duration-200"
-            onClick={(e) => { e.preventDefault(); api.openUrl("https://clawpal.xyz"); }}
-          >
-            {t('nav.website')}
-          </a>
-          <span className="text-border">·</span>
-          <a
-            href="#"
-            className="hover:text-foreground transition-colors duration-200"
-            onClick={(e) => { e.preventDefault(); api.openUrl("https://x.com/zhixianio"); }}
-          >
-            @zhixian
-          </a>
-        </div>
         <div className="px-5 pb-3 text-[11px] text-muted-foreground/80">
           <div className="flex items-center gap-1.5">
             <span
@@ -1654,28 +1623,6 @@ export function App() {
                       })}
             </span>
           </div>
-          {profileSyncStatus.message && (
-            <div className="mt-1 break-words text-muted-foreground/70" title={profileSyncStatus.message}>
-              {profileSyncStatus.message}
-            </div>
-          )}
-          {isRemote && isConnected && (
-            <div className="mt-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-[11px]"
-                disabled={relatedSecretPushRunning}
-                onClick={() => {
-                  setPushRelatedSecretsConfirmOpen(true);
-                }}
-              >
-                {relatedSecretPushRunning
-                  ? t("doctor.pushRelatedSecretsRunning")
-                  : t("doctor.pushRelatedSecrets")}
-              </Button>
-            </div>
-          )}
           {showSshTransferSpeedUi && isRemote && isConnected && (
             <div className="mt-2 border-t border-border/40 pt-2 text-muted-foreground/75">
               <div className="text-[10px] uppercase tracking-wide">{t("doctor.sshTransferSpeedTitle")}</div>
@@ -1702,6 +1649,23 @@ export function App() {
             />
           </Suspense>
         )}
+        <div className="px-5 pb-3 pt-2 flex items-center gap-2 text-xs text-muted-foreground/70">
+          <a
+            href="#"
+            className="hover:text-foreground transition-colors duration-200"
+            onClick={(e) => { e.preventDefault(); api.openUrl("https://clawpal.xyz"); }}
+          >
+            {t('nav.website')}
+          </a>
+          <span className="text-border">·</span>
+          <a
+            href="#"
+            className="hover:text-foreground transition-colors duration-200"
+            onClick={(e) => { e.preventDefault(); api.openUrl("https://x.com/zhixianio"); }}
+          >
+            @zhixian
+          </a>
+        </div>
       </aside>
       )}
 
@@ -1821,6 +1785,7 @@ export function App() {
             <Doctor
               key={activeInstance}
               active
+              showGatewayLogsUi={showGatewayLogsUi}
               connectRemoteHost={connectWithPassphraseFallback}
               launchGuidance={doctorLaunchByInstance[activeInstance] || null}
               onLaunchGuidanceConsumed={(instanceId) => {
@@ -1831,6 +1796,8 @@ export function App() {
               }}
             />
           )}
+          {!inStart && route === "logs" && <ClawpalLogs />}
+          {!inStart && route === "context" && <OpenclawContext />}
           {!inStart && route === "orchestrator" && <Orchestrator />}
           </Suspense>
         </div>
@@ -1867,32 +1834,6 @@ export function App() {
       </div>
       </InstanceContext.Provider>
     </div>
-
-    {/* ── Toast Stack ── */}
-    {toasts.length > 0 && (
-      <div className="fixed bottom-5 right-5 z-50 flex flex-col-reverse gap-2.5">
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className={cn(
-              "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium animate-in fade-in slide-in-from-bottom-3 duration-300",
-              toast.type === "success"
-                ? "bg-green-500/10 text-green-700 border border-green-500/20 shadow-sm dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/20"
-                : "bg-red-500/10 text-red-700 border border-red-500/20 shadow-sm dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/20"
-            )}
-          >
-            <span className="flex-1">{toast.message}</span>
-            <button
-              className="opacity-50 hover:opacity-100 transition-opacity ml-1 cursor-pointer"
-              onClick={() => dismissToast(toast.id)}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </div>
-        ))}
-      </div>
-    )}
-
     {doctorOverlayVisibility.showGuidanceOverlay && (
       <div
         className="fixed bottom-5 z-[60] flex flex-col items-end gap-2"
@@ -2035,30 +1976,6 @@ export function App() {
         )}
       </DialogContent>
     </Dialog>
-    <AlertDialog
-      open={pushRelatedSecretsConfirmOpen}
-      onOpenChange={setPushRelatedSecretsConfirmOpen}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{t("doctor.pushRelatedSecretsConfirmTitle")}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {t("doctor.pushRelatedSecretsConfirmDescription", { host: activeInstanceLabel })}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={relatedSecretPushRunning}
-            onClick={() => {
-              void pushRelatedSecretsToActiveRemote();
-            }}
-          >
-            {t("doctor.pushRelatedSecretsConfirmAction")}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
     <Toaster position="top-right" richColors />
     </>
   );
