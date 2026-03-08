@@ -37,7 +37,9 @@ import { profileToModelValue } from "@/lib/model-value";
 import {
   applyConfigSnapshotToHomeState,
   buildInitialHomeState,
+  shouldShowAvailableUpdateBadge,
   shouldStartDeferredUpdateCheck,
+  shouldShowLatestReleaseBadge,
 } from "./overview-loading";
 import {
   createDataLoadRequestId,
@@ -515,6 +517,18 @@ export function Home({
     }).catch((e) => { if (!hasGuidanceEmitted(e)) showToast?.(String(e), "error"); });
   };
 
+  const showAvailableUpdateBadge = shouldShowAvailableUpdateBadge({
+    checkingUpdate,
+    updateInfo,
+    version,
+  });
+  const showLatestReleaseBadge = shouldShowLatestReleaseBadge({
+    checkingUpdate,
+    updateInfo,
+    version,
+  });
+  const latestReleaseVersion = updateInfo?.latest ?? "";
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-1">
@@ -547,15 +561,15 @@ export function Home({
             {checkingUpdate && (
               <Badge variant="outline" className="text-muted-foreground">{t('home.checkingUpdates')}</Badge>
             )}
-            {!checkingUpdate && updateInfo?.latest && (
+            {showLatestReleaseBadge && (
               <Badge variant="outline" className="text-muted-foreground">
-                {t('home.latestRelease', { version: updateInfo.latest })}
+                {t('home.latestRelease', { version: latestReleaseVersion })}
               </Badge>
             )}
-            {!checkingUpdate && updateInfo?.available && updateInfo.latest && updateInfo.latest !== version && (
+            {showAvailableUpdateBadge && (
               <>
                 <Badge className="bg-primary/10 text-primary border border-primary/20">
-                  {t('home.available', { version: updateInfo.latest })}
+                  {t('home.available', { version: latestReleaseVersion })}
                 </Badge>
                 <Button
                   size="xs"

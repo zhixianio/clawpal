@@ -203,3 +203,37 @@ export function buildInitialRescueState(
     port: persistedStatus.configured ? persistedStatus.rescuePort : null,
   };
 }
+
+export function shouldShowAvailableUpdateBadge({
+  checkingUpdate,
+  updateInfo,
+  version,
+}: {
+  checkingUpdate: boolean;
+  updateInfo: { available: boolean; latest?: string } | null;
+  version: string | null;
+}): boolean {
+  return Boolean(
+    !checkingUpdate
+      && updateInfo?.available
+      && updateInfo.latest
+      && updateInfo.latest !== version,
+  );
+}
+
+export function shouldShowLatestReleaseBadge({
+  checkingUpdate,
+  updateInfo,
+  version,
+}: {
+  checkingUpdate: boolean;
+  updateInfo: { available: boolean; latest?: string } | null;
+  version: string | null;
+}): boolean {
+  if (checkingUpdate || !updateInfo?.latest) return false;
+  return !shouldShowAvailableUpdateBadge({
+    checkingUpdate,
+    updateInfo,
+    version,
+  });
+}

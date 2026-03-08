@@ -7,7 +7,9 @@ import {
   buildInitialCronState,
   buildInitialHomeState,
   buildInitialRescueState,
+  shouldShowAvailableUpdateBadge,
   shouldStartDeferredUpdateCheck,
+  shouldShowLatestReleaseBadge,
 } from "../overview-loading";
 
 describe("overview-loading helpers", () => {
@@ -166,5 +168,23 @@ describe("overview-loading helpers", () => {
       profile: "rescue",
       port: 19789,
     });
+  });
+
+  test("hides the separate latest release badge when an upgrade is already available", () => {
+    expect(
+      shouldShowAvailableUpdateBadge({
+        checkingUpdate: false,
+        updateInfo: { available: true, latest: "2026.3.7" },
+        version: "2026.2.26",
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldShowLatestReleaseBadge({
+        checkingUpdate: false,
+        updateInfo: { available: true, latest: "2026.3.7" },
+        version: "2026.2.26",
+      }),
+    ).toBe(false);
   });
 });
