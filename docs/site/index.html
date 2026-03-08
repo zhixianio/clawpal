@@ -737,6 +737,8 @@
       'dl-linux-appimage': (name) => name.endsWith('_amd64.AppImage'),
     };
 
+    const TRUSTED_HOSTS = ['github.com', 'gitlab.com'];
+
     function isLikelyCN() {
       try {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -744,11 +746,19 @@
       } catch { return false; }
     }
 
+    function isTrustedUrl(url) {
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'https:' &&
+          TRUSTED_HOSTS.some(h => parsed.hostname === h || parsed.hostname.endsWith('.' + h));
+      } catch { return false; }
+    }
+
     function applyAssets(assetList, fallback) {
       for (const [id, matcher] of Object.entries(ASSET_MATCHERS)) {
         const el = document.getElementById(id);
         if (!el) continue;
-        const asset = assetList.find(a => matcher(a.name));
+        const asset = assetList.find(a => matcher(a.name) && isTrustedUrl(a.url));
         el.href = asset ? asset.url : fallback;
         if (!asset) el.style.opacity = '0.4';
       }
