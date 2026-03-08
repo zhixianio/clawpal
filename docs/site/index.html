@@ -722,11 +722,13 @@
     }, { threshold: 0.12 });
     document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
 
-    // Fetch latest release assets from GitHub
-    const REPO = 'zhixianio/clawpal';
-    const FALLBACK = `https://github.com/${REPO}/releases`;
+    // ─── Geo-aware download: CN users → GitLab, others → GitHub ───
+    const GITHUB_REPO = 'zhixianio/clawpal';
+    const GITLAB_PROJECT_ID = '80072584';
+    const GITHUB_RELEASES = `https://github.com/${GITHUB_REPO}/releases`;
+    const GITLAB_RELEASES = 'https://gitlab.com/lay2dev/clawpal/-/releases';
 
-    const ASSET_MAP = {
+    const ASSET_MATCHERS = {
       'dl-mac-arm':        (name) => name.endsWith('_aarch64.dmg'),
       'dl-mac-intel':      (name) => name.endsWith('_x64.dmg'),
       'dl-win':            (name) => name.endsWith('_x64-setup.exe'),
@@ -735,25 +737,50 @@
       'dl-linux-appimage': (name) => name.endsWith('_amd64.AppImage'),
     };
 
-    fetch(`https://api.github.com/repos/${REPO}/releases/latest`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(release => {
-        const assets = release.assets || [];
-        for (const [id, matcher] of Object.entries(ASSET_MAP)) {
-          const el = document.getElementById(id);
-          if (!el) continue;
-          const asset = assets.find(a => matcher(a.name));
-          el.href = asset ? asset.browser_download_url : FALLBACK;
-          if (!asset) el.style.opacity = '0.4';
-        }
-      })
-      .catch(() => {
-        // Fallback: point everything to releases page
-        for (const id of Object.keys(ASSET_MAP)) {
-          const el = document.getElementById(id);
-          if (el) el.href = FALLBACK;
-        }
-      });
+    function isLikelyCN() {
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        return /^Asia\/(Shanghai|Chongqing|Harbin|Urumqi)$/.test(tz);
+      } catch { return false; }
+    }
+
+    function applyAssets(assetList, fallback) {
+      for (const [id, matcher] of Object.entries(ASSET_MATCHERS)) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const asset = assetList.find(a => matcher(a.name));
+        el.href = asset ? asset.url : fallback;
+        if (!asset) el.style.opacity = '0.4';
+      }
+    }
+
+    function fetchGitHub() {
+      return fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(release => (release.assets || []).map(a => ({ name: a.name, url: a.browser_download_url })));
+    }
+
+    function fetchGitLab() {
+      return fetch(`https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/releases/permalink/latest`)
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(release => (release.assets?.links || []).map(a => ({ name: a.name, url: a.url })));
+    }
+
+    const useCN = isLikelyCN();
+    const fallback = useCN ? GITLAB_RELEASES : GITHUB_RELEASES;
+    const primary = useCN ? fetchGitLab : fetchGitHub;
+    const secondary = useCN ? fetchGitHub : fetchGitLab;
+
+    primary()
+      .then(assets => applyAssets(assets, fallback))
+      .catch(() => secondary()
+        .then(assets => applyAssets(assets, fallback))
+        .catch(() => {
+          for (const id of Object.keys(ASSET_MATCHERS)) {
+            const el = document.getElementById(id);
+            if (el) el.href = fallback;
+          }
+        }));
   </script>
 </body>
 </html>
