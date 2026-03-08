@@ -27,7 +27,7 @@ jobs:
           mkdir -p /tmp/assets
           gh release download "$TAG" -D /tmp/assets -R "${{ github.repository }}" || exit 0
 
-          # Upload each asset to GitLab (skip .sig, latest.json, and files >50MB)
+          # Upload each asset to GitLab (skip .sig and latest.json)
           for file in /tmp/assets/*; do
             [ -f "$file" ] || continue
             filename=$(basename "$file")
@@ -36,16 +36,10 @@ jobs:
               *.sig|latest.json) echo "Skip: $filename"; continue ;;
             esac
 
-            filesize=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
-            if [ "$filesize" -gt 52428800 ]; then
-              echo "Skip (>50MB): $filename"
-              continue
-            fi
-
             echo "Uploading: $filename ..."
 
-            # Upload file
-            upload_url=$(curl --fail-with-body -X POST \
+            # Upload file (force HTTP/1.1 for large file stability)
+            upload_url=$(curl --http1.1 --fail-with-body -X POST \
               "https://gitlab.com/api/v4/projects/${GITLAB_PROJECT_ID}/uploads" \
               -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
               -F "file=@${file}" | jq -r '.full_path')
