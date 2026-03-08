@@ -190,6 +190,11 @@ impl SshSession {
             .channel_open_session()
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| SshError::Sftp(e.to_string()))?;
+
         let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))?;
@@ -221,10 +226,16 @@ impl SshSession {
             Backend::Russh { handle } => handle.clone(),
             Backend::Legacy => return self.sftp_write_legacy(path, content).await,
         };
+
         let channel = handle
             .channel_open_session()
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| SshError::Sftp(e.to_string()))?;
+
         let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
             .await
             .map_err(|e| SshError::Sftp(e.to_string()))?;
