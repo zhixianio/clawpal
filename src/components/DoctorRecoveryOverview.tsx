@@ -10,6 +10,10 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  localizeDoctorReportText,
+  localizeRescuePrimaryDiagnosis,
+} from "@/lib/doctor-report-i18n";
 import { cn } from "@/lib/utils";
 
 interface DoctorRecoveryOverviewProps {
@@ -93,9 +97,13 @@ export function DoctorRecoveryOverview({
   onRepairIssue,
   showRepairActions = true,
 }: DoctorRecoveryOverviewProps) {
-  const { t } = useTranslation();
-  const fixableCount = diagnosis.summary.fixableIssueCount;
-  const isOptimizeIntent = diagnosis.summary.status === "degraded";
+  const { t, i18n } = useTranslation();
+  const viewDiagnosis = useMemo(
+    () => localizeRescuePrimaryDiagnosis(diagnosis, i18n.language),
+    [diagnosis, i18n.language],
+  );
+  const fixableCount = viewDiagnosis.summary.fixableIssueCount;
+  const isOptimizeIntent = viewDiagnosis.summary.status === "degraded";
   const fixText = isOptimizeIntent
     ? t(
       fixableCount === 1 ? "doctor.optimizeOneIssue" : "doctor.optimizeManyIssues",
@@ -108,14 +116,18 @@ export function DoctorRecoveryOverview({
       count: fixableCount,
       defaultValue: fixableCount === 1 ? "Fix 1 issue" : `Fix ${fixableCount} issues`,
     });
-  const summaryHypothesis = diagnosis.summary.rootCauseHypotheses?.[0] ?? null;
+  const summaryHypothesis = viewDiagnosis.summary.rootCauseHypotheses?.[0] ?? null;
   const summaryFixSteps = useMemo(
-    () => (diagnosis.summary.fixSteps ?? []).slice(0, 3),
-    [diagnosis.summary.fixSteps],
+    () => (viewDiagnosis.summary.fixSteps ?? []).slice(0, 3),
+    [viewDiagnosis.summary.fixSteps],
   );
-  const showSummaryCard = diagnosis.summary.status !== "healthy";
+  const viewProgressLine = useMemo(
+    () => (progressLine ? localizeDoctorReportText(progressLine, i18n.language) : null),
+    [i18n.language, progressLine],
+  );
+  const showSummaryCard = viewDiagnosis.summary.status !== "healthy";
   const visibleSections = useMemo(
-    () => diagnosis.sections
+    () => viewDiagnosis.sections
       .map((section) => {
         if (section.key !== "gateway") {
           return section;
@@ -126,7 +138,7 @@ export function DoctorRecoveryOverview({
         };
       })
       .filter((section) => section.items.length > 0),
-    [diagnosis.sections],
+    [viewDiagnosis.sections],
   );
   const affectedSections = useMemo(
     () => visibleSections.filter((section) => section.status !== "healthy"),
@@ -157,16 +169,16 @@ export function DoctorRecoveryOverview({
         <CardHeader className={cn("pb-3", !showRepairActions && "pb-2")}>
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
-              <CardTitle className="text-base">{diagnosis.summary.headline}</CardTitle>
+              <CardTitle className="text-base">{viewDiagnosis.summary.headline}</CardTitle>
               <p className="text-sm text-muted-foreground">
-                {diagnosis.summary.recommendedAction}
+                {viewDiagnosis.summary.recommendedAction}
               </p>
             </div>
             <Badge
-              variant={diagnosis.summary.status === "broken" ? "destructive" : "outline"}
-              className={statusBadgeClass(diagnosis.summary.status)}
+              variant={viewDiagnosis.summary.status === "broken" ? "destructive" : "outline"}
+              className={statusBadgeClass(viewDiagnosis.summary.status)}
             >
-              {translateStatus(diagnosis.summary.status)}
+              {translateStatus(viewDiagnosis.summary.status)}
             </Badge>
           </div>
         </CardHeader>
@@ -195,13 +207,13 @@ export function DoctorRecoveryOverview({
               </div>
             ) : null}
           </div>
-          {progressLine ? (
+          {viewProgressLine ? (
             <div className="h-5 overflow-hidden text-sm text-muted-foreground">
               <span
-                key={progressLine}
+                key={viewProgressLine}
                 className="inline-block whitespace-nowrap transition-opacity duration-300 animate-pulse"
               >
-                {progressLine}
+                {viewProgressLine}
               </span>
             </div>
           ) : null}
@@ -235,7 +247,7 @@ export function DoctorRecoveryOverview({
               ))}
             </div>
           ) : null}
-          {hasDocGuidance(diagnosis.summary) ? (
+          {hasDocGuidance(viewDiagnosis.summary) ? (
             <div className="rounded-md border border-border/60 bg-background/70 p-3 text-sm">
               <div className="space-y-2">
                 {summaryHypothesis ? (
@@ -253,9 +265,9 @@ export function DoctorRecoveryOverview({
                     ))}
                   </div>
                 ) : null}
-                {diagnosis.summary.versionAwareness ? (
+                {viewDiagnosis.summary.versionAwareness ? (
                   <div className="text-xs text-muted-foreground">
-                    {diagnosis.summary.versionAwareness}
+                    {viewDiagnosis.summary.versionAwareness}
                   </div>
                 ) : null}
               </div>
@@ -279,7 +291,7 @@ export function DoctorRecoveryOverview({
                       <CardTitle className="text-sm">{section.title}</CardTitle>
                       <p className="text-sm text-muted-foreground">{section.summary}</p>
                     </div>
-                    {shouldShowSectionStatusBadge(diagnosis.summary.status, section.status) ? (
+                    {shouldShowSectionStatusBadge(viewDiagnosis.summary.status, section.status) ? (
                       <div className="flex items-center gap-2">
                         <Badge
                           variant={section.status === "broken" ? "destructive" : "outline"}

@@ -272,6 +272,90 @@ describe("DoctorRecoveryOverview", () => {
     expect(html).toContain("Primary configuration could not be read");
   });
 
+  test("localizes the diagnosis report when display language is Chinese", async () => {
+    await i18n.changeLanguage("zh");
+    const diagnosis: RescuePrimaryDiagnosisResult = {
+      status: "broken",
+      checkedAt: "2026-03-07T00:00:00Z",
+      targetProfile: "primary",
+      rescueProfile: "rescue",
+      rescueConfigured: true,
+      rescuePort: 19789,
+      summary: {
+        status: "broken",
+        headline: "Gateway needs attention first",
+        recommendedAction: "Apply 1 fix and re-run recovery",
+        fixableIssueCount: 1,
+        selectedFixIssueIds: ["primary.config.unreadable"],
+        rootCauseHypotheses: [],
+        fixSteps: [],
+        confidence: undefined,
+        citations: [],
+        versionAwareness: undefined,
+      },
+      sections: [
+        {
+          key: "gateway",
+          title: "Gateway",
+          status: "broken",
+          summary: "Gateway has 1 blocking finding",
+          docsUrl: "https://docs.openclaw.ai/gateway",
+          rootCauseHypotheses: [],
+          fixSteps: [],
+          confidence: undefined,
+          citations: [],
+          versionAwareness: undefined,
+          items: [
+            {
+              id: "primary.config.unreadable",
+              label: "Primary configuration could not be read",
+              status: "error",
+              detail: "Repair openclaw.json parsing errors and re-run the primary recovery check",
+              autoFixable: true,
+              issueId: "primary.config.unreadable",
+            },
+            {
+              id: "gateway.config.port",
+              label: "Gateway port",
+              status: "ok",
+              detail: "Configured primary gateway port: 18789",
+              autoFixable: false,
+              issueId: null,
+            },
+          ],
+        },
+      ],
+      checks: [],
+      issues: [],
+    };
+
+    const html = renderToStaticMarkup(
+      React.createElement(I18nextProvider, {
+        i18n,
+        children: React.createElement(DoctorRecoveryOverview, {
+          diagnosis,
+          checkLoading: false,
+          repairing: false,
+          progressLine: null,
+          repairResult: null,
+          repairError: null,
+          onRepairAll: () => {},
+          onRepairIssue: () => {},
+        }),
+      }),
+    );
+
+    expect(html).toContain("网关需要优先处理");
+    expect(html).toContain("应用 1 个修复后重新检查");
+    expect(html).toContain("修复 1 个问题");
+    expect(html).toContain("网关");
+    expect(html).toContain("网关有 1 个阻塞性问题");
+    expect(html).toContain("无法读取 Primary 配置");
+    expect(html).toContain("请修复 openclaw.json 解析错误后重新运行 Primary 恢复检查");
+    expect(html).toContain("网关端口");
+    expect(html).toContain("Primary 网关端口已配置为 18789");
+  });
+
   test("hides the summary card entirely when diagnosis is already healthy", async () => {
     await i18n.changeLanguage("en");
     const diagnosis: RescuePrimaryDiagnosisResult = {

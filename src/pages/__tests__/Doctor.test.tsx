@@ -8,7 +8,7 @@ import { InstanceContext } from "@/lib/instance-context";
 import { Doctor } from "../Doctor";
 
 describe("Doctor page rescue header", () => {
-  test("centers the LED bot, shows diagnose button and logs icon", async () => {
+  test("centers the doctor image header, shows diagnose button and logs icon", async () => {
     await i18n.changeLanguage("en");
     const storage = new Map<string, string>();
     const originalWindow = (globalThis as { window?: unknown }).window;
@@ -51,9 +51,12 @@ describe("Doctor page rescue header", () => {
     );
 
     expect(html).toContain("flex flex-col items-center");
-    expect(html).toContain("data-led-bot=\"wide-console\"");
+    expect(html).toContain("role=\"img\"");
+    expect(html).toContain("alt=\"Diagnose\"");
+    expect(html).toContain("src=\"/Users/ChenYu/Documents/Github/clawpal/src/assets/doctor.png\"");
     expect(html).toContain("aria-label=\"Open logs\"");
     expect(html).toContain(">Diagnose<");
+    expect(html).toContain("Run a structured check before attempting repairs on the primary profile.");
     expect(html).not.toContain("Rescue Bot");
     expect(html).not.toContain("Activate Rescue Bot");
     expect(i18n.t("doctor.diagnose")).toBe("Diagnose");

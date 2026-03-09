@@ -15,6 +15,7 @@ import { RescueAsciiHeader } from "@/components/RescueAsciiHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useInstance } from "@/lib/instance-context";
+import { localizeDoctorReportText } from "@/lib/doctor-report-i18n";
 import {
   createDataLoadRequestId,
   emitDataLoadMetric,
@@ -62,7 +63,7 @@ function resolveBotState(
 }
 
 export function Doctor(_: DoctorProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const ua = useApi();
   const { isRemote, isConnected } = useInstance();
 
@@ -89,6 +90,26 @@ export function Doctor(_: DoctorProps) {
     return Math.max(summaryCount, selectedCount, needsRepair ? 1 : 0);
   }, [diagnosis, needsRepair]);
   const botState = resolveBotState(busy, diagnosis, error);
+  const localizedStatusLine = useMemo(
+    () => (statusLine ? localizeDoctorReportText(statusLine, i18n.language) : null),
+    [i18n.language, statusLine],
+  );
+  const localizedRecommendedAction = useMemo(
+    () => (
+      diagnosis
+        ? localizeDoctorReportText(diagnosis.summary.recommendedAction, i18n.language)
+        : null
+    ),
+    [diagnosis, i18n.language],
+  );
+  const localizedPendingReason = useMemo(
+    () => (
+      pendingTempProviderSetup?.reason
+        ? localizeDoctorReportText(pendingTempProviderSetup.reason, i18n.language)
+        : null
+    ),
+    [i18n.language, pendingTempProviderSetup],
+  );
 
   useEffect(() => {
     let disposed = false;
@@ -312,10 +333,10 @@ export function Doctor(_: DoctorProps) {
       : <StethoscopeIcon className="size-3.5" />;
 
   const actionDisabled = busy || (isRemote && !isConnected);
-  const helperText = statusLine ?? (
-    pendingTempProviderSetup?.reason
+  const helperText = localizedStatusLine ?? (
+    localizedPendingReason
     ?? (needsRepair
-      ? diagnosis?.summary.recommendedAction ?? null
+      ? localizedRecommendedAction
       : diagnosis
         ? null
         : t("doctor.primaryRecoveryHint", {
@@ -408,7 +429,7 @@ export function Doctor(_: DoctorProps) {
                 })}
               </div>
               <div className="mt-1 text-muted-foreground">
-                {pendingTempProviderSetup.reason}
+                {localizedPendingReason ?? pendingTempProviderSetup.reason}
               </div>
               <div className="mt-3">
                 <Button size="sm" onClick={() => setTempProviderDialogOpen(true)}>
