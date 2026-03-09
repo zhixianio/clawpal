@@ -25,6 +25,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SettingsAlphaFeaturesCard } from "@/components/SettingsAlphaFeaturesCard";
+import { getSettingsProfileUiState } from "./settings-profile-ui";
 import {
   Select,
   SelectContent,
@@ -65,7 +66,6 @@ type ProfileForm = {
 type CredentialSource = "oauth" | "env" | "manual";
 
 const MODEL_CATALOG_CACHE_TTL_MS = 5 * 60_000;
-const ENABLE_PROFILE_TEST_BUTTON = true;
 let modelCatalogCache: { value: ModelCatalogProvider[]; expiresAt: number } | null = null;
 let profilesExtractedOnce = false;
 const PROVIDER_FALLBACK_OPTIONS = [
@@ -784,6 +784,7 @@ export function Settings({
                 ) : null}
                 <div className="grid gap-2">
                   {(profiles || []).map((profile) => {
+                    const profileUi = getSettingsProfileUiState(profile);
                     const credential = resolveProfileCredentialView(
                       profile,
                       resolvedCredentialMap.get(profile.id),
@@ -804,15 +805,15 @@ export function Settings({
                       >
                         <div className="flex justify-between items-center">
                           <strong>{profile.provider}/{profile.model}</strong>
-                          {profile.enabled ? (
+                          {profileUi.showEnabledBadge && profile.enabled ? (
                             <Badge className="bg-blue-500/10 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400">
                               {t('settings.enabled')}
                             </Badge>
-                          ) : (
+                          ) : profileUi.showEnabledBadge ? (
                             <Badge className="bg-red-500/10 text-red-600 dark:bg-red-500/15 dark:text-red-400">
                               {t('settings.disabled')}
                             </Badge>
-                          )}
+                          ) : null}
                         </div>
                         <div className="text-sm text-muted-foreground mt-1">
                           {t('settings.credential')}: {t(`settings.credentialKind.${credential.kind}`)}
@@ -833,57 +834,42 @@ export function Settings({
                           </div>
                         )}
                         <div className="flex gap-1.5 mt-1.5">
-                          {ENABLE_PROFILE_TEST_BUTTON && (
+                          {profileUi.actions.includes("edit") ? (
                             <Button
                               size="sm"
                               variant="outline"
                               type="button"
-                              onClick={() => testProfile(profile)}
-                              disabled={testingProfileId === profile.id}
+                              onClick={() => editProfile(profile)}
                             >
-                              {testingProfileId === profile.id ? t('settings.testing') : t('settings.test')}
+                              {t('settings.edit')}
                             </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            type="button"
-                            onClick={() => toggleProfileEnabled(profile)}
-                          >
-                            {profile.enabled ? t('settings.disable') : t('settings.enable')}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            type="button"
-                            onClick={() => editProfile(profile)}
-                          >
-                            {t('settings.edit')}
-                          </Button>
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button size="sm" variant="destructive" type="button">
-                                {t('settings.delete')}
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>{t('settings.deleteProfileTitle')}</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  {t('settings.deleteProfileDescription', { name: `${profile.provider}/${profile.model}` })}
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>{t('settings.cancel')}</AlertDialogCancel>
-                                <AlertDialogAction
-                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                  onClick={() => deleteProfile(profile.id)}
-                                >
+                          ) : null}
+                          {profileUi.actions.includes("delete") ? (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm" variant="destructive" type="button">
                                   {t('settings.delete')}
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>{t('settings.deleteProfileTitle')}</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    {t('settings.deleteProfileDescription', { name: `${profile.provider}/${profile.model}` })}
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>{t('settings.cancel')}</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                    onClick={() => deleteProfile(profile.id)}
+                                  >
+                                    {t('settings.delete')}
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          ) : null}
                         </div>
                       </div>
                     );
@@ -1079,17 +1065,6 @@ export function Settings({
                 />
               </div>
             )}
-
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="profile-enabled"
-                checked={form.enabled}
-                onCheckedChange={(checked) =>
-                  setForm((p) => ({ ...p, enabled: checked === true }))
-                }
-              />
-              <Label htmlFor="profile-enabled">{t('settings.profileEnabled')}</Label>
-            </div>
 
             <DialogFooter>
               {form.id && (
