@@ -42,9 +42,11 @@ interface DoctorProps {
 
 function diagnosisNeedsRepair(result: RescuePrimaryDiagnosisResult | null): boolean {
   if (!result) return false;
-  if (result.status === "broken" || result.status === "degraded") return true;
+  if ((result.summary.selectedFixIssueIds?.length ?? 0) > 0) return true;
   return result.sections.some(
-    (section) => section.status === "broken" || section.status === "degraded",
+    (section) =>
+      section.key === "gateway"
+      && (section.status === "broken" || section.status === "degraded"),
   );
 }
 
@@ -83,8 +85,8 @@ export function Doctor(_: DoctorProps) {
     repairResult?.status === "needsTempProviderSetup" ? repairResult.pendingAction ?? null : null;
   const repairableCount = useMemo(() => {
     const summaryCount = diagnosis?.summary.fixableIssueCount ?? 0;
-    const actionableCount = diagnosis?.issues.filter((issue) => issue.severity !== "info").length ?? 0;
-    return Math.max(summaryCount, actionableCount, needsRepair ? 1 : 0);
+    const selectedCount = diagnosis?.summary.selectedFixIssueIds.length ?? 0;
+    return Math.max(summaryCount, selectedCount, needsRepair ? 1 : 0);
   }, [diagnosis, needsRepair]);
   const botState = resolveBotState(busy, diagnosis, error);
 

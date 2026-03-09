@@ -4,9 +4,9 @@ import type { RescueBotRuntimeState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const BOT_MATRIX = [
-  ".....cc........cc.....",
-  "....cccc......cccc....",
-  "......bbbbbbbbbb......",
+  "......bb......bb......",
+  ".....bccb....bccb.....",
+  ".....bbbbbbbbbbbb.....",
   "....bbbbbbbbbbbbbb....",
   "...bbb..........bbb...",
   "..bbbb..e....e..bbbb..",
@@ -15,8 +15,8 @@ const BOT_MATRIX = [
   "...bbb..........bbb...",
   "....bbbbbbbbbbbbbb....",
   ".....tttttttttttt.....",
-  ".........ll..ll.......",
-  ".........ll..ll.......",
+  "......................",
+  "......................",
 ] as const;
 
 const GRID_WIDTH = BOT_MATRIX[0].length;

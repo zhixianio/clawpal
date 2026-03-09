@@ -439,8 +439,16 @@ pub fn collect_repairable_primary_issue_ids(
     (selected, skipped)
 }
 
-pub fn is_repairable_primary_issue(source: &str, _issue_id: &str, _auto_fixable: bool) -> bool {
-    source == "primary"
+pub fn is_repairable_primary_issue(source: &str, issue_id: &str, _auto_fixable: bool) -> bool {
+    if source != "primary" {
+        return false;
+    }
+    issue_id.starts_with("primary.gateway.")
+        || issue_id.starts_with("primary.config.")
+        || matches!(
+            issue_id,
+            "field.port" | "field.gateway.port" | "field.bind" | "field.gateway.bind"
+        )
 }
 
 pub fn is_primary_gateway_recovery_issue(issue_id: &str) -> bool {
@@ -1474,12 +1482,11 @@ mod tests {
         assert_eq!(
             selected,
             vec![
-                "field.agents".to_string(),
                 "primary.gateway.unhealthy".to_string(),
                 "field.port".to_string()
             ]
         );
-        assert!(skipped.is_empty());
+        assert_eq!(skipped, vec!["field.agents".to_string()]);
     }
 
     #[test]

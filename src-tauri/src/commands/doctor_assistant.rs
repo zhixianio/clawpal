@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 const DOCTOR_ASSISTANT_TARGET_PROFILE: &str = "primary";
 const DOCTOR_ASSISTANT_TEMP_SCOPE_LOCAL: &str = "local";
-const DOCTOR_ASSISTANT_TEMP_REPAIR_ROUNDS: usize = 10;
+const DOCTOR_ASSISTANT_TEMP_REPAIR_ROUNDS: usize = 2;
 const DOCTOR_ASSISTANT_TEMP_PROFILE_PREFIX: &str = "clawpal-doctor-";
 const DOCTOR_ASSISTANT_TEMP_MARKER_FILE: &str = ".clawpal-doctor-temp";
 const DOCTOR_ASSISTANT_TEMP_PROVIDER_SETUP_REQUIRED_PREFIX: &str =
@@ -829,6 +829,381 @@ fn collect_provider_keys(donor_cfg: &serde_json::Value) -> Vec<String> {
             keys
         })
         .unwrap_or_default()
+}
+
+
+fn doctor_failure_backup_name() -> String {
+    format!(
+        "clawpal-doctor-failure-{}-{}",
+        unix_timestamp_secs(),
+        Uuid::new_v4().simple(),
+    )
+}
+
+fn first_valid_backup_candidate(
+    candidates: &[(String, String)],
+    main_config_path: &str,
+) -> Option<(String, String)> {
+    candidates.iter().find_map(|(path, text)| {
+        if path == main_config_path {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .map(|_| (path.clone(), text.clone()))
+    })
+}
+
+fn summarize_config_validate_output(output: &OpenclawCommandOutput) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(&output.stdout).ok()?;
+    let issues = value.pointer("/issues")?.as_array()?;
+    let lines = issues
+        .iter()
+        .filter_map(|issue| {
+            let path = issue.pointer("/path").and_then(serde_json::Value::as_str)?;
+            let message = issue.pointer("/message").and_then(serde_json::Value::as_str)?;
+            Some(format!("{}: {}", path, message))
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join(" | "))
+    }
+}
+
+fn local_primary_config_validation_detail() -> Option<String> {
+    let command = build_profile_command(DOCTOR_ASSISTANT_TARGET_PROFILE, &["config", "validate", "--json"]);
+    let output = run_openclaw_dynamic(&command).ok()?;
+    summarize_config_validate_output(&output)
+}
+
+async fn remote_primary_config_validation_detail(
+    pool: &SshConnectionPool,
+    host_id: &str,
+) -> Option<String> {
+    let command = build_profile_command(DOCTOR_ASSISTANT_TARGET_PROFILE, &["config", "validate", "--json"]);
+    let output = run_remote_openclaw_dynamic(pool, host_id, command).await.ok()?;
+    summarize_config_validate_output(&output)
+}
+
+fn write_local_doctor_failure_artifacts(
+    failure_reason: &str,
+    selected_backup_path: Option<&str>,
+    parse_error: Option<&str>,
+) -> Result<(std::path::PathBuf, String), String> {
+    let paths = resolve_paths();
+    let failure_name = doctor_failure_backup_name();
+    let failure_dir = paths
+        .clawpal_dir
+        .join("doctor-failures")
+        .join(&failure_name);
+    std::fs::create_dir_all(&failure_dir).map_err(|error| error.to_string())?;
+    let damaged = read_local_primary_config_text(DOCTOR_ASSISTANT_TARGET_PROFILE);
+    std::fs::write(failure_dir.join("openclaw.json.damaged"), damaged)
+        .map_err(|error| error.to_string())?;
+    let metadata = serde_json::json!({
+        "transport": "local",
+        "configPath": paths.config_path,
+        "selectedBackupPath": selected_backup_path,
+        "parseError": parse_error,
+        "failureReason": failure_reason,
+        "createdAt": format_timestamp_from_unix(unix_timestamp_secs()),
+    });
+    std::fs::write(
+        failure_dir.join("metadata.json"),
+        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((failure_dir, failure_name))
+}
+
+async fn write_remote_doctor_failure_artifacts(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    failure_reason: &str,
+    selected_backup_path: Option<&str>,
+    parse_error: Option<&str>,
+) -> Result<(String, String), String> {
+    let home_dir = pool.get_home_dir(host_id).await.unwrap_or_else(|_| "/root".into());
+    let failure_name = doctor_failure_backup_name();
+    let failure_dir = format!(
+        "{}/.clawpal/doctor-failures/{}",
+        home_dir.trim_end_matches('/'),
+        failure_name
+    );
+    let mkdir_cmd = format!("mkdir -p {}", shell_escape(&failure_dir));
+    let mkdir_result = pool.exec_login(host_id, &mkdir_cmd).await?;
+    if mkdir_result.exit_code != 0 {
+        return Err(format!("Failed to create remote failure dir: {}", mkdir_result.stderr));
+    }
+    let damaged_path = format!("{}/openclaw.json.damaged", failure_dir);
+    pool.sftp_write(host_id, &damaged_path, &read_remote_primary_config_text(pool, host_id, DOCTOR_ASSISTANT_TARGET_PROFILE).await)
+        .await?;
+    let metadata = serde_json::json!({
+        "transport": "remote_ssh",
+        "configPath": expand_remote_home_path(&default_main_config_path(DOCTOR_ASSISTANT_TARGET_PROFILE), &home_dir),
+        "selectedBackupPath": selected_backup_path,
+        "parseError": parse_error,
+        "failureReason": failure_reason,
+        "createdAt": format_timestamp_from_unix(unix_timestamp_secs()),
+        "hostId": host_id,
+    });
+    let metadata_path = format!("{}/metadata.json", failure_dir);
+    pool.sftp_write(
+        host_id,
+        &metadata_path,
+        &serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .await?;
+    Ok((failure_dir, failure_name))
+}
+
+fn fallback_restore_local_primary_config(
+    app: &AppHandle,
+    run_id: &str,
+    steps: &mut Vec<RescuePrimaryRepairStep>,
+    failure_reason: &str,
+) -> Result<Option<RescuePrimaryDiagnosisResult>, String> {
+    let paths = resolve_paths();
+    let parse_error = local_primary_config_validation_detail();
+    emit_doctor_assistant_progress(
+        app,
+        run_id,
+        "cleanup",
+        "Saving damaged config before fallback restore",
+        0.95,
+        0,
+        None,
+        None,
+    );
+    let (failure_dir, _) = write_local_doctor_failure_artifacts(
+        failure_reason,
+        None,
+        parse_error.as_deref(),
+    )?;
+    append_step(
+        steps,
+        "repair.fallback.backup_damaged_config",
+        "Backup damaged primary config",
+        true,
+        format!("Saved damaged config to {}", failure_dir.display()),
+        None,
+    );
+    let candidates = read_local_openclaw_json_candidates(&paths.openclaw_dir);
+    let main_config_path = paths.config_path.to_string_lossy().to_string();
+    let Some((backup_path, backup_text)) = first_valid_backup_candidate(&candidates, &main_config_path) else {
+        append_step(
+            steps,
+            "repair.fallback.select_valid_backup",
+            "Select valid backup config",
+            false,
+            "No alternate valid OpenClaw backup config was found",
+            None,
+        );
+        return Ok(None);
+    };
+    append_step(
+        steps,
+        "repair.fallback.select_valid_backup",
+        "Select valid backup config",
+        true,
+        format!("Selected {} as fallback restore source", backup_path),
+        None,
+    );
+    let metadata = serde_json::json!({
+        "transport": "local",
+        "configPath": paths.config_path,
+        "selectedBackupPath": backup_path,
+        "parseError": parse_error,
+        "failureReason": failure_reason,
+        "createdAt": format_timestamp_from_unix(unix_timestamp_secs()),
+    });
+    std::fs::write(
+        failure_dir.join("metadata.json"),
+        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    emit_doctor_assistant_progress(
+        app,
+        run_id,
+        "cleanup",
+        "Restoring first valid backup into primary config",
+        0.965,
+        0,
+        None,
+        None,
+    );
+    std::fs::write(&paths.config_path, backup_text).map_err(|error| error.to_string())?;
+    append_step(
+        steps,
+        "repair.fallback.restore_primary_config",
+        "Restore primary config from fallback backup",
+        true,
+        format!("Restored {} into {}", backup_path, paths.config_path.display()),
+        None,
+    );
+    emit_doctor_assistant_progress(
+        app,
+        run_id,
+        "cleanup",
+        "Restarting gateway from recovered config",
+        0.98,
+        0,
+        None,
+        None,
+    );
+    let mut commands = Vec::new();
+    super::run_local_gateway_restart_fallback(DOCTOR_ASSISTANT_TARGET_PROFILE, &mut commands)?;
+    append_step(
+        steps,
+        "repair.fallback.restart_gateway",
+        "Restart primary gateway",
+        true,
+        format!("Restarted primary gateway using {} command(s)", commands.len()),
+        None,
+    );
+    let after = diagnose_doctor_assistant_local_impl(app, run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)?;
+    append_step(
+        steps,
+        "repair.fallback.recheck",
+        "Re-check primary gateway after fallback restore",
+        diagnose_doctor_assistant_status(&after),
+        if diagnose_doctor_assistant_status(&after) {
+            "Primary gateway recovered after fallback restore".to_string()
+        } else {
+            "Primary gateway remained unhealthy after fallback restore".to_string()
+        },
+        None,
+    );
+    Ok(Some(after))
+}
+
+async fn fallback_restore_remote_primary_config(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    app: &AppHandle,
+    run_id: &str,
+    steps: &mut Vec<RescuePrimaryRepairStep>,
+    failure_reason: &str,
+) -> Result<Option<RescuePrimaryDiagnosisResult>, String> {
+    let home_dir = pool.get_home_dir(host_id).await.unwrap_or_else(|_| "/root".into());
+    let main_config_path = expand_remote_home_path(&default_main_config_path(DOCTOR_ASSISTANT_TARGET_PROFILE), &home_dir);
+    let parse_error = remote_primary_config_validation_detail(pool, host_id).await;
+    emit_doctor_assistant_progress(
+        app,
+        run_id,
+        "cleanup",
+        "Saving damaged config before fallback restore",
+        0.95,
+        0,
+        None,
+        None,
+    );
+    let (failure_dir, _) = write_remote_doctor_failure_artifacts(
+        pool,
+        host_id,
+        failure_reason,
+        None,
+        parse_error.as_deref(),
+    )
+    .await?;
+    append_step(
+        steps,
+        "repair.fallback.backup_damaged_config",
+        "Backup damaged primary config",
+        true,
+        format!("Saved damaged config to {}", failure_dir),
+        None,
+    );
+    let main_root = resolve_remote_main_root(pool, host_id).await;
+    let candidates = read_remote_openclaw_json_candidates(pool, host_id, &main_root).await;
+    let Some((backup_path, backup_text)) = first_valid_backup_candidate(&candidates, &main_config_path) else {
+        append_step(
+            steps,
+            "repair.fallback.select_valid_backup",
+            "Select valid backup config",
+            false,
+            "No alternate valid OpenClaw backup config was found",
+            None,
+        );
+        return Ok(None);
+    };
+    append_step(
+        steps,
+        "repair.fallback.select_valid_backup",
+        "Select valid backup config",
+        true,
+        format!("Selected {} as fallback restore source", backup_path),
+        None,
+    );
+    let metadata = serde_json::json!({
+        "transport": "remote_ssh",
+        "configPath": main_config_path,
+        "selectedBackupPath": backup_path,
+        "parseError": parse_error,
+        "failureReason": failure_reason,
+        "createdAt": format_timestamp_from_unix(unix_timestamp_secs()),
+        "hostId": host_id,
+    });
+    pool.sftp_write(
+        host_id,
+        &format!("{}/metadata.json", failure_dir),
+        &serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    ).await?;
+    emit_doctor_assistant_progress(
+        app,
+        run_id,
+        "cleanup",
+        "Restoring first valid backup into primary config",
+        0.965,
+        0,
+        None,
+        None,
+    );
+    pool.sftp_write(host_id, &main_config_path, &backup_text).await?;
+    append_step(
+        steps,
+        "repair.fallback.restore_primary_config",
+        "Restore primary config from fallback backup",
+        true,
+        format!("Restored {} into {}", backup_path, main_config_path),
+        None,
+    );
+    emit_doctor_assistant_progress(
+        app,
+        run_id,
+        "cleanup",
+        "Restarting gateway from recovered config",
+        0.98,
+        0,
+        None,
+        None,
+    );
+    let mut commands = Vec::new();
+    super::run_remote_gateway_restart_fallback(pool, host_id, DOCTOR_ASSISTANT_TARGET_PROFILE, &mut commands).await?;
+    append_step(
+        steps,
+        "repair.fallback.restart_gateway",
+        "Restart primary gateway",
+        true,
+        format!("Restarted primary gateway using {} command(s)", commands.len()),
+        None,
+    );
+    let after = diagnose_doctor_assistant_remote_impl(pool, host_id, app, run_id, DOCTOR_ASSISTANT_TARGET_PROFILE).await?;
+    append_step(
+        steps,
+        "repair.fallback.recheck",
+        "Re-check primary gateway after fallback restore",
+        diagnose_doctor_assistant_status(&after),
+        if diagnose_doctor_assistant_status(&after) {
+            "Primary gateway recovered after fallback restore".to_string()
+        } else {
+            "Primary gateway remained unhealthy after fallback restore".to_string()
+        },
+        None,
+    );
+    Ok(Some(after))
 }
 
 fn load_local_donor_cfg_fallback() -> LocalDonorConfigLoad {
@@ -3863,9 +4238,13 @@ fn build_temp_gateway_record(
 }
 
 #[tauri::command]
-pub fn diagnose_doctor_assistant(app: AppHandle) -> Result<RescuePrimaryDiagnosisResult, String> {
+pub async fn diagnose_doctor_assistant(app: AppHandle) -> Result<RescuePrimaryDiagnosisResult, String> {
     let run_id = Uuid::new_v4().to_string();
-    diagnose_doctor_assistant_local_impl(&app, &run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)
+    tauri::async_runtime::spawn_blocking(move || {
+        diagnose_doctor_assistant_local_impl(&app, &run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -3886,26 +4265,27 @@ pub async fn remote_diagnose_doctor_assistant(
 }
 
 #[tauri::command]
-pub fn repair_doctor_assistant(
+pub async fn repair_doctor_assistant(
     current_diagnosis: Option<RescuePrimaryDiagnosisResult>,
     temp_provider_profile_id: Option<String>,
     app: AppHandle,
 ) -> Result<RescuePrimaryRepairResult, String> {
     let run_id = Uuid::new_v4().to_string();
-    let paths = resolve_paths();
-    let before = match current_diagnosis {
-        Some(diagnosis) => diagnosis,
-        None => {
-            diagnose_doctor_assistant_local_impl(&app, &run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)?
-        }
-    };
-    let attempted_at = format_timestamp_from_unix(unix_timestamp_secs());
-    let (selected_issue_ids, skipped_issue_ids) =
-        collect_repairable_primary_issue_ids(&before, &before.summary.selected_fix_issue_ids);
-    let mut applied_issue_ids = Vec::new();
-    let mut failed_issue_ids = Vec::new();
-    let mut steps = Vec::new();
-    let mut current = before.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<RescuePrimaryRepairResult, String> {
+        let paths = resolve_paths();
+        let before = match current_diagnosis {
+            Some(diagnosis) => diagnosis,
+            None => {
+                diagnose_doctor_assistant_local_impl(&app, &run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)?
+            }
+        };
+        let attempted_at = format_timestamp_from_unix(unix_timestamp_secs());
+        let (selected_issue_ids, skipped_issue_ids) =
+            collect_repairable_primary_issue_ids(&before, &before.summary.selected_fix_issue_ids);
+        let mut applied_issue_ids = Vec::new();
+        let mut failed_issue_ids = Vec::new();
+        let mut steps = Vec::new();
+        let mut current = before.clone();
 
     if diagnose_doctor_assistant_status(&before) {
         append_step(
@@ -4039,9 +4419,9 @@ pub fn repair_doctor_assistant(
             }
             Ok(())
         })();
-        let pending_reason = temp_flow
+        let temp_flow_error = temp_flow.as_ref().err().cloned();
+        let pending_reason = temp_flow_error
             .as_ref()
-            .err()
             .and_then(|error| doctor_assistant_extract_temp_provider_setup_reason(error));
 
         emit_doctor_assistant_progress(
@@ -4102,31 +4482,67 @@ pub fn repair_doctor_assistant(
                 None,
             ),
         }
-        if let Some(reason) = pending_reason {
-            emit_doctor_assistant_progress(&app, &run_id, "cleanup", &reason, 0.96, 0, None, None);
-            return Ok(doctor_assistant_pending_temp_provider_result(
-                attempted_at,
-                temp_profile,
-                selected_issue_ids.clone(),
-                applied_issue_ids.clone(),
-                skipped_issue_ids.clone(),
-                selected_issue_ids
-                    .iter()
-                    .filter(|id| !applied_issue_ids.contains(id))
-                    .cloned()
-                    .collect(),
-                steps,
-                before,
-                current,
-                temp_provider_profile_id,
-                reason,
-            ));
+        if temp_flow_error.is_some() || !diagnose_doctor_assistant_status(&current) {
+            let fallback_reason = pending_reason
+                .clone()
+                .or(temp_flow_error.clone())
+                .unwrap_or_else(|| "Temporary gateway repair finished with remaining issues".into());
+            match fallback_restore_local_primary_config(&app, &run_id, &mut steps, &fallback_reason) {
+                Ok(Some(next)) => {
+                    for (issue_id, label) in collect_resolved_issues(&current, &next) {
+                        merge_issue_lists(&mut applied_issue_ids, std::iter::once(issue_id.clone()));
+                        emit_doctor_assistant_progress(
+                            &app,
+                            &run_id,
+                            "cleanup",
+                            format!("{label} fixed"),
+                            0.94,
+                            0,
+                            Some(issue_id),
+                            Some(label),
+                        );
+                    }
+                    current = next
+                }
+                Ok(None) => {}
+                Err(error) => append_step(
+                    &mut steps,
+                    "repair.fallback.error",
+                    "Fallback restore primary config",
+                    false,
+                    error,
+                    None,
+                ),
+            }
         }
-        temp_flow?;
+        if let Some(reason) = pending_reason {
+            if !diagnose_doctor_assistant_status(&current) {
+                emit_doctor_assistant_progress(&app, &run_id, "cleanup", &reason, 0.96, 0, None, None);
+                return Ok(doctor_assistant_pending_temp_provider_result(
+                    attempted_at,
+                    temp_profile,
+                    selected_issue_ids.clone(),
+                    applied_issue_ids.clone(),
+                    skipped_issue_ids.clone(),
+                    selected_issue_ids
+                        .iter()
+                        .filter(|id| !applied_issue_ids.contains(id))
+                        .cloned()
+                        .collect(),
+                    steps,
+                    before,
+                    current,
+                    temp_provider_profile_id,
+                    reason,
+                ));
+            }
+        }
     }
 
-    let after =
-        diagnose_doctor_assistant_local_impl(&app, &run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)?;
+    let after = diagnose_doctor_assistant_local_impl(&app, &run_id, DOCTOR_ASSISTANT_TARGET_PROFILE)?;
+    for (issue_id, _label) in collect_resolved_issues(&current, &after) {
+        merge_issue_lists(&mut applied_issue_ids, std::iter::once(issue_id));
+    }
     let remaining = after
         .issues
         .iter()
@@ -4164,6 +4580,9 @@ pub fn repair_doctor_assistant(
         before,
         after,
     ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -4439,9 +4858,9 @@ pub async fn remote_repair_doctor_assistant(
                 }
             }
         }
-        let pending_reason = temp_flow
+        let temp_flow_error = temp_flow.as_ref().err().cloned();
+        let pending_reason = temp_flow_error
             .as_ref()
-            .err()
             .and_then(|error| doctor_assistant_extract_temp_provider_setup_reason(error));
 
         emit_doctor_assistant_progress(
@@ -4502,27 +4921,61 @@ pub async fn remote_repair_doctor_assistant(
                 None,
             ),
         }
-        if let Some(reason) = pending_reason {
-            emit_doctor_assistant_progress(&app, &run_id, "cleanup", &reason, 0.96, 0, None, None);
-            return Ok(doctor_assistant_pending_temp_provider_result(
-                attempted_at,
-                temp_profile,
-                selected_issue_ids.clone(),
-                applied_issue_ids.clone(),
-                skipped_issue_ids.clone(),
-                selected_issue_ids
-                    .iter()
-                    .filter(|id| !applied_issue_ids.contains(id))
-                    .cloned()
-                    .collect(),
-                steps,
-                before,
-                current,
-                temp_provider_profile_id,
-                reason,
-            ));
+        if temp_flow_error.is_some() || !diagnose_doctor_assistant_status(&current) {
+            let fallback_reason = pending_reason
+                .clone()
+                .or(temp_flow_error.clone())
+                .unwrap_or_else(|| "Temporary gateway repair finished with remaining issues".into());
+            match fallback_restore_remote_primary_config(&pool, &host_id, &app, &run_id, &mut steps, &fallback_reason).await {
+                Ok(Some(next)) => {
+                    for (issue_id, label) in collect_resolved_issues(&current, &next) {
+                        merge_issue_lists(&mut applied_issue_ids, std::iter::once(issue_id.clone()));
+                        emit_doctor_assistant_progress(
+                            &app,
+                            &run_id,
+                            "cleanup",
+                            format!("{label} fixed"),
+                            0.94,
+                            0,
+                            Some(issue_id),
+                            Some(label),
+                        );
+                    }
+                    current = next
+                }
+                Ok(None) => {}
+                Err(error) => append_step(
+                    &mut steps,
+                    "repair.fallback.error",
+                    "Fallback restore primary config",
+                    false,
+                    error,
+                    None,
+                ),
+            }
         }
-        temp_flow?;
+        if let Some(reason) = pending_reason {
+            if !diagnose_doctor_assistant_status(&current) {
+                emit_doctor_assistant_progress(&app, &run_id, "cleanup", &reason, 0.96, 0, None, None);
+                return Ok(doctor_assistant_pending_temp_provider_result(
+                    attempted_at,
+                    temp_profile,
+                    selected_issue_ids.clone(),
+                    applied_issue_ids.clone(),
+                    skipped_issue_ids.clone(),
+                    selected_issue_ids
+                        .iter()
+                        .filter(|id| !applied_issue_ids.contains(id))
+                        .cloned()
+                        .collect(),
+                    steps,
+                    before,
+                    current,
+                    temp_provider_profile_id,
+                    reason,
+                ));
+            }
+        }
     }
 
     let after = diagnose_doctor_assistant_remote_impl(
@@ -4533,6 +4986,9 @@ pub async fn remote_repair_doctor_assistant(
         DOCTOR_ASSISTANT_TARGET_PROFILE,
     )
     .await?;
+    for (issue_id, _label) in collect_resolved_issues(&current, &after) {
+        merge_issue_lists(&mut applied_issue_ids, std::iter::once(issue_id));
+    }
     let remaining = after
         .issues
         .iter()

@@ -6897,8 +6897,8 @@ mod rescue_bot_tests {
                 "rescue.gateway.unhealthy".into(),
             ],
         );
-        assert_eq!(selected, vec!["field.agents", "field.port"]);
-        assert_eq!(skipped, vec!["rescue.gateway.unhealthy"]);
+        assert_eq!(selected, vec!["field.port"]);
+        assert_eq!(skipped, vec!["field.agents", "rescue.gateway.unhealthy"]);
     }
 
     #[test]
@@ -7209,17 +7209,13 @@ mod rescue_bot_tests {
         assert_eq!(sections[2].status, "degraded");
         assert_eq!(sections[3].status, "degraded");
         assert_eq!(summary.status, "broken");
-        assert_eq!(summary.fixable_issue_count, 3);
+        assert_eq!(summary.fixable_issue_count, 1);
         assert_eq!(
             summary.selected_fix_issue_ids,
-            vec![
-                "primary.gateway.unhealthy",
-                "field.agents",
-                "tools.allowlist.review"
-            ]
+            vec!["primary.gateway.unhealthy"]
         );
         assert!(summary.headline.contains("Gateway"));
-        assert!(summary.recommended_action.contains("Apply 3 fix(es)"));
+        assert!(summary.recommended_action.contains("Apply 1 fix(es)"));
     }
 
     #[test]
