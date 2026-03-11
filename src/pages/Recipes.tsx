@@ -1,36 +1,88 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { api } from "../lib/api";
 import { RecipeCard } from "../components/RecipeCard";
-import type { Recipe } from "../lib/types";
+import type { Recipe, RecipeRuntimeInstance, RecipeRuntimeRun } from "../lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { useApi } from "@/lib/use-api";
+import { formatTime } from "@/lib/utils";
+
+function displayRunStatus(status: string): string {
+  return status.replace(/_/g, " ");
+}
 
 export function Recipes({
   onCook,
+  onOpenRuntimeDashboard,
+  initialRecipes,
+  initialInstances,
+  initialRuns,
 }: {
   onCook: (id: string, source?: string) => void;
+  onOpenRuntimeDashboard?: () => void;
+  initialRecipes?: Recipe[];
+  initialInstances?: RecipeRuntimeInstance[];
+  initialRuns?: RecipeRuntimeRun[];
 }) {
   const { t } = useTranslation();
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const ua = useApi();
+  const [recipes, setRecipes] = useState<Recipe[]>(() => initialRecipes ?? []);
+  const [instances, setInstances] = useState<RecipeRuntimeInstance[]>(() => initialInstances ?? []);
+  const [runs, setRuns] = useState<RecipeRuntimeRun[]>(() => initialRuns ?? []);
   const [source, setSource] = useState("");
   const [loadedSource, setLoadedSource] = useState<string | undefined>(undefined);
 
   const load = async (nextSource: string) => {
     const value = nextSource.trim();
     try {
-      const r = await api.listRecipes(value || undefined);
+      const [nextRecipes, nextInstances, nextRuns] = await Promise.all([
+        ua.listRecipes(value || undefined),
+        ua.listRecipeInstances(),
+        ua.listRecipeRuns(),
+      ]);
       setLoadedSource(value || undefined);
-      setRecipes(r);
+      setRecipes(nextRecipes);
+      setInstances(nextInstances);
+      setRuns(nextRuns);
     } catch (e) {
       console.error("Failed to load recipes:", e);
     }
   };
 
   useEffect(() => {
+    if (initialRecipes || initialInstances || initialRuns) {
+      return;
+    }
     void load("");
-  }, []);
+  }, [initialRecipes, initialInstances, initialRuns]);
+
+  const latestRun = useMemo(
+    () => [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0],
+    [runs],
+  );
+
+  const latestRunByRecipe = useMemo(() => {
+    const result = new Map<string, RecipeRuntimeRun>();
+    const sorted = [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+    for (const run of sorted) {
+      if (!result.has(run.recipeId)) {
+        result.set(run.recipeId, run);
+      }
+    }
+    return result;
+  }, [runs]);
+
+  const instanceCountByRecipe = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const instance of instances) {
+      counts.set(instance.recipeId, (counts.get(instance.recipeId) ?? 0) + 1);
+    }
+    return counts;
+  }, [instances]);
 
   return (
     <section>
@@ -50,13 +102,89 @@ export function Recipes({
       <p className="text-sm text-muted-foreground mt-0">
         {t('recipes.loadedFrom', { source: loadedSource || t('recipes.builtinSource') })}
       </p>
+      <Card className="mt-4 mb-4">
+        <CardContent className="space-y-4">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">{t("recipes.runtimeTitle")}</div>
+              <p className="text-sm text-muted-foreground">
+                {latestRun
+                  ? t("recipes.runtimeDescription")
+                  : t("recipes.runtimeEmpty")}
+              </p>
+            </div>
+            {onOpenRuntimeDashboard && (
+              <Button variant="outline" size="sm" onClick={onOpenRuntimeDashboard}>
+                {t("recipes.runtimeOpenDashboard")}
+              </Button>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border bg-muted/20 px-3 py-2">
+              <div className="text-xs text-muted-foreground">{t("recipes.runtimeInstances")}</div>
+              <div className="text-lg font-semibold">{instances.length}</div>
+            </div>
+            <div className="rounded-xl border bg-muted/20 px-3 py-2">
+              <div className="text-xs text-muted-foreground">{t("recipes.runtimeRuns")}</div>
+              <div className="text-lg font-semibold">{runs.length}</div>
+            </div>
+            <div className="rounded-xl border bg-muted/20 px-3 py-2">
+              <div className="text-xs text-muted-foreground">{t("recipes.runtimeLastRun")}</div>
+              <div className="text-sm font-medium">
+                {latestRun ? formatTime(latestRun.startedAt) : t("recipes.runtimeNoRuns")}
+              </div>
+            </div>
+          </div>
+
+          {latestRun && (
+            <div className="rounded-xl border bg-background px-3 py-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium">{t("recipes.runtimeRecentRun")}</span>
+                <Badge variant="outline">{displayRunStatus(latestRun.status)}</Badge>
+                <span className="text-xs text-muted-foreground">
+                  {latestRun.recipeId} · {latestRun.runner}
+                </span>
+              </div>
+              <p className="text-sm mt-2">{latestRun.summary}</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
       <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
         {recipes.map((recipe) => (
-          <RecipeCard
-            key={recipe.id}
-            recipe={recipe}
-            onCook={() => onCook(recipe.id, loadedSource)}
-          />
+          <div key={recipe.id} className="space-y-2">
+            <RecipeCard
+              recipe={recipe}
+              onCook={() => onCook(recipe.id, loadedSource)}
+            />
+            {(latestRunByRecipe.has(recipe.id) || instanceCountByRecipe.has(recipe.id)) && (
+              <div className="rounded-xl border bg-muted/20 px-3 py-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{t("recipes.runtimeRecentRun")}</span>
+                  <span className="text-muted-foreground">
+                    {t("recipes.runtimeInstancesForRecipe", {
+                      count: instanceCountByRecipe.get(recipe.id) ?? 0,
+                    })}
+                  </span>
+                </div>
+                {latestRunByRecipe.get(recipe.id) ? (
+                  <>
+                    <div className="mt-1 text-sm">
+                      {latestRunByRecipe.get(recipe.id)?.summary}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {displayRunStatus(latestRunByRecipe.get(recipe.id)?.status ?? "")}
+                      {" · "}
+                      {formatTime(latestRunByRecipe.get(recipe.id)?.startedAt ?? "")}
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-1 text-muted-foreground">{t("recipes.runtimeNoRuns")}</div>
+                )}
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </section>

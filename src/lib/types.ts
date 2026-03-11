@@ -174,6 +174,38 @@ export interface ExecuteRecipeResult {
   warnings: string[];
 }
 
+export interface RecipeRuntimeArtifact {
+  id: string;
+  kind: string;
+  label: string;
+  path?: string;
+}
+
+export interface RecipeRuntimeRun {
+  id: string;
+  instanceId: string;
+  recipeId: string;
+  executionKind: string;
+  runner: string;
+  status: string;
+  summary: string;
+  startedAt: string;
+  finishedAt?: string;
+  artifacts: RecipeRuntimeArtifact[];
+  resourceClaims: ExecutionResourceClaim[];
+  warnings: string[];
+}
+
+export interface RecipeRuntimeInstance {
+  id: string;
+  recipeId: string;
+  executionKind: string;
+  runner: string;
+  status: string;
+  lastRunId?: string;
+  updatedAt: string;
+}
+
 export interface SystemStatus {
   healthy: boolean;
   configPath: string;

@@ -990,9 +990,17 @@ export function useApi() {
       ),
       getSystemStatus: api.getSystemStatus,
       listRecipes: localCached("listRecipes", 20_000, api.listRecipes),
+      listRecipeInstances: localCached(
+        "listRecipeInstances",
+        4_000,
+        api.listRecipeInstances,
+      ),
+      listRecipeRuns: localCached("listRecipeRuns", 4_000, api.listRecipeRuns),
       planRecipe: localCached("planRecipe", 5_000, api.planRecipe),
       executeRecipe: withInvalidation(api.executeRecipe, [
         "listHistory",
+        "listRecipeInstances",
+        "listRecipeRuns",
         "listQueuedCommands",
         "queuedCommandsCount",
         "previewQueuedCommands",

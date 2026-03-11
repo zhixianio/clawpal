@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, ChannelsConfigSnapshot, ChannelsRuntimeSnapshot, CronConfigSnapshot, CronJob, CronRun, CronRuntimeSnapshot, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, ExecuteRecipeRequest, ExecuteRecipeResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceConfigSnapshot, InstanceRuntimeSnapshot, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecipePlan, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, ChannelsConfigSnapshot, ChannelsRuntimeSnapshot, CronConfigSnapshot, CronJob, CronRun, CronRuntimeSnapshot, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, ExecuteRecipeRequest, ExecuteRecipeResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceConfigSnapshot, InstanceRuntimeSnapshot, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecipePlan, RecipeRuntimeInstance, RecipeRuntimeRun, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
@@ -100,6 +100,10 @@ export const api = {
     invoke("refresh_model_catalog", {}),
   listRecipes: (source?: string): Promise<Recipe[]> =>
     invoke("list_recipes", source ? { source } : {}),
+  listRecipeInstances: (): Promise<RecipeRuntimeInstance[]> =>
+    invoke("list_recipe_instances", {}),
+  listRecipeRuns: (instanceId?: string): Promise<RecipeRuntimeRun[]> =>
+    invoke("list_recipe_runs", instanceId ? { instanceId } : {}),
   planRecipe: (
     recipeId: string,
     params: Record<string, string>,

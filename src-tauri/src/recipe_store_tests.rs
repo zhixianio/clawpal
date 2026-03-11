@@ -44,3 +44,21 @@ fn record_run_persists_instance_and_artifacts() {
         "artifact_01"
     );
 }
+
+#[test]
+fn list_all_runs_returns_latest_runs() {
+    let store = RecipeStore::for_test();
+    store.record_run(sample_run()).expect("record first run");
+
+    let mut second_run = sample_run();
+    second_run.id = "run_02".into();
+    second_run.instance_id = "ssh:prod-a".into();
+    second_run.started_at = "2026-03-11T11:00:00Z".into();
+    second_run.finished_at = Some("2026-03-11T11:00:05Z".into());
+    store.record_run(second_run).expect("record second run");
+
+    let runs = store.list_all_runs().expect("list all runs");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].id, "run_02");
+    assert_eq!(runs[1].id, "run_01");
+}

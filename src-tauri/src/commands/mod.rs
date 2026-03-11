@@ -1,3 +1,4 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -27,6 +28,10 @@ use crate::openclaw_doc_resolver::{
 };
 use crate::recipe_executor::{
     execute_recipe as prepare_recipe_execution, ExecuteRecipeRequest, ExecuteRecipeResult,
+};
+use crate::recipe_store::{
+    Artifact as RecipeRuntimeArtifact, RecipeStore, ResourceClaim as RecipeRuntimeResourceClaim,
+    Run as RecipeRuntimeRun,
 };
 use crate::ssh::{SftpEntry, SshConnectionPool, SshExecResult, SshHostConfig, SshTransferStats};
 use clawpal_core::ssh::diagnostic::{
@@ -1249,6 +1254,87 @@ pub fn plan_recipe(
 }
 
 #[tauri::command]
+pub fn list_recipe_instances() -> Result<Vec<crate::recipe_store::RecipeInstance>, String> {
+    RecipeStore::from_resolved_paths().list_instances()
+}
+
+#[tauri::command]
+pub fn list_recipe_runs(instance_id: Option<String>) -> Result<Vec<RecipeRuntimeRun>, String> {
+    let store = RecipeStore::from_resolved_paths();
+    match instance_id {
+        Some(instance_id) => store.list_runs(&instance_id),
+        None => store.list_all_runs(),
+    }
+}
+
+fn build_runtime_artifacts(
+    prepared: &crate::recipe_executor::ExecuteRecipePrepared,
+) -> Vec<RecipeRuntimeArtifact> {
+    if prepared.plan.unit_name.trim().is_empty() {
+        return Vec::new();
+    }
+
+    vec![RecipeRuntimeArtifact {
+        id: format!("{}:unit", prepared.run_id),
+        kind: "systemdUnit".into(),
+        label: prepared.plan.unit_name.clone(),
+        path: None,
+    }]
+}
+
+fn build_runtime_claims(
+    spec: &crate::execution_spec::ExecutionSpec,
+) -> Vec<RecipeRuntimeResourceClaim> {
+    spec.resources
+        .claims
+        .iter()
+        .map(|claim| RecipeRuntimeResourceClaim {
+            kind: claim.kind.clone(),
+            id: claim.id.clone(),
+            target: claim.target.clone(),
+            path: claim.path.clone(),
+        })
+        .collect()
+}
+
+fn infer_recipe_id(spec: &crate::execution_spec::ExecutionSpec) -> String {
+    spec.source
+        .get("legacyRecipeId")
+        .and_then(Value::as_str)
+        .or_else(|| spec.metadata.name.as_deref())
+        .unwrap_or("recipe")
+        .to_string()
+}
+
+fn persist_recipe_run(
+    spec: &crate::execution_spec::ExecutionSpec,
+    prepared: &crate::recipe_executor::ExecuteRecipePrepared,
+    instance_id: &str,
+    status: &str,
+    summary: &str,
+    started_at: &str,
+    finished_at: &str,
+    warnings: &[String],
+) -> Result<(), String> {
+    RecipeStore::from_resolved_paths()
+        .record_run(RecipeRuntimeRun {
+            id: prepared.run_id.clone(),
+            instance_id: instance_id.to_string(),
+            recipe_id: infer_recipe_id(spec),
+            execution_kind: prepared.plan.execution_kind.clone(),
+            runner: prepared.route.runner.clone(),
+            status: status.to_string(),
+            summary: summary.to_string(),
+            started_at: started_at.to_string(),
+            finished_at: Some(finished_at.to_string()),
+            artifacts: build_runtime_artifacts(prepared),
+            resource_claims: build_runtime_claims(spec),
+            warnings: warnings.to_vec(),
+        })
+        .map(|_| ())
+}
+
+#[tauri::command]
 pub async fn execute_recipe(
     queue: State<'_, crate::cli_runner::CommandQueue>,
     cache: State<'_, crate::cli_runner::CliCache>,
@@ -1256,17 +1342,44 @@ pub async fn execute_recipe(
     remote_queues: State<'_, crate::cli_runner::RemoteCommandQueues>,
     request: ExecuteRecipeRequest,
 ) -> Result<ExecuteRecipeResult, String> {
+    let spec = request.spec.clone();
     let prepared = prepare_recipe_execution(request)?;
     let mut warnings = prepared.warnings.clone();
+    let started_at = Utc::now().to_rfc3339();
 
     match prepared.route.runner.as_str() {
         "local" => {
             crate::cli_runner::enqueue_materialized_plan(queue.inner(), &prepared.plan);
             let result = crate::cli_runner::apply_queued_commands(queue, cache).await?;
+            let finished_at = Utc::now().to_rfc3339();
             if !result.ok {
-                return Err(result
+                let error = result
                     .error
-                    .unwrap_or_else(|| "recipe execution failed".to_string()));
+                    .unwrap_or_else(|| "recipe execution failed".to_string());
+                let _ = persist_recipe_run(
+                    &spec,
+                    &prepared,
+                    "local",
+                    "failed",
+                    &error,
+                    &started_at,
+                    &finished_at,
+                    &warnings,
+                );
+                return Err(error);
+            }
+
+            if let Err(error) = persist_recipe_run(
+                &spec,
+                &prepared,
+                "local",
+                "succeeded",
+                &prepared.summary,
+                &started_at,
+                &finished_at,
+                &warnings,
+            ) {
+                warnings.push(format!("Failed to persist recipe runtime state: {}", error));
             }
 
             Ok(ExecuteRecipeResult {
@@ -1293,10 +1406,35 @@ pub async fn execute_recipe(
                 host_id.clone(),
             )
             .await?;
+            let finished_at = Utc::now().to_rfc3339();
             if !result.ok {
-                return Err(result
+                let error = result
                     .error
-                    .unwrap_or_else(|| "remote recipe execution failed".to_string()));
+                    .unwrap_or_else(|| "remote recipe execution failed".to_string());
+                let _ = persist_recipe_run(
+                    &spec,
+                    &prepared,
+                    &host_id,
+                    "failed",
+                    &error,
+                    &started_at,
+                    &finished_at,
+                    &warnings,
+                );
+                return Err(error);
+            }
+
+            if let Err(error) = persist_recipe_run(
+                &spec,
+                &prepared,
+                &host_id,
+                "succeeded",
+                &prepared.summary,
+                &started_at,
+                &finished_at,
+                &warnings,
+            ) {
+                warnings.push(format!("Failed to persist recipe runtime state: {}", error));
             }
 
             Ok(ExecuteRecipeResult {

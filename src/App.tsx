@@ -1673,6 +1673,7 @@ export function App() {
                 setRecipeSource(source);
                 navigateRoute("cook");
               }}
+              onOpenRuntimeDashboard={() => navigateRoute("orchestrator")}
             />
           )}
           {!inStart && route === "cook" && recipeId && (
@@ -1692,7 +1693,12 @@ export function App() {
             />
           )}
           {!inStart && route === "cron" && <Cron key={`cron-${activeInstance}-${configVersion}-${persistenceResolved ? "ready" : "pending"}-${persistenceScope ?? "none"}`} />}
-          {!inStart && route === "history" && <History key={`history-${activeInstance}-${configVersion}`} />}
+          {!inStart && route === "history" && (
+            <History
+              key={`history-${activeInstance}-${configVersion}`}
+              onOpenRuntimeDashboard={() => navigateRoute("orchestrator")}
+            />
+          )}
           {!inStart && route === "doctor" && (
             <Doctor key={activeInstance} />
           )}

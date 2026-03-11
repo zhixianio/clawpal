@@ -22,19 +22,30 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import type { HistoryItem, PreviewResult } from "../lib/types";
+import type { HistoryItem, PreviewResult, RecipeRuntimeRun } from "../lib/types";
 import { formatTime } from "@/lib/utils";
 
-export function History() {
+export function History({
+  onOpenRuntimeDashboard,
+}: {
+  onOpenRuntimeDashboard?: () => void;
+}) {
   const { t } = useTranslation();
   const ua = useApi();
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [runtimeRuns, setRuntimeRuns] = useState<RecipeRuntimeRun[]>([]);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [message, setMessage] = useState("");
 
   const refreshHistory = () => {
-    return ua.listHistory()
-      .then((resp) => setHistory(resp.items))
+    return Promise.all([
+      ua.listHistory(),
+      ua.listRecipeRuns().catch(() => [] as RecipeRuntimeRun[]),
+    ])
+      .then(([resp, runs]) => {
+        setHistory(resp.items);
+        setRuntimeRuns(runs);
+      })
       .catch(() => setMessage(t('history.failedLoad')));
   };
 
@@ -46,10 +57,38 @@ export function History() {
   const historyMap = new Map(
     history.map((h) => [h.id, h])
   );
+  const latestRun = runtimeRuns[0];
 
   return (
     <section>
       <h2 className="text-2xl font-bold mb-4">{t('history.title')}</h2>
+      <Card className="mb-4">
+        <CardContent>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">{t("history.runtimeTitle")}</div>
+              {latestRun ? (
+                <>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline">{latestRun.status}</Badge>
+                    <span className="text-sm">{latestRun.summary}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {formatTime(latestRun.startedAt)} · {latestRun.instanceId} · {latestRun.runner}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">{t("history.runtimeEmpty")}</p>
+              )}
+            </div>
+            {onOpenRuntimeDashboard && (
+              <Button variant="outline" size="sm" onClick={onOpenRuntimeDashboard}>
+                {t("history.runtimeOpenDashboard")}
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
       <div className="space-y-3">
         {history.map((item) => {
           const isRollback = item.source === "rollback";

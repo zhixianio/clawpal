@@ -147,6 +147,10 @@ impl RecipeStore {
             .collect())
     }
 
+    pub fn list_all_runs(&self) -> Result<Vec<Run>, String> {
+        Ok(self.read_index()?.runs)
+    }
+
     pub fn list_instances(&self) -> Result<Vec<RecipeInstance>, String> {
         Ok(self.read_index()?.instances)
     }
