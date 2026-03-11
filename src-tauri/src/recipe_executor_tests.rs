@@ -4,7 +4,9 @@ use crate::execution_spec::{
     ExecutionAction, ExecutionCapabilities, ExecutionMetadata, ExecutionResourceClaim,
     ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
 };
-use crate::recipe_executor::{materialize_execution_plan, route_execution};
+use crate::recipe_executor::{
+    execute_recipe, materialize_execution_plan, route_execution, ExecuteRecipeRequest,
+};
 
 fn sample_target(kind: &str) -> Value {
     match kind {
@@ -101,6 +103,12 @@ fn sample_schedule_spec() -> ExecutionSpec {
     }
 }
 
+fn sample_execution_request() -> ExecuteRecipeRequest {
+    ExecuteRecipeRequest {
+        spec: sample_job_spec(),
+    }
+}
+
 #[test]
 fn job_spec_materializes_to_systemd_run_command() {
     let spec = sample_job_spec();
@@ -135,4 +143,12 @@ fn remote_target_uses_remote_ssh_runner() {
     let route = route_execution(&sample_target("remote")).expect("route execution");
 
     assert_eq!(route.runner, "remote_ssh");
+}
+
+#[test]
+fn execute_recipe_returns_run_id_and_summary() {
+    let result = execute_recipe(sample_execution_request()).expect("execute recipe");
+
+    assert!(!result.run_id.is_empty());
+    assert!(!result.summary.is_empty());
 }

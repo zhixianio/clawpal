@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::execution_spec::ExecutionSpec;
 use crate::recipe_runtime::systemd;
@@ -20,6 +21,31 @@ pub struct ExecutionRoute {
     pub runner: String,
     pub target_kind: String,
     pub host_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteRecipeRequest {
+    pub spec: ExecutionSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteRecipePrepared {
+    pub run_id: String,
+    pub route: ExecutionRoute,
+    pub plan: MaterializedExecutionPlan,
+    pub summary: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteRecipeResult {
+    pub run_id: String,
+    pub instance_id: String,
+    pub summary: String,
+    pub warnings: Vec<String>,
 }
 
 pub fn materialize_execution_plan(
@@ -65,4 +91,30 @@ pub fn route_execution(target: &Value) -> Result<ExecutionRoute, String> {
         }),
         other => Err(format!("unsupported execution target kind: {}", other)),
     }
+}
+
+pub fn execute_recipe(request: ExecuteRecipeRequest) -> Result<ExecuteRecipePrepared, String> {
+    let plan = materialize_execution_plan(&request.spec)?;
+    let route = route_execution(&request.spec.target)?;
+    let summary = format!(
+        "{} via {} ({} command{})",
+        plan.unit_name,
+        route.runner,
+        plan.commands.len(),
+        if plan.commands.len() == 1 { "" } else { "s" }
+    );
+
+    let mut warnings = plan.warnings.clone();
+    warnings.push(
+        "Rollback scaffold currently reuses ClawPal config snapshots and does not yet remove systemd units or timers."
+            .into(),
+    );
+
+    Ok(ExecuteRecipePrepared {
+        run_id: Uuid::new_v4().to_string(),
+        route,
+        plan,
+        summary,
+        warnings,
+    })
 }

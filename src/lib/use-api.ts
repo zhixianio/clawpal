@@ -991,6 +991,13 @@ export function useApi() {
       getSystemStatus: api.getSystemStatus,
       listRecipes: localCached("listRecipes", 20_000, api.listRecipes),
       planRecipe: localCached("planRecipe", 5_000, api.planRecipe),
+      executeRecipe: withInvalidation(api.executeRecipe, [
+        "listHistory",
+        "listQueuedCommands",
+        "queuedCommandsCount",
+        "previewQueuedCommands",
+        "getSystemStatus",
+      ]),
       connectDockerInstance: api.connectDockerInstance,
       listInstallMethods: localCached(
         "installListMethods",

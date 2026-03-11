@@ -25,6 +25,9 @@ use crate::openclaw_doc_resolver::{
     resolve_local_doc_guidance, resolve_remote_doc_guidance, DocCitation, DocGuidance,
     DocResolveIssue, DocResolveRequest, RootCauseHypothesis,
 };
+use crate::recipe_executor::{
+    execute_recipe as prepare_recipe_execution, ExecuteRecipeRequest, ExecuteRecipeResult,
+};
 use crate::ssh::{SftpEntry, SshConnectionPool, SshExecResult, SshHostConfig, SshTransferStats};
 use clawpal_core::ssh::diagnostic::{
     from_any_error, SshDiagnosticReport, SshDiagnosticStatus, SshErrorCode, SshIntent, SshStage,
@@ -1243,6 +1246,71 @@ pub fn plan_recipe(
     let recipe = find_recipe_with_source(&recipe_id, source)
         .ok_or_else(|| format!("recipe not found: {}", recipe_id))?;
     build_recipe_plan(&recipe, &params)
+}
+
+#[tauri::command]
+pub async fn execute_recipe(
+    queue: State<'_, crate::cli_runner::CommandQueue>,
+    cache: State<'_, crate::cli_runner::CliCache>,
+    pool: State<'_, SshConnectionPool>,
+    remote_queues: State<'_, crate::cli_runner::RemoteCommandQueues>,
+    request: ExecuteRecipeRequest,
+) -> Result<ExecuteRecipeResult, String> {
+    let prepared = prepare_recipe_execution(request)?;
+    let mut warnings = prepared.warnings.clone();
+
+    match prepared.route.runner.as_str() {
+        "local" => {
+            crate::cli_runner::enqueue_materialized_plan(queue.inner(), &prepared.plan);
+            let result = crate::cli_runner::apply_queued_commands(queue, cache).await?;
+            if !result.ok {
+                return Err(result
+                    .error
+                    .unwrap_or_else(|| "recipe execution failed".to_string()));
+            }
+
+            Ok(ExecuteRecipeResult {
+                run_id: prepared.run_id,
+                instance_id: "local".into(),
+                summary: prepared.summary,
+                warnings,
+            })
+        }
+        "remote_ssh" => {
+            let host_id = prepared
+                .route
+                .host_id
+                .clone()
+                .ok_or_else(|| "remote execution target missing hostId".to_string())?;
+            crate::cli_runner::enqueue_materialized_plan_remote(
+                remote_queues.inner(),
+                &host_id,
+                &prepared.plan,
+            );
+            let result = crate::cli_runner::remote_apply_queued_commands(
+                pool,
+                remote_queues,
+                host_id.clone(),
+            )
+            .await?;
+            if !result.ok {
+                return Err(result
+                    .error
+                    .unwrap_or_else(|| "remote recipe execution failed".to_string()));
+            }
+
+            Ok(ExecuteRecipeResult {
+                run_id: prepared.run_id,
+                instance_id: host_id,
+                summary: prepared.summary,
+                warnings,
+            })
+        }
+        other => {
+            warnings.push(format!("route '{}' is not executable yet", other));
+            Err(format!("unsupported execution runner: {}", other))
+        }
+    }
 }
 
 #[tauri::command]

@@ -163,6 +163,17 @@ export interface RecipePlan {
   warnings: string[];
 }
 
+export interface ExecuteRecipeRequest {
+  spec: ExecutionSpec;
+}
+
+export interface ExecuteRecipeResult {
+  runId: string;
+  instanceId: string;
+  summary: string;
+  warnings: string[];
+}
+
 export interface SystemStatus {
   healthy: boolean;
   configPath: string;
