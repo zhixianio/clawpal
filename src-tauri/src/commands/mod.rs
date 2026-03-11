@@ -93,9 +93,10 @@ fn shell_escape(s: &str) -> String {
 }
 
 use crate::recipe::{
-    build_candidate_config_from_template, collect_change_paths, format_diff,
-    load_recipes_with_fallback, ApplyResult, PreviewResult,
+    build_candidate_config_from_template, collect_change_paths, find_recipe_with_source,
+    format_diff, load_recipes_with_fallback, ApplyResult, PreviewResult,
 };
+use crate::recipe_planner::{build_recipe_plan, RecipePlan};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1231,6 +1232,17 @@ pub fn list_recipes(source: Option<String>) -> Result<Vec<crate::recipe::Recipe>
     let paths = resolve_paths();
     let default_path = paths.clawpal_dir.join("recipes").join("recipes.json");
     Ok(load_recipes_with_fallback(source, &default_path))
+}
+
+#[tauri::command]
+pub fn plan_recipe(
+    recipe_id: String,
+    params: Map<String, Value>,
+    source: Option<String>,
+) -> Result<RecipePlan, String> {
+    let recipe = find_recipe_with_source(&recipe_id, source)
+        .ok_or_else(|| format!("recipe not found: {}", recipe_id))?;
+    build_recipe_plan(&recipe, &params)
 }
 
 #[tauri::command]

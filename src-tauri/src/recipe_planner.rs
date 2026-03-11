@@ -1,0 +1,70 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use uuid::Uuid;
+
+use crate::execution_spec::ExecutionResourceClaim;
+use crate::recipe::{step_references_empty_param, Recipe};
+use crate::recipe_adapter::compile_legacy_recipe_to_spec;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipePlanSummary {
+    pub recipe_id: String,
+    pub recipe_name: String,
+    pub execution_kind: String,
+    pub action_count: usize,
+    pub skipped_step_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipePlan {
+    pub summary: RecipePlanSummary,
+    pub used_capabilities: Vec<String>,
+    pub concrete_claims: Vec<ExecutionResourceClaim>,
+    pub execution_spec_digest: String,
+    pub warnings: Vec<String>,
+}
+
+pub fn build_recipe_plan(
+    recipe: &Recipe,
+    params: &Map<String, Value>,
+) -> Result<RecipePlan, String> {
+    let execution_spec = compile_legacy_recipe_to_spec(recipe, params)?;
+    let skipped_step_count = recipe
+        .steps
+        .iter()
+        .filter(|step| step_references_empty_param(step, params))
+        .count();
+
+    let mut warnings = Vec::new();
+    if skipped_step_count > 0 {
+        warnings.push(format!(
+            "{} optional step(s) will be skipped because their parameters are empty.",
+            skipped_step_count
+        ));
+    }
+    if execution_spec.execution.kind == "job" {
+        warnings.push(
+            "Plan preview is compiled from legacy recipe steps; execution still runs through the command queue."
+                .into(),
+        );
+    }
+
+    let digest_source = serde_json::to_vec(&execution_spec).map_err(|error| error.to_string())?;
+    let execution_spec_digest = Uuid::new_v5(&Uuid::NAMESPACE_OID, &digest_source).to_string();
+
+    Ok(RecipePlan {
+        summary: RecipePlanSummary {
+            recipe_id: recipe.id.clone(),
+            recipe_name: recipe.name.clone(),
+            execution_kind: execution_spec.execution.kind.clone(),
+            action_count: execution_spec.actions.len(),
+            skipped_step_count,
+        },
+        used_capabilities: execution_spec.capabilities.used_capabilities.clone(),
+        concrete_claims: execution_spec.resources.claims.clone(),
+        execution_spec_digest,
+        warnings,
+    })
+}

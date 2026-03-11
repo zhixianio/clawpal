@@ -147,6 +147,22 @@ export interface ExecutionSpec {
   outputs: Record<string, unknown>[];
 }
 
+export interface RecipePlanSummary {
+  recipeId: string;
+  recipeName: string;
+  executionKind: RecipeExecutionKind;
+  actionCount: number;
+  skippedStepCount: number;
+}
+
+export interface RecipePlan {
+  summary: RecipePlanSummary;
+  usedCapabilities: string[];
+  concreteClaims: ExecutionResourceClaim[];
+  executionSpecDigest: string;
+  warnings: string[];
+}
+
 export interface SystemStatus {
   healthy: boolean;
   configPath: string;

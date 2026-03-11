@@ -6,8 +6,9 @@ import { useApi } from "@/lib/use-api";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { Recipe } from "../lib/types";
+import type { Recipe, RecipePlan } from "../lib/types";
 import { useInstance } from "@/lib/instance-context";
+import { RecipePlanPreview } from "@/components/RecipePlanPreview";
 
 
 type Phase = "params" | "confirm" | "execute" | "done";
@@ -29,6 +30,9 @@ export function Cook({
   const [loading, setLoading] = useState(true);
   const [params, setParams] = useState<Record<string, string>>({});
   const [phase, setPhase] = useState<Phase>("params");
+  const [plan, setPlan] = useState<RecipePlan | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planning, setPlanning] = useState(false);
   const [resolvedStepList, setResolvedStepList] = useState<ResolvedStep[]>([]);
   const [stepStatuses, setStepStatuses] = useState<StepStatus[]>([]);
   const [stepErrors, setStepErrors] = useState<Record<number, string>>({});
@@ -109,14 +113,25 @@ export function Cook({
   if (loading) return <div className="flex items-center justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>;
   if (!recipe) return <div>{t('cook.recipeNotFound')}</div>;
 
-  const handleNext = () => {
-    const steps = resolveSteps(recipe.steps, params);
-    setResolvedStepList(steps);
-    // Auto-skip steps whose template args resolved to empty
-    setStepStatuses(steps.map((s) => (s.skippable ? "skipped" : "pending")));
-    setStepErrors({});
-    setNeedsRestart(steps.some((s) => !s.skippable));
-    setPhase("confirm");
+  const handleNext = async () => {
+    setPlanning(true);
+    setPlanError(null);
+
+    try {
+      const nextPlan = await ua.planRecipe(recipe.id, params, recipeSource);
+      const steps = resolveSteps(recipe.steps, params);
+      setPlan(nextPlan);
+      setResolvedStepList(steps);
+      setStepStatuses(steps.map((s) => (s.skippable ? "skipped" : "pending")));
+      setStepErrors({});
+      setNeedsRestart(steps.some((s) => !s.skippable));
+      setPhase("confirm");
+    } catch (error) {
+      setPlan(null);
+      setPlanError(String(error));
+    } finally {
+      setPlanning(false);
+    }
   };
 
   const runFrom = async (startIndex: number, statuses: StepStatus[]) => {
@@ -206,18 +221,26 @@ export function Cook({
       </div>
 
       {phase === "params" && (
-        <ParamForm
-          recipe={recipe}
-          values={params}
-          onChange={(id, value) => setParams((prev) => ({ ...prev, [id]: value }))}
-          onSubmit={handleNext}
-          submitLabel={t('cook.next')}
-        />
+        <>
+          {planError && (
+            <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {planError}
+            </div>
+          )}
+          <ParamForm
+            recipe={recipe}
+            values={params}
+            onChange={(id, value) => setParams((prev) => ({ ...prev, [id]: value }))}
+            onSubmit={handleNext}
+            submitLabel={planning ? `${t('cook.next')}...` : t('cook.next')}
+          />
+        </>
       )}
 
       {(phase === "confirm" || phase === "execute") && (
         <Card>
           <CardContent>
+            {plan && phase === "confirm" && <RecipePlanPreview plan={plan} />}
             <div className="space-y-3">
               {resolvedStepList.map((step, i) => (
                 <div key={i} className={cn("flex items-start gap-3", stepStatuses[i] === "skipped" && "opacity-50")}>

@@ -18,7 +18,7 @@ serde_json = "1.0.133"
 serde_yaml = "0.9"
 tauri = { version = "2.1.0", features = [] }
 thiserror = "1.0.63"
-uuid = { version = "1.11.0", features = ["v4"] }
+uuid = { version = "1.11.0", features = ["v4", "v5"] }
 chrono = { version = "0.4.38", features = ["clock"] }
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }

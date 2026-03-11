@@ -24,7 +24,7 @@ use crate::commands::{
     list_history, list_model_profiles, list_recipes, list_registered_instances, list_session_files,
     list_ssh_config_hosts, list_ssh_hosts, local_openclaw_cli_available,
     local_openclaw_config_exists, log_app_event, manage_rescue_bot, migrate_legacy_instances,
-    open_url, precheck_auth, precheck_instance, precheck_registry, precheck_transport,
+    open_url, plan_recipe, precheck_auth, precheck_instance, precheck_registry, precheck_transport,
     preview_rollback, preview_session, probe_ssh_connection_profile,
     push_model_profiles_to_local_openclaw, push_model_profiles_to_remote_openclaw,
     push_related_secrets_to_remote, read_app_log, read_error_log, read_gateway_error_log,
@@ -89,6 +89,7 @@ pub mod prompt_templates;
 pub mod recipe;
 pub mod recipe_adapter;
 pub mod recipe_bundle;
+pub mod recipe_planner;
 pub mod ssh;
 
 #[cfg(test)]
@@ -97,6 +98,8 @@ mod execution_spec_tests;
 mod recipe_adapter_tests;
 #[cfg(test)]
 mod recipe_bundle_tests;
+#[cfg(test)]
+mod recipe_planner_tests;
 
 pub fn run() {
     tauri::Builder::default()
@@ -143,6 +146,7 @@ pub fn run() {
             get_session_model_override,
             clear_session_model_override,
             list_recipes,
+            plan_recipe,
             list_model_profiles,
             get_cached_model_catalog,
             refresh_model_catalog,
