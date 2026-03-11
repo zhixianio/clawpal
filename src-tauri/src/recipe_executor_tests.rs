@@ -4,7 +4,19 @@ use crate::execution_spec::{
     ExecutionAction, ExecutionCapabilities, ExecutionMetadata, ExecutionResourceClaim,
     ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
 };
-use crate::recipe_executor::materialize_execution_plan;
+use crate::recipe_executor::{materialize_execution_plan, route_execution};
+
+fn sample_target(kind: &str) -> Value {
+    match kind {
+        "remote" => json!({
+            "kind": "remote",
+            "hostId": "ssh:prod-a",
+        }),
+        _ => json!({
+            "kind": "local",
+        }),
+    }
+}
 
 fn sample_job_spec() -> ExecutionSpec {
     ExecutionSpec {
@@ -109,4 +121,18 @@ fn schedule_spec_references_job_launch_ref() {
         .resources
         .iter()
         .any(|ref_id| ref_id == "schedule/hourly"));
+}
+
+#[test]
+fn local_target_uses_local_runner() {
+    let route = route_execution(&sample_target("local")).expect("route execution");
+
+    assert_eq!(route.runner, "local");
+}
+
+#[test]
+fn remote_target_uses_remote_ssh_runner() {
+    let route = route_execution(&sample_target("remote")).expect("route execution");
+
+    assert_eq!(route.runner, "remote_ssh");
 }

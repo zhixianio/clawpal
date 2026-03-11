@@ -8,6 +8,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::models::resolve_paths;
+use crate::recipe_executor::MaterializedExecutionPlan;
 use crate::ssh::SshConnectionPool;
 
 static ACTIVE_OPENCLAW_HOME_OVERRIDE: LazyLock<Mutex<Option<String>>> =
@@ -455,6 +456,26 @@ impl Default for CommandQueue {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn enqueue_materialized_plan(
+    queue: &CommandQueue,
+    plan: &MaterializedExecutionPlan,
+) -> Vec<PendingCommand> {
+    plan.commands
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            let label = format!(
+                "[{}] {} ({}/{})",
+                plan.execution_kind,
+                plan.unit_name,
+                index + 1,
+                plan.commands.len()
+            );
+            queue.enqueue(label, command.clone())
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1410,6 +1431,27 @@ impl Default for RemoteCommandQueues {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn enqueue_materialized_plan_remote(
+    queues: &RemoteCommandQueues,
+    host_id: &str,
+    plan: &MaterializedExecutionPlan,
+) -> Vec<PendingCommand> {
+    plan.commands
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            let label = format!(
+                "[{}] {} ({}/{})",
+                plan.execution_kind,
+                plan.unit_name,
+                index + 1,
+                plan.commands.len()
+            );
+            queues.enqueue(host_id, label, command.clone())
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
