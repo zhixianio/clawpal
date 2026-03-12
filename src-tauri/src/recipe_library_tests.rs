@@ -355,11 +355,34 @@ fn import_recipe_library_accepts_repo_example_library() {
         std::collections::BTreeSet::from([
             "agent-persona-pack",
             "channel-persona-pack",
-            "dedicated-channel-agent",
+            "dedicated-agent",
         ])
     );
     let entries = workspace.list_entries().expect("workspace entries");
     assert_eq!(entries.len(), 3);
+
+    let dedicated_source = workspace
+        .read_recipe_source("dedicated-agent")
+        .expect("read dedicated agent recipe");
+    let dedicated_json: Value =
+        serde_json::from_str(&dedicated_source).expect("parse dedicated agent recipe");
+    let params = dedicated_json
+        .get("params")
+        .and_then(Value::as_array)
+        .expect("dedicated params");
+    assert!(params
+        .iter()
+        .all(|param| param.get("id").and_then(Value::as_str) != Some("guild_id")));
+    assert!(params
+        .iter()
+        .all(|param| param.get("id").and_then(Value::as_str) != Some("channel_id")));
+    let actions = dedicated_json
+        .pointer("/executionSpecTemplate/actions")
+        .and_then(Value::as_array)
+        .expect("dedicated actions");
+    assert!(actions
+        .iter()
+        .all(|action| action.get("kind").and_then(Value::as_str) != Some("bind_channel")));
 }
 
 #[test]
