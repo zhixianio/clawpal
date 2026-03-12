@@ -202,6 +202,24 @@ mod tests {
     }
 
     #[test]
+    fn rollback_command_supports_snapshot_id_prefix() {
+        let command = vec![
+            "__rollback__".to_string(),
+            "snapshot_01".to_string(),
+            "{\"ok\":true}".to_string(),
+        ];
+
+        assert_eq!(
+            rollback_command_snapshot_id(&command).as_deref(),
+            Some("snapshot_01")
+        );
+        assert_eq!(
+            rollback_command_content(&command).expect("rollback content"),
+            "{\"ok\":true}"
+        );
+    }
+
+    #[test]
     fn preview_direct_apply_handles_config_set_and_unset_with_arrays() {
         let mut config = json!({
             "agents": {
@@ -1217,16 +1235,47 @@ pub struct ApplyQueueResult {
     pub rolled_back: bool,
 }
 
+fn rollback_command_snapshot_id(command: &[String]) -> Option<String> {
+    if command.first().map(|value| value.as_str()) != Some("__rollback__") {
+        return None;
+    }
+    if command.len() >= 3 {
+        return command
+            .get(1)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+    }
+    None
+}
+
+fn rollback_command_content(command: &[String]) -> Result<String, String> {
+    match command.first().map(|value| value.as_str()) {
+        Some("__rollback__") if command.len() >= 3 => command
+            .get(2)
+            .cloned()
+            .ok_or_else(|| "internal rollback is missing content".to_string()),
+        Some("__rollback__") | Some("__config_write__") => command
+            .get(1)
+            .cloned()
+            .ok_or_else(|| "internal config write is missing content".to_string()),
+        _ => command
+            .get(1)
+            .cloned()
+            .ok_or_else(|| "internal config write is missing content".to_string()),
+    }
+}
+
 fn apply_internal_local_command(
     paths: &crate::models::OpenClawPaths,
     command: &[String],
 ) -> Result<bool, String> {
+    fn content(command: &[String]) -> Result<String, String> {
+        rollback_command_content(command)
+    }
     match command.first().map(|value| value.as_str()) {
         Some("__config_write__") | Some("__rollback__") => {
-            let content = command
-                .get(1)
-                .ok_or_else(|| "internal config write is missing content".to_string())?;
-            crate::config_io::write_text(&paths.config_path, content)?;
+            let content = content(command)?;
+            crate::config_io::write_text(&paths.config_path, &content)?;
             Ok(true)
         }
         Some(crate::commands::INTERNAL_SETUP_IDENTITY_COMMAND) => {
@@ -1253,12 +1302,13 @@ async fn apply_internal_remote_command(
     host_id: &str,
     command: &[String],
 ) -> Result<bool, String> {
+    fn content(command: &[String]) -> Result<String, String> {
+        rollback_command_content(command)
+    }
     match command.first().map(|value| value.as_str()) {
         Some("__config_write__") | Some("__rollback__") => {
-            let content = command
-                .get(1)
-                .ok_or_else(|| "internal config write is missing content".to_string())?;
-            pool.sftp_write(host_id, "~/.openclaw/openclaw.json", content)
+            let content = content(command)?;
+            pool.sftp_write(host_id, "~/.openclaw/openclaw.json", &content)
                 .await?;
             Ok(true)
         }
@@ -1289,6 +1339,7 @@ pub async fn apply_queued_commands(
     cache: tauri::State<'_, CliCache>,
     snapshot_recipe_id: Option<String>,
     run_id: Option<String>,
+    snapshot_artifacts: Option<Vec<crate::recipe_store::Artifact>>,
 ) -> Result<ApplyQueueResult, String> {
     let commands = queue.list();
     if commands.is_empty() {
@@ -1335,6 +1386,7 @@ pub async fn apply_queued_commands(
             &config_before,
             run_id.clone(),
             None,
+            snapshot_artifacts.clone().unwrap_or_default(),
         );
 
         // Execute each command for real
@@ -1845,8 +1897,9 @@ pub async fn remote_apply_queued_commands(
     pool: tauri::State<'_, SshConnectionPool>,
     queues: tauri::State<'_, RemoteCommandQueues>,
     host_id: String,
-    _snapshot_recipe_id: Option<String>,
-    _run_id: Option<String>,
+    snapshot_recipe_id: Option<String>,
+    run_id: Option<String>,
+    snapshot_artifacts: Option<Vec<crate::recipe_store::Artifact>>,
 ) -> Result<ApplyQueueResult, String> {
     let commands = queues.list(&host_id);
     if commands.is_empty() {
@@ -1886,6 +1939,30 @@ pub async fn remote_apply_queued_commands(
     let _ = pool
         .sftp_write(&host_id, &snapshot_path, &config_before)
         .await;
+    let snapshot_recipe_id = snapshot_recipe_id
+        .clone()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(summary.clone());
+    let snapshot_created_at = chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| ts.to_string());
+    let _ = crate::commands::config::record_remote_snapshot_metadata(
+        &pool,
+        &host_id,
+        crate::history::SnapshotMeta {
+            id: snapshot_filename.clone(),
+            recipe_id: Some(snapshot_recipe_id),
+            created_at: snapshot_created_at,
+            config_path: snapshot_path.clone(),
+            source: source.into(),
+            can_rollback: !is_rollback,
+            run_id: run_id.clone(),
+            rollback_of: None,
+            artifacts: snapshot_artifacts.clone().unwrap_or_default(),
+        },
+    )
+    .await;
 
     // Execute each command
     let mut applied_count = 0;

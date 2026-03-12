@@ -492,6 +492,8 @@ pub struct HistoryItem {
     pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rollback_of: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<RecipeRuntimeArtifact>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1260,31 +1262,6 @@ pub fn list_recipe_runs(instance_id: Option<String>) -> Result<Vec<RecipeRuntime
     }
 }
 
-fn build_runtime_artifacts(
-    spec: &crate::execution_spec::ExecutionSpec,
-    prepared: &crate::recipe_executor::ExecuteRecipePrepared,
-) -> Vec<RecipeRuntimeArtifact> {
-    if spec
-        .source
-        .get("legacyRecipeId")
-        .and_then(Value::as_str)
-        .is_some()
-    {
-        return Vec::new();
-    }
-
-    if prepared.plan.unit_name.trim().is_empty() {
-        return Vec::new();
-    }
-
-    vec![RecipeRuntimeArtifact {
-        id: format!("{}:unit", prepared.run_id),
-        kind: "systemdUnit".into(),
-        label: prepared.plan.unit_name.clone(),
-        path: None,
-    }]
-}
-
 fn build_runtime_claims(
     spec: &crate::execution_spec::ExecutionSpec,
 ) -> Vec<RecipeRuntimeResourceClaim> {
@@ -1330,11 +1307,206 @@ fn persist_recipe_run(
             summary: summary.to_string(),
             started_at: started_at.to_string(),
             finished_at: Some(finished_at.to_string()),
-            artifacts: build_runtime_artifacts(spec, prepared),
+            artifacts: crate::recipe_executor::build_runtime_artifacts(spec, prepared),
             resource_claims: build_runtime_claims(spec),
             warnings: warnings.to_vec(),
         })
         .map(|_| ())
+}
+
+fn find_recipe_run(run_id: &str) -> Result<Option<RecipeRuntimeRun>, String> {
+    RecipeStore::from_resolved_paths()
+        .list_all_runs()
+        .map(|runs| runs.into_iter().find(|run| run.id == run_id))
+}
+
+fn execute_local_cleanup_commands(commands: &[Vec<String>]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for command in commands {
+        if command.is_empty() {
+            continue;
+        }
+        match Command::new(&command[0]).args(&command[1..]).output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if !stderr.is_empty() { stderr } else { stdout };
+                warnings.push(format!(
+                    "Cleanup command failed ({}): {}",
+                    command.join(" "),
+                    detail
+                ));
+            }
+            Err(error) => warnings.push(format!(
+                "Cleanup command failed to start ({}): {}",
+                command.join(" "),
+                error
+            )),
+        }
+    }
+    warnings
+}
+
+async fn execute_remote_cleanup_commands(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    commands: &[Vec<String>],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for command in commands {
+        if command.is_empty() {
+            continue;
+        }
+        let shell_command = command
+            .iter()
+            .map(|part| shell_escape(part))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match pool.exec(host_id, &shell_command).await {
+            Ok(output) if output.exit_code == 0 => {}
+            Ok(output) => {
+                let detail = if !output.stderr.trim().is_empty() {
+                    output.stderr.trim().to_string()
+                } else {
+                    output.stdout.trim().to_string()
+                };
+                warnings.push(format!(
+                    "Remote cleanup command failed ({}): {}",
+                    command.join(" "),
+                    detail
+                ));
+            }
+            Err(error) => warnings.push(format!(
+                "Remote cleanup command failed to start ({}): {}",
+                command.join(" "),
+                error
+            )),
+        }
+    }
+    warnings
+}
+
+fn cleanup_local_recipe_artifacts(artifacts: &[RecipeRuntimeArtifact]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut removed_drop_in = false;
+
+    for artifact in artifacts {
+        if artifact.kind != "systemdDropIn" {
+            continue;
+        }
+        let Some(path) = artifact.path.as_deref() else {
+            continue;
+        };
+        let expanded = expand_home_path(path);
+        if !expanded.exists() {
+            continue;
+        }
+        match fs::remove_file(&expanded) {
+            Ok(()) => {
+                removed_drop_in = true;
+            }
+            Err(error) => warnings.push(format!(
+                "Failed to remove drop-in artifact {}: {}",
+                expanded.display(),
+                error
+            )),
+        }
+    }
+
+    let mut commands = crate::recipe_executor::build_cleanup_commands(artifacts);
+    if removed_drop_in
+        && !commands.iter().any(|command| {
+            command
+                == &vec![
+                    "systemctl".to_string(),
+                    "--user".to_string(),
+                    "daemon-reload".to_string(),
+                ]
+        })
+    {
+        commands.push(vec![
+            "systemctl".into(),
+            "--user".into(),
+            "daemon-reload".into(),
+        ]);
+    }
+    warnings.extend(execute_local_cleanup_commands(&commands));
+    warnings
+}
+
+async fn cleanup_remote_recipe_artifacts(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    artifacts: &[RecipeRuntimeArtifact],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut removed_drop_in = false;
+
+    for artifact in artifacts {
+        if artifact.kind != "systemdDropIn" {
+            continue;
+        }
+        let Some(path) = artifact.path.as_deref() else {
+            continue;
+        };
+        match pool.sftp_remove(host_id, path).await {
+            Ok(()) => {
+                removed_drop_in = true;
+            }
+            Err(error) if is_remote_missing_path_error(&error) => {}
+            Err(error) => warnings.push(format!(
+                "Failed to remove remote drop-in artifact {}: {}",
+                path, error
+            )),
+        }
+    }
+
+    let mut commands = crate::recipe_executor::build_cleanup_commands(artifacts);
+    if removed_drop_in
+        && !commands.iter().any(|command| {
+            command
+                == &vec![
+                    "systemctl".to_string(),
+                    "--user".to_string(),
+                    "daemon-reload".to_string(),
+                ]
+        })
+    {
+        commands.push(vec![
+            "systemctl".into(),
+            "--user".into(),
+            "daemon-reload".into(),
+        ]);
+    }
+    warnings.extend(execute_remote_cleanup_commands(pool, host_id, &commands).await);
+    warnings
+}
+
+fn cleanup_local_recipe_run(run_id: &str) -> Vec<String> {
+    match find_recipe_run(run_id) {
+        Ok(Some(run)) => cleanup_local_recipe_artifacts(&run.artifacts),
+        Ok(None) => vec![format!("No recipe runtime run found for rollback runId {}", run_id)],
+        Err(error) => vec![format!(
+            "Failed to load recipe runtime run {} for rollback: {}",
+            run_id, error
+        )],
+    }
+}
+
+async fn cleanup_remote_recipe_run(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    run_id: &str,
+) -> Vec<String> {
+    match find_recipe_run(run_id) {
+        Ok(Some(run)) => cleanup_remote_recipe_artifacts(pool, host_id, &run.artifacts).await,
+        Ok(None) => vec![format!("No recipe runtime run found for rollback runId {}", run_id)],
+        Err(error) => vec![format!(
+            "Failed to load recipe runtime run {} for rollback: {}",
+            run_id, error
+        )],
+    }
 }
 
 fn is_legacy_recipe_spec(spec: &crate::execution_spec::ExecutionSpec) -> bool {
@@ -1708,6 +1880,75 @@ mod legacy_recipe_bridge_tests {
     }
 }
 
+#[cfg(test)]
+mod runtime_artifact_tests {
+    use crate::execution_spec::{
+        ExecutionAction, ExecutionCapabilities, ExecutionMetadata, ExecutionResourceClaim,
+        ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
+    };
+    use crate::recipe_executor::{
+        build_runtime_artifacts, execute_recipe as prepare_recipe_execution, ExecuteRecipeRequest,
+    };
+    use serde_json::json;
+
+    fn sample_schedule_spec() -> ExecutionSpec {
+        ExecutionSpec {
+            api_version: "strategy.platform/v1".into(),
+            kind: "ExecutionSpec".into(),
+            metadata: ExecutionMetadata {
+                name: Some("hourly-reconcile".into()),
+                digest: None,
+            },
+            source: serde_json::Value::Null,
+            target: json!({ "kind": "local" }),
+            execution: ExecutionTarget {
+                kind: "schedule".into(),
+            },
+            capabilities: ExecutionCapabilities {
+                used_capabilities: vec!["service.manage".into()],
+            },
+            resources: ExecutionResources {
+                claims: vec![ExecutionResourceClaim {
+                    kind: "service".into(),
+                    id: Some("schedule/hourly".into()),
+                    target: Some("job/hourly-reconcile".into()),
+                    path: None,
+                }],
+            },
+            secrets: ExecutionSecrets::default(),
+            desired_state: json!({
+                "schedule": {
+                    "id": "schedule/hourly",
+                    "onCalendar": "hourly",
+                },
+                "job": {
+                    "command": ["openclaw", "doctor", "run"],
+                }
+            }),
+            actions: vec![ExecutionAction {
+                kind: Some("schedule".into()),
+                name: Some("Run hourly reconcile".into()),
+                args: json!({
+                    "command": ["openclaw", "doctor", "run"],
+                    "onCalendar": "hourly",
+                }),
+            }],
+            outputs: vec![],
+        }
+    }
+
+    #[test]
+    fn build_runtime_artifacts_tracks_schedule_timer_units() {
+        let spec = sample_schedule_spec();
+        let prepared = prepare_recipe_execution(ExecuteRecipeRequest { spec: spec.clone() })
+            .expect("prepare recipe execution");
+        let artifacts = build_runtime_artifacts(&spec, &prepared);
+
+        assert!(artifacts.iter().any(|artifact| artifact.kind == "systemdUnit"));
+        assert!(artifacts.iter().any(|artifact| artifact.kind == "systemdTimer"));
+    }
+}
+
 #[tauri::command]
 pub async fn execute_recipe(
     queue: State<'_, crate::cli_runner::CommandQueue>,
@@ -1733,6 +1974,11 @@ pub async fn execute_recipe(
     } else {
         prepared.summary.clone()
     };
+    let runtime_artifacts = if legacy_spec {
+        Vec::new()
+    } else {
+        crate::recipe_executor::build_runtime_artifacts(&spec, &prepared)
+    };
 
     match prepared.route.runner.as_str() {
         "local" => {
@@ -1753,6 +1999,7 @@ pub async fn execute_recipe(
                 cache,
                 Some(infer_recipe_id(&spec)),
                 Some(prepared.run_id.clone()),
+                Some(runtime_artifacts.clone()),
             )
             .await?;
             let finished_at = Utc::now().to_rfc3339();
@@ -1760,6 +2007,9 @@ pub async fn execute_recipe(
                 let error = result
                     .error
                     .unwrap_or_else(|| "recipe execution failed".to_string());
+                if !legacy_spec {
+                    warnings.extend(cleanup_local_recipe_artifacts(&runtime_artifacts));
+                }
                 let _ = persist_recipe_run(
                     &spec,
                     &prepared,
@@ -1816,11 +2066,12 @@ pub async fn execute_recipe(
                 );
             }
             let result = crate::cli_runner::remote_apply_queued_commands(
-                pool,
+                pool.clone(),
                 remote_queues,
                 host_id.clone(),
                 Some(infer_recipe_id(&spec)),
                 Some(prepared.run_id.clone()),
+                Some(runtime_artifacts.clone()),
             )
             .await?;
             let finished_at = Utc::now().to_rfc3339();
@@ -1828,6 +2079,11 @@ pub async fn execute_recipe(
                 let error = result
                     .error
                     .unwrap_or_else(|| "remote recipe execution failed".to_string());
+                if !legacy_spec {
+                    warnings.extend(
+                        cleanup_remote_recipe_artifacts(&pool, &host_id, &runtime_artifacts).await,
+                    );
+                }
                 let _ = persist_recipe_run(
                     &spec,
                     &prepared,
@@ -6699,6 +6955,7 @@ fn write_config_with_snapshot(
         current_text,
         None,
         None,
+        Vec::new(),
     )?;
     write_json(&paths.config_path, next)
 }

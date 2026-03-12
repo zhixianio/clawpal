@@ -4,8 +4,10 @@ use crate::execution_spec::{
     ExecutionAction, ExecutionCapabilities, ExecutionMetadata, ExecutionResourceClaim,
     ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
 };
+use crate::recipe_store::Artifact;
 use crate::recipe_executor::{
-    execute_recipe, materialize_execution_plan, route_execution, ExecuteRecipeRequest,
+    build_cleanup_commands, build_runtime_artifacts, execute_recipe, materialize_execution_plan,
+    route_execution, ExecuteRecipeRequest,
 };
 
 fn sample_target(kind: &str) -> Value {
@@ -208,4 +210,66 @@ fn legacy_recipe_spec_can_prepare_without_command_payload() {
     .expect("prepare legacy recipe execution");
 
     assert!(!result.run_id.is_empty());
+}
+
+#[test]
+fn schedule_execution_builds_unit_and_timer_artifacts() {
+    let spec = sample_schedule_spec();
+    let prepared = execute_recipe(ExecuteRecipeRequest { spec: spec.clone() })
+        .expect("prepare schedule execution");
+
+    let artifacts = build_runtime_artifacts(&spec, &prepared);
+
+    assert!(artifacts
+        .iter()
+        .any(|artifact| artifact.kind == "systemdUnit" && artifact.label == prepared.plan.unit_name));
+    assert!(artifacts.iter().any(|artifact| artifact.kind == "systemdTimer"));
+}
+
+#[test]
+fn cleanup_commands_stop_and_reset_failed_for_systemd_artifacts() {
+    let commands = build_cleanup_commands(&[
+        Artifact {
+            id: "run_01:unit".into(),
+            kind: "systemdUnit".into(),
+            label: "clawpal-job-hourly".into(),
+            path: Some("clawpal-job-hourly".into()),
+        },
+        Artifact {
+            id: "run_01:timer".into(),
+            kind: "systemdTimer".into(),
+            label: "clawpal-job-hourly.timer".into(),
+            path: Some("clawpal-job-hourly.timer".into()),
+        },
+    ]);
+
+    assert_eq!(
+        commands,
+        vec![
+            vec![
+                String::from("systemctl"),
+                String::from("--user"),
+                String::from("stop"),
+                String::from("clawpal-job-hourly"),
+            ],
+            vec![
+                String::from("systemctl"),
+                String::from("--user"),
+                String::from("reset-failed"),
+                String::from("clawpal-job-hourly"),
+            ],
+            vec![
+                String::from("systemctl"),
+                String::from("--user"),
+                String::from("stop"),
+                String::from("clawpal-job-hourly.timer"),
+            ],
+            vec![
+                String::from("systemctl"),
+                String::from("--user"),
+                String::from("reset-failed"),
+                String::from("clawpal-job-hourly.timer"),
+            ],
+        ]
+    );
 }

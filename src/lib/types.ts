@@ -387,6 +387,7 @@ export interface HistoryItem {
   canRollback: boolean;
   runId?: string;
   rollbackOf?: string;
+  artifacts?: RecipeRuntimeArtifact[];
 }
 
 export interface DoctorIssue {
