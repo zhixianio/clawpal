@@ -175,12 +175,7 @@ pub fn build_runtime_artifacts(
             );
         }
         "attachment" => {
-            if spec
-                .desired_state
-                .get("envPatch")
-                .and_then(Value::as_object)
-                .is_some()
-            {
+            if systemd::render_env_patch_dropin_content(spec).is_some() {
                 push_unique_artifact(
                     &mut artifacts,
                     RecipeRuntimeArtifact {
@@ -190,6 +185,21 @@ pub fn build_runtime_artifacts(
                         path: None,
                     },
                 );
+            }
+
+            if let Some(path) = systemd::env_patch_dropin_path(spec) {
+                if let Some(target) = systemd::attachment_target_unit(spec) {
+                    let name = systemd::env_patch_dropin_name(spec);
+                    push_unique_artifact(
+                        &mut artifacts,
+                        RecipeRuntimeArtifact {
+                            id: format!("{}:env-dropin", prepared.run_id),
+                            kind: "systemdDropIn".into(),
+                            label: format!("{}:{}", target, name),
+                            path: Some(path),
+                        },
+                    );
+                }
             }
 
             if let Some(drop_in) = spec

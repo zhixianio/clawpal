@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use crate::execution_spec::ExecutionSpec;
 
@@ -123,13 +124,24 @@ pub fn materialize_attachment(spec: &ExecutionSpec) -> Result<SystemdRuntimePlan
         }
     }
 
-    if spec
-        .desired_state
-        .get("envPatch")
-        .and_then(Value::as_object)
-        .is_some()
-    {
-        needs_daemon_reload = true;
+    match (
+        attachment_target_unit(spec),
+        render_env_patch_dropin_content(spec),
+    ) {
+        (Some(target), Some(content)) => {
+            commands.push(vec![
+                crate::commands::INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND.into(),
+                target,
+                env_patch_dropin_name(spec),
+                content,
+            ]);
+            needs_daemon_reload = true;
+        }
+        (None, Some(_)) => warnings.push(
+            "attachment envPatch is missing a target unit in systemdDropIn.unit/target or service claim target"
+                .into(),
+        ),
+        _ => {}
     }
 
     if needs_daemon_reload {
@@ -165,6 +177,91 @@ fn extract_drop_in_content(drop_in: &serde_json::Map<String, Value>) -> Option<S
                 .map(|value| value.to_string())
                 .filter(|value| !value.trim().is_empty())
         })
+}
+
+pub fn attachment_target_unit(spec: &ExecutionSpec) -> Option<String> {
+    spec.desired_state
+        .get("systemdDropIn")
+        .and_then(Value::as_object)
+        .and_then(|drop_in| {
+            drop_in
+                .get("unit")
+                .or_else(|| drop_in.get("target"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            spec.resources
+                .claims
+                .iter()
+                .find(|claim| claim.kind == "service")
+                .and_then(|claim| claim.target.as_deref().or(claim.id.as_deref()))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+        })
+}
+
+pub fn env_patch_dropin_name(spec: &ExecutionSpec) -> String {
+    format!(
+        "90-clawpal-env-{}.conf",
+        sanitize_unit_fragment(spec_name(spec))
+    )
+}
+
+pub fn env_patch_dropin_path(spec: &ExecutionSpec) -> Option<String> {
+    attachment_target_unit(spec).map(|target| {
+        format!(
+            "~/.config/systemd/user/{}.d/{}",
+            target,
+            env_patch_dropin_name(spec)
+        )
+    })
+}
+
+pub fn render_env_patch_dropin_content(spec: &ExecutionSpec) -> Option<String> {
+    let patch = spec
+        .desired_state
+        .get("envPatch")
+        .and_then(Value::as_object)?;
+    let mut values = BTreeMap::new();
+
+    for (key, value) in patch {
+        let trimmed_key = key.trim();
+        if trimmed_key.is_empty() {
+            continue;
+        }
+        let rendered = match value {
+            Value::String(text) => text.clone(),
+            Value::Number(number) => number.to_string(),
+            Value::Bool(flag) => flag.to_string(),
+            Value::Null => String::new(),
+            _ => continue,
+        };
+        values.insert(trimmed_key.to_string(), rendered);
+    }
+
+    if values.is_empty() {
+        return None;
+    }
+
+    let mut content = String::from("[Service]\n");
+    for (key, value) in values {
+        content.push_str("Environment=\"");
+        content.push_str(&escape_systemd_environment_assignment(&key, &value));
+        content.push_str("\"\n");
+    }
+    Some(content)
+}
+
+fn escape_systemd_environment_assignment(key: &str, value: &str) -> String {
+    format!(
+        "{}={}",
+        key,
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    )
 }
 
 fn build_systemd_run_command(

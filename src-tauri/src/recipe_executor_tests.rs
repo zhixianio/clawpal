@@ -274,6 +274,15 @@ fn attachment_spec_materializes_dropin_write_and_daemon_reload() {
     assert!(plan.commands.iter().any(|command| {
         command
             == &vec![
+                INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND.to_string(),
+                "openclaw-gateway.service".to_string(),
+                "90-clawpal-env-gateway-env.conf".to_string(),
+                "[Service]\nEnvironment=\"OPENCLAW_CHANNEL=discord\"\n".to_string(),
+            ]
+    }));
+    assert!(plan.commands.iter().any(|command| {
+        command
+            == &vec![
                 "systemctl".to_string(),
                 "--user".to_string(),
                 "daemon-reload".to_string(),
@@ -310,6 +319,11 @@ fn attachment_execution_builds_dropin_and_reload_artifacts() {
         .any(|artifact| artifact.kind == "systemdDropIn"
             && artifact.path.as_deref()
                 == Some("~/.config/systemd/user/openclaw-gateway.service.d/10-channel.conf")));
+    assert!(artifacts
+        .iter()
+        .any(|artifact| artifact.kind == "systemdDropIn"
+            && artifact.path.as_deref()
+                == Some("~/.config/systemd/user/openclaw-gateway.service.d/90-clawpal-env-gateway-env.conf")));
     assert!(artifacts
         .iter()
         .any(|artifact| artifact.kind == "systemdDaemonReload"));
