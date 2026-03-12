@@ -2002,8 +2002,11 @@ mod runtime_artifact_tests {
     #[test]
     fn build_runtime_artifacts_tracks_schedule_timer_units() {
         let spec = sample_schedule_spec();
-        let prepared = prepare_recipe_execution(ExecuteRecipeRequest { spec: spec.clone() })
-            .expect("prepare recipe execution");
+        let prepared = prepare_recipe_execution(ExecuteRecipeRequest {
+            spec: spec.clone(),
+            source_origin: None,
+        })
+        .expect("prepare recipe execution");
         let artifacts = build_runtime_artifacts(&spec, &prepared);
 
         assert!(artifacts
@@ -2021,8 +2024,21 @@ pub async fn execute_recipe(
     cache: State<'_, crate::cli_runner::CliCache>,
     pool: State<'_, SshConnectionPool>,
     remote_queues: State<'_, crate::cli_runner::RemoteCommandQueues>,
-    request: ExecuteRecipeRequest,
+    mut request: ExecuteRecipeRequest,
 ) -> Result<ExecuteRecipeResult, String> {
+    if let Some(source_origin) = request
+        .source_origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let mut source = request.spec.source.as_object().cloned().unwrap_or_default();
+        source.insert(
+            "recipeSourceOrigin".into(),
+            Value::String(source_origin.to_string()),
+        );
+        request.spec.source = Value::Object(source);
+    }
     let spec = request.spec.clone();
     let prepared = prepare_recipe_execution(request)?;
     let mut warnings = prepared.warnings.clone();

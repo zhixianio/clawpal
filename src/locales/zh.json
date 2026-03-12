@@ -686,6 +686,7 @@
   "recipeStudio.save": "保存",
   "recipeStudio.saveAs": "另存为",
   "recipeStudio.delete": "删除",
+  "recipeStudio.cookDraft": "烹饪这个 draft",
   "recipeStudio.fork": "Fork 内置 recipe",
   "recipeStudio.forkDialogTitle": "Fork 到工作区",
   "recipeStudio.forkConfirm": "Fork",

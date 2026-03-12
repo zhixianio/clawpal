@@ -689,6 +689,7 @@
   "recipeStudio.save": "Save",
   "recipeStudio.saveAs": "Save as",
   "recipeStudio.delete": "Delete",
+  "recipeStudio.cookDraft": "Cook draft",
   "recipeStudio.fork": "Fork builtin recipe",
   "recipeStudio.forkDialogTitle": "Fork recipe to workspace",
   "recipeStudio.forkConfirm": "Fork",

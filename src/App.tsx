@@ -48,6 +48,7 @@ import type {
   PrecheckIssue,
   RecipeEditorOrigin,
   RecipeStudioDraft,
+  RecipeSourceOrigin,
   RegisteredInstance,
   SshHost,
   SshTransferStats,
@@ -173,10 +174,14 @@ export function App() {
   const [route, setRoute] = useState<Route>("home");
   const [recipeId, setRecipeId] = useState<string | null>(null);
   const [recipeSource, setRecipeSource] = useState<string | undefined>(undefined);
+  const [recipeSourceText, setRecipeSourceText] = useState<string | undefined>(undefined);
+  const [recipeSourceOrigin, setRecipeSourceOrigin] = useState<RecipeSourceOrigin>("saved");
   const [recipeEditorRecipeId, setRecipeEditorRecipeId] = useState<string | null>(null);
   const [recipeEditorRecipeName, setRecipeEditorRecipeName] = useState("");
   const [recipeEditorSource, setRecipeEditorSource] = useState("");
   const [recipeEditorOrigin, setRecipeEditorOrigin] = useState<RecipeEditorOrigin>("builtin");
+  const [recipeEditorWorkspaceSlug, setRecipeEditorWorkspaceSlug] = useState<string | undefined>(undefined);
+  const [cookReturnRoute, setCookReturnRoute] = useState<Route>("recipes");
   const [channelNodes, setChannelNodes] = useState<ChannelNode[] | null>(null);
   const [discordGuildChannels, setDiscordGuildChannels] = useState<DiscordGuildChannel[] | null>(null);
   const [channelsLoading, setChannelsLoading] = useState(false);
@@ -214,6 +219,7 @@ export function App() {
     setRecipeEditorRecipeName(draft.recipeName);
     setRecipeEditorSource(draft.source);
     setRecipeEditorOrigin(draft.origin);
+    setRecipeEditorWorkspaceSlug(draft.workspaceSlug);
     navigateRoute("recipe-studio");
   }, [navigateRoute]);
 
@@ -1696,6 +1702,9 @@ export function App() {
               onCook={(id, source) => {
                 setRecipeId(id);
                 setRecipeSource(source);
+                setRecipeSourceText(undefined);
+                setRecipeSourceOrigin("saved");
+                setCookReturnRoute("recipes");
                 navigateRoute("cook");
               }}
               onOpenStudio={openRecipeStudio}
@@ -1708,6 +1717,20 @@ export function App() {
               recipeName={recipeEditorRecipeName}
               initialSource={recipeEditorSource}
               origin={recipeEditorOrigin}
+              workspaceSlug={recipeEditorWorkspaceSlug}
+              onCookDraft={(draft) => {
+                setRecipeId(draft.recipeId);
+                setRecipeSource(undefined);
+                setRecipeSourceText(draft.source);
+                setRecipeSourceOrigin("draft");
+                setCookReturnRoute("recipe-studio");
+                setRecipeEditorRecipeId(draft.recipeId);
+                setRecipeEditorRecipeName(draft.recipeName);
+                setRecipeEditorSource(draft.source);
+                setRecipeEditorOrigin(draft.origin);
+                setRecipeEditorWorkspaceSlug(draft.workspaceSlug);
+                navigateRoute("cook");
+              }}
               onBack={() => navigateRoute("recipes")}
             />
           )}
@@ -1718,8 +1741,10 @@ export function App() {
             <Cook
               recipeId={recipeId}
               recipeSource={recipeSource}
+              recipeSourceText={recipeSourceText}
+              recipeSourceOrigin={recipeSourceOrigin}
               onDone={() => {
-                navigateRoute("recipes");
+                navigateRoute(cookReturnRoute);
               }}
             />
           )}

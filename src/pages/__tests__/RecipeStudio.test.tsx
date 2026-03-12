@@ -53,6 +53,7 @@ describe("RecipeStudio", () => {
             },
           }, null, 2),
           origin: "workspace",
+          onCookDraft: () => {},
           onBack: () => {},
         }),
       }),
@@ -64,6 +65,7 @@ describe("RecipeStudio", () => {
     expect(html).toContain("New");
     expect(html).toContain("Save");
     expect(html).toContain("Save as");
+    expect(html).toContain("Cook draft");
     expect(html).toContain("Preview plan");
     expect(html).toContain("textarea");
     expect(html).toContain("ExecutionSpec");

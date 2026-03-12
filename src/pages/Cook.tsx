@@ -10,7 +10,7 @@ import type { ExecuteRecipeResult, PrecheckIssue, Recipe, RecipePlan } from "../
 import { useInstance } from "@/lib/instance-context";
 import { RecipePlanPreview } from "@/components/RecipePlanPreview";
 import {
-  buildCookExecutionSpec,
+  buildCookExecuteRequest,
   markCookFailure,
   markCookStatuses,
   type CookStepStatus,
@@ -26,10 +26,14 @@ export function Cook({
   recipeId,
   onDone,
   recipeSource,
+  recipeSourceText,
+  recipeSourceOrigin = "saved",
 }: {
   recipeId: string;
   onDone?: () => void;
   recipeSource?: string;
+  recipeSourceText?: string;
+  recipeSourceOrigin?: "saved" | "draft";
 }) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -56,7 +60,10 @@ export function Cook({
 
   useEffect(() => {
     setLoading(true);
-    ua.listRecipes(recipeSource).then((recipes) => {
+    const recipeLoader = recipeSourceText
+      ? ua.listRecipesFromSourceText(recipeSourceText)
+      : ua.listRecipes(recipeSource);
+    recipeLoader.then((recipes) => {
       const found = recipes.find((it) => it.id === recipeId);
       setRecipe(found || null);
       if (found) {
@@ -67,7 +74,7 @@ export function Cook({
         setParams(defaults);
       }
     }).finally(() => setLoading(false));
-  }, [recipeId, recipeSource]);
+  }, [recipeId, recipeSource, recipeSourceText]);
 
   // Pre-populate fields from existing config when channel is selected
   useEffect(() => {
@@ -134,7 +141,9 @@ export function Cook({
     setPlanError(null);
 
     try {
-      const nextPlan = await ua.planRecipe(recipe.id, params, recipeSource);
+      const nextPlan = recipeSourceText
+        ? await ua.planRecipeSource(recipe.id, params, recipeSourceText)
+        : await ua.planRecipe(recipe.id, params, recipeSource);
       const [authResult, configResult] = await Promise.allSettled([
         ua.precheckAuth(instanceId),
         ua.readRawConfig(),
@@ -180,11 +189,11 @@ export function Cook({
 
     try {
       const result = await ua.executeRecipe({
-        spec: buildCookExecutionSpec(plan.executionSpec, {
+        ...buildCookExecuteRequest(plan.executionSpec, {
           instanceId,
           isRemote,
           isDocker,
-        }),
+        }, recipeSourceOrigin),
       });
       setExecutionResult(result);
       setStepStatuses((current) => markCookStatuses(current, "done"));

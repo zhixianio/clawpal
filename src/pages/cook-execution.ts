@@ -1,4 +1,4 @@
-import type { ExecutionSpec } from "@/lib/types";
+import type { ExecuteRecipeRequest, ExecutionSpec, RecipeSourceOrigin } from "@/lib/types";
 
 export type CookStepStatus = "pending" | "running" | "done" | "failed" | "skipped";
 
@@ -19,6 +19,17 @@ export function buildCookExecutionSpec(
   return {
     ...spec,
     target,
+  };
+}
+
+export function buildCookExecuteRequest(
+  spec: ExecutionSpec,
+  context: CookExecutionContext,
+  sourceOrigin: RecipeSourceOrigin,
+): ExecuteRecipeRequest {
+  return {
+    spec: buildCookExecutionSpec(spec, context),
+    sourceOrigin,
   };
 }
 

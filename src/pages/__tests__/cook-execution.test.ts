@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  buildCookExecuteRequest,
   buildCookExecutionSpec,
   markCookFailure,
   markCookStatuses,
@@ -50,5 +51,33 @@ describe("cook execution helpers", () => {
       "pending",
       "skipped",
     ]);
+  });
+
+  test("builds a cook execute request that preserves draft origin", () => {
+    const request = buildCookExecuteRequest(
+      {
+        apiVersion: "strategy.platform/v1",
+        kind: "ExecutionSpec",
+        metadata: {},
+        source: {},
+        target: {},
+        execution: { kind: "attachment" },
+        capabilities: { usedCapabilities: [] },
+        resources: { claims: [] },
+        secrets: { bindings: [] },
+        desiredState: {},
+        actions: [],
+        outputs: [],
+      },
+      {
+        instanceId: "local",
+        isRemote: false,
+        isDocker: false,
+      },
+      "draft",
+    );
+
+    expect(request.sourceOrigin).toBe("draft");
+    expect(request.spec.target).toEqual({ kind: "local" });
   });
 });

@@ -197,8 +197,11 @@ export interface RecipePlan {
   warnings: string[];
 }
 
+export type RecipeSourceOrigin = "saved" | "draft";
+
 export interface ExecuteRecipeRequest {
   spec: ExecutionSpec;
+  sourceOrigin?: RecipeSourceOrigin;
 }
 
 export interface ExecuteRecipeResult {

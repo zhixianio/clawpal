@@ -109,6 +109,7 @@ fn sample_schedule_spec() -> ExecutionSpec {
 fn sample_execution_request() -> ExecuteRecipeRequest {
     ExecuteRecipeRequest {
         spec: sample_job_spec(),
+        source_origin: None,
     }
 }
 
@@ -254,6 +255,7 @@ fn execute_recipe_returns_run_id_and_summary() {
 fn action_recipe_spec_can_prepare_without_command_payload() {
     let result = execute_recipe(ExecuteRecipeRequest {
         spec: sample_action_recipe_spec(),
+        source_origin: None,
     })
     .expect("prepare action recipe execution");
 
@@ -297,8 +299,11 @@ fn attachment_spec_materializes_dropin_write_and_daemon_reload() {
 #[test]
 fn schedule_execution_builds_unit_and_timer_artifacts() {
     let spec = sample_schedule_spec();
-    let prepared = execute_recipe(ExecuteRecipeRequest { spec: spec.clone() })
-        .expect("prepare schedule execution");
+    let prepared = execute_recipe(ExecuteRecipeRequest {
+        spec: spec.clone(),
+        source_origin: None,
+    })
+    .expect("prepare schedule execution");
 
     let artifacts = build_runtime_artifacts(&spec, &prepared);
 
@@ -313,8 +318,11 @@ fn schedule_execution_builds_unit_and_timer_artifacts() {
 #[test]
 fn attachment_execution_builds_dropin_and_reload_artifacts() {
     let spec = sample_attachment_spec();
-    let prepared = execute_recipe(ExecuteRecipeRequest { spec: spec.clone() })
-        .expect("prepare attachment execution");
+    let prepared = execute_recipe(ExecuteRecipeRequest {
+        spec: spec.clone(),
+        source_origin: None,
+    })
+    .expect("prepare attachment execution");
 
     let artifacts = build_runtime_artifacts(&spec, &prepared);
 

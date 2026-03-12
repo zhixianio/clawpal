@@ -28,6 +28,8 @@ pub struct ExecutionRoute {
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteRecipeRequest {
     pub spec: ExecutionSpec,
+    #[serde(default)]
+    pub source_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

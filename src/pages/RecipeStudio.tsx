@@ -10,7 +10,13 @@ import { RecipePlanPreview } from "@/components/RecipePlanPreview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import type { Recipe, RecipeEditorOrigin, RecipePlan, RecipeSourceDiagnostics } from "@/lib/types";
+import type {
+  Recipe,
+  RecipeEditorOrigin,
+  RecipePlan,
+  RecipeSourceDiagnostics,
+  RecipeStudioDraft,
+} from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 
 const EMPTY_DIAGNOSTICS: RecipeSourceDiagnostics = {
@@ -161,6 +167,7 @@ export function RecipeStudio({
   initialSource,
   origin,
   workspaceSlug,
+  onCookDraft,
   onBack,
 }: {
   recipeId: string;
@@ -168,6 +175,7 @@ export function RecipeStudio({
   initialSource: string;
   origin: RecipeEditorOrigin;
   workspaceSlug?: string;
+  onCookDraft?: (draft: RecipeStudioDraft) => void;
   onBack: () => void;
 }) {
   const { t } = useTranslation();
@@ -460,6 +468,21 @@ export function RecipeStudio({
                 disabled={deleting}
               >
                 {t("recipeStudio.delete")}
+              </Button>
+            )}
+            {onCookDraft && (
+              <Button
+                variant="outline"
+                onClick={() => onCookDraft({
+                  recipeId: draftRecipe?.id ?? currentRecipeId,
+                  recipeName: draftRecipe?.name ?? currentRecipeName,
+                  source,
+                  origin: currentOrigin,
+                  workspaceSlug: currentWorkspaceSlug ?? undefined,
+                })}
+                disabled={!draftRecipe}
+              >
+                {t("recipeStudio.cookDraft")}
               </Button>
             )}
             <Button variant="outline" onClick={handleBack}>
