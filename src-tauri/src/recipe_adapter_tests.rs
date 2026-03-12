@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use crate::recipe::{builtin_recipes, Recipe, RecipeParam, RecipeStep};
+use crate::recipe::{builtin_recipes, validate_recipe_source, Recipe, RecipeParam, RecipeStep};
 use crate::recipe_adapter::{compile_recipe_to_spec, export_recipe_source};
 
 fn sample_params() -> Map<String, Value> {
@@ -139,4 +139,176 @@ fn export_recipe_source_normalizes_step_only_recipe_to_structured_document() {
     assert!(exported.contains("\"executionSpecTemplate\""));
     assert!(exported.contains("\"supportedKinds\": [\n        \"attachment\""));
     assert!(exported.contains("\"{{guild_id}}\""));
+}
+
+#[test]
+fn exported_recipe_source_validates_as_structured_document() {
+    let recipe = builtin_recipes()
+        .into_iter()
+        .find(|recipe| recipe.id == "discord-channel-persona")
+        .expect("builtin recipe");
+    let source = export_recipe_source(&recipe).expect("export source");
+
+    let diagnostics = validate_recipe_source(&source).expect("validate source");
+
+    assert!(diagnostics.errors.is_empty());
+}
+
+#[test]
+fn validate_recipe_source_flags_parse_errors() {
+    let diagnostics = validate_recipe_source("{ broken").expect("validate source");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    assert_eq!(diagnostics.errors[0].category, "parse");
+}
+
+#[test]
+fn validate_recipe_source_flags_bundle_consistency_errors() {
+    let diagnostics = validate_recipe_source(
+        r#"{
+          "recipes": [{
+            "id": "bundle-mismatch",
+            "name": "Bundle Mismatch",
+            "description": "Invalid bundle/spec pairing",
+            "version": "1.0.0",
+            "tags": [],
+            "difficulty": "easy",
+            "params": [],
+            "steps": [],
+            "bundle": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "StrategyBundle",
+              "metadata": {},
+              "compatibility": {},
+              "inputs": [],
+              "capabilities": { "allowed": [] },
+              "resources": { "supportedKinds": [] },
+              "execution": { "supportedKinds": ["attachment"] },
+              "runner": {},
+              "outputs": []
+            },
+            "executionSpecTemplate": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "ExecutionSpec",
+              "metadata": {},
+              "source": {},
+              "target": {},
+              "execution": { "kind": "job" },
+              "capabilities": { "usedCapabilities": [] },
+              "resources": { "claims": [] },
+              "secrets": { "bindings": [] },
+              "desiredState": {},
+              "actions": [],
+              "outputs": []
+            }
+          }]
+        }"#,
+    )
+    .expect("validate source");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    assert_eq!(diagnostics.errors[0].category, "bundle");
+}
+
+#[test]
+fn validate_recipe_source_flags_step_alignment_errors() {
+    let diagnostics = validate_recipe_source(
+        r#"{
+          "recipes": [{
+            "id": "step-mismatch",
+            "name": "Step Mismatch",
+            "description": "Invalid step/action alignment",
+            "version": "1.0.0",
+            "tags": [],
+            "difficulty": "easy",
+            "params": [],
+            "steps": [
+              { "action": "config_patch", "label": "First", "args": {} },
+              { "action": "config_patch", "label": "Second", "args": {} }
+            ],
+            "bundle": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "StrategyBundle",
+              "metadata": {},
+              "compatibility": {},
+              "inputs": [],
+              "capabilities": { "allowed": [] },
+              "resources": { "supportedKinds": [] },
+              "execution": { "supportedKinds": ["attachment"] },
+              "runner": {},
+              "outputs": []
+            },
+            "executionSpecTemplate": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "ExecutionSpec",
+              "metadata": {},
+              "source": {},
+              "target": {},
+              "execution": { "kind": "attachment" },
+              "capabilities": { "usedCapabilities": [] },
+              "resources": { "claims": [] },
+              "secrets": { "bindings": [] },
+              "desiredState": {},
+              "actions": [
+                { "kind": "config_patch", "name": "Only action", "args": {} }
+              ],
+              "outputs": []
+            }
+          }]
+        }"#,
+    )
+    .expect("validate source");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    assert_eq!(diagnostics.errors[0].category, "alignment");
+}
+
+#[test]
+fn validate_recipe_source_flags_hidden_actions_without_ui_steps() {
+    let diagnostics = validate_recipe_source(
+        r#"{
+          "recipes": [{
+            "id": "hidden-actions",
+            "name": "Hidden Actions",
+            "description": "Execution actions without UI steps",
+            "version": "1.0.0",
+            "tags": [],
+            "difficulty": "easy",
+            "params": [],
+            "steps": [],
+            "bundle": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "StrategyBundle",
+              "metadata": {},
+              "compatibility": {},
+              "inputs": [],
+              "capabilities": { "allowed": [] },
+              "resources": { "supportedKinds": [] },
+              "execution": { "supportedKinds": ["attachment"] },
+              "runner": {},
+              "outputs": []
+            },
+            "executionSpecTemplate": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "ExecutionSpec",
+              "metadata": {},
+              "source": {},
+              "target": {},
+              "execution": { "kind": "attachment" },
+              "capabilities": { "usedCapabilities": [] },
+              "resources": { "claims": [] },
+              "secrets": { "bindings": [] },
+              "desiredState": {},
+              "actions": [
+                { "kind": "config_patch", "name": "Only action", "args": {} }
+              ],
+              "outputs": []
+            }
+          }]
+        }"#,
+    )
+    .expect("validate source");
+
+    assert_eq!(diagnostics.errors.len(), 1);
+    assert_eq!(diagnostics.errors[0].category, "alignment");
 }

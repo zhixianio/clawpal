@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::execution_spec::{ExecutionResourceClaim, ExecutionSpec};
-use crate::recipe::{step_references_empty_param, Recipe};
+use crate::recipe::{load_recipes_from_source_text, step_references_empty_param, Recipe};
 use crate::recipe_adapter::compile_recipe_to_spec;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,4 +62,16 @@ pub fn build_recipe_plan(
         execution_spec,
         warnings,
     })
+}
+
+pub fn build_recipe_plan_from_source_text(
+    recipe_id: &str,
+    params: &Map<String, Value>,
+    source_text: &str,
+) -> Result<RecipePlan, String> {
+    let recipe = load_recipes_from_source_text(source_text)?
+        .into_iter()
+        .find(|recipe| recipe.id == recipe_id)
+        .ok_or_else(|| format!("recipe not found: {}", recipe_id))?;
+    build_recipe_plan(&recipe, params)
 }

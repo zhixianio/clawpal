@@ -64,7 +64,7 @@ pub fn export_recipe_source(recipe: &Recipe) -> Result<String, String> {
     serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
 }
 
-fn build_recipe_spec_template(recipe: &Recipe) -> Result<ExecutionSpec, String> {
+pub(crate) fn build_recipe_spec_template(recipe: &Recipe) -> Result<ExecutionSpec, String> {
     if let Some(template) = &recipe.execution_spec_template {
         return Ok(template.clone());
     }
@@ -246,7 +246,7 @@ fn validate_recipe_spec(recipe: &Recipe, spec: &ExecutionSpec) -> Result<(), Str
     }
 }
 
-fn canonical_recipe_bundle(recipe: &Recipe, spec: &ExecutionSpec) -> RecipeBundle {
+pub(crate) fn canonical_recipe_bundle(recipe: &Recipe, spec: &ExecutionSpec) -> RecipeBundle {
     if let Some(bundle) = &recipe.bundle {
         return bundle.clone();
     }

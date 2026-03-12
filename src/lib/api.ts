@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, ChannelsConfigSnapshot, ChannelsRuntimeSnapshot, CronConfigSnapshot, CronJob, CronRun, CronRuntimeSnapshot, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, ExecuteRecipeRequest, ExecuteRecipeResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceConfigSnapshot, InstanceRuntimeSnapshot, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecipePlan, RecipeRuntimeInstance, RecipeRuntimeRun, RecipeSourceSaveResult, RecipeWorkspaceEntry, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, ChannelsConfigSnapshot, ChannelsRuntimeSnapshot, CronConfigSnapshot, CronJob, CronRun, CronRuntimeSnapshot, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, ExecuteRecipeRequest, ExecuteRecipeResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceConfigSnapshot, InstanceRuntimeSnapshot, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecipePlan, RecipeRuntimeInstance, RecipeRuntimeRun, RecipeSourceDiagnostics, RecipeSourceSaveResult, RecipeWorkspaceEntry, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
@@ -100,6 +100,8 @@ export const api = {
     invoke("refresh_model_catalog", {}),
   listRecipes: (source?: string): Promise<Recipe[]> =>
     invoke("list_recipes", source ? { source } : {}),
+  listRecipesFromSourceText: (sourceText: string): Promise<Recipe[]> =>
+    invoke("list_recipes_from_source_text", { sourceText }),
   listRecipeWorkspaceEntries: (): Promise<RecipeWorkspaceEntry[]> =>
     invoke("list_recipe_workspace_entries", {}),
   readRecipeWorkspaceSource: (slug: string): Promise<string> =>
@@ -110,6 +112,8 @@ export const api = {
     invoke("delete_recipe_workspace_source", { slug }),
   exportRecipeSource: (recipeId: string, source?: string): Promise<string> =>
     invoke("export_recipe_source", { recipeId, source: source ?? null }),
+  validateRecipeSourceText: (sourceText: string): Promise<RecipeSourceDiagnostics> =>
+    invoke("validate_recipe_source_text", { sourceText }),
   listRecipeInstances: (): Promise<RecipeRuntimeInstance[]> =>
     invoke("list_recipe_instances", {}),
   listRecipeRuns: (instanceId?: string): Promise<RecipeRuntimeRun[]> =>
@@ -120,6 +124,12 @@ export const api = {
     source?: string,
   ): Promise<RecipePlan> =>
     invoke("plan_recipe", { recipeId, params, source: source ?? null }),
+  planRecipeSource: (
+    recipeId: string,
+    params: Record<string, string>,
+    sourceText: string,
+  ): Promise<RecipePlan> =>
+    invoke("plan_recipe_source", { recipeId, params, sourceText }),
   executeRecipe: (request: ExecuteRecipeRequest): Promise<ExecuteRecipeResult> =>
     invoke("execute_recipe", { request }),
   applyConfigPatch: (patchTemplate: string, params: Record<string, string>): Promise<ApplyResult> =>

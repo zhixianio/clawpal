@@ -59,6 +59,19 @@ export interface RecipeSourceSaveResult {
   path: string;
 }
 
+export interface RecipeSourceDiagnostic {
+  category: string;
+  severity: string;
+  recipeId?: string;
+  path?: string;
+  message: string;
+}
+
+export interface RecipeSourceDiagnostics {
+  errors: RecipeSourceDiagnostic[];
+  warnings: RecipeSourceDiagnostic[];
+}
+
 export interface ChangeItem {
   path: string;
   op: string;

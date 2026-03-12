@@ -8,12 +8,18 @@ use std::{
 
 use crate::execution_spec::ExecutionSpec;
 use crate::recipe_bundle::RecipeBundle;
+use crate::{
+    execution_spec::validate_execution_spec,
+    recipe_adapter::{build_recipe_spec_template, canonical_recipe_bundle},
+    recipe_bundle::validate_execution_spec_against_bundle,
+};
 
 const BUILTIN_RECIPES_JSON: &str = include_str!("../recipes.json");
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum RecipeDocument {
+    Single(Recipe),
     List(Vec<Recipe>),
     Wrapped { recipes: Vec<Recipe> },
 }
@@ -98,6 +104,27 @@ pub struct ApplyResult {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeSourceDiagnostic {
+    pub category: String,
+    pub severity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipe_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeSourceDiagnostics {
+    #[serde(default)]
+    pub errors: Vec<RecipeSourceDiagnostic>,
+    #[serde(default)]
+    pub warnings: Vec<RecipeSourceDiagnostic>,
+}
+
 pub fn builtin_recipes() -> Vec<Recipe> {
     parse_recipes_document(BUILTIN_RECIPES_JSON).unwrap_or_else(|_| Vec::new())
 }
@@ -118,9 +145,17 @@ fn expand_user_path(candidate: &str) -> PathBuf {
 fn parse_recipes_document(text: &str) -> Result<Vec<Recipe>, String> {
     let document: RecipeDocument = json5::from_str(text).map_err(|e| e.to_string())?;
     match document {
+        RecipeDocument::Single(recipe) => Ok(vec![recipe]),
         RecipeDocument::List(recipes) => Ok(recipes),
         RecipeDocument::Wrapped { recipes } => Ok(recipes),
     }
+}
+
+pub fn load_recipes_from_source_text(text: &str) -> Result<Vec<Recipe>, String> {
+    if text.trim().is_empty() {
+        return Err("empty recipe source".into());
+    }
+    parse_recipes_document(text)
 }
 
 pub fn load_recipes_from_source(source: &str) -> Result<Vec<Recipe>, String> {
@@ -134,7 +169,7 @@ pub fn load_recipes_from_source(source: &str) -> Result<Vec<Recipe>, String> {
             return Err(format!("request failed: {}", response.status()));
         }
         let text = response.text().map_err(|e| e.to_string())?;
-        parse_recipes_document(&text)
+        load_recipes_from_source_text(&text)
     } else {
         let path = expand_user_path(source);
         let path = Path::new(&path);
@@ -142,7 +177,7 @@ pub fn load_recipes_from_source(source: &str) -> Result<Vec<Recipe>, String> {
             return Err(format!("recipe file not found: {}", path.to_string_lossy()));
         }
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        parse_recipes_document(&text)
+        load_recipes_from_source_text(&text)
     }
 }
 
@@ -182,6 +217,84 @@ pub fn find_recipe_with_source(id: &str, source: Option<String>) -> Option<Recip
     load_recipes_with_fallback(source, &default_path)
         .into_iter()
         .find(|r| r.id == id)
+}
+
+pub fn validate_recipe_source(text: &str) -> Result<RecipeSourceDiagnostics, String> {
+    let mut diagnostics = RecipeSourceDiagnostics::default();
+    let recipes = match load_recipes_from_source_text(text) {
+        Ok(recipes) => recipes,
+        Err(error) => {
+            diagnostics.errors.push(RecipeSourceDiagnostic {
+                category: "parse".into(),
+                severity: "error".into(),
+                recipe_id: None,
+                path: None,
+                message: error,
+            });
+            return Ok(diagnostics);
+        }
+    };
+
+    for recipe in &recipes {
+        validate_recipe_definition(recipe, &mut diagnostics);
+    }
+
+    Ok(diagnostics)
+}
+
+fn validate_recipe_definition(recipe: &Recipe, diagnostics: &mut RecipeSourceDiagnostics) {
+    if let Some(template) = &recipe.execution_spec_template {
+        if template.actions.len() != recipe.steps.len() {
+            diagnostics.errors.push(RecipeSourceDiagnostic {
+                category: "alignment".into(),
+                severity: "error".into(),
+                recipe_id: Some(recipe.id.clone()),
+                path: Some("steps".into()),
+                message: format!(
+                    "recipe '{}' declares {} UI step(s) but {} execution action(s)",
+                    recipe.id,
+                    recipe.steps.len(),
+                    template.actions.len()
+                ),
+            });
+        }
+    }
+
+    let spec = match build_recipe_spec_template(recipe) {
+        Ok(spec) => spec,
+        Err(error) => {
+            diagnostics.errors.push(RecipeSourceDiagnostic {
+                category: "schema".into(),
+                severity: "error".into(),
+                recipe_id: Some(recipe.id.clone()),
+                path: Some("executionSpecTemplate".into()),
+                message: error,
+            });
+            return;
+        }
+    };
+
+    if let Err(error) = validate_execution_spec(&spec) {
+        diagnostics.errors.push(RecipeSourceDiagnostic {
+            category: "schema".into(),
+            severity: "error".into(),
+            recipe_id: Some(recipe.id.clone()),
+            path: Some("executionSpecTemplate".into()),
+            message: error,
+        });
+        return;
+    }
+
+    let bundle = canonical_recipe_bundle(recipe, &spec);
+    if let Err(error) = validate_execution_spec_against_bundle(&bundle, &spec) {
+        diagnostics.errors.push(RecipeSourceDiagnostic {
+            category: "bundle".into(),
+            severity: "error".into(),
+            recipe_id: Some(recipe.id.clone()),
+            path: Some("bundle".into()),
+            message: error,
+        });
+    }
 }
 
 pub fn validate(recipe: &Recipe, params: &Map<String, Value>) -> Vec<String> {

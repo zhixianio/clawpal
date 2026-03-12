@@ -102,10 +102,11 @@ fn shell_escape(s: &str) -> String {
 
 use crate::recipe::{
     build_candidate_config_from_template, collect_change_paths, find_recipe_with_source,
-    format_diff, load_recipes_with_fallback, ApplyResult, PreviewResult,
+    format_diff, load_recipes_from_source_text, load_recipes_with_fallback, validate_recipe_source,
+    ApplyResult, PreviewResult, RecipeSourceDiagnostics,
 };
 use crate::recipe_adapter::export_recipe_source as export_recipe_source_document;
-use crate::recipe_planner::{build_recipe_plan, RecipePlan};
+use crate::recipe_planner::{build_recipe_plan, build_recipe_plan_from_source_text, RecipePlan};
 use crate::recipe_workspace::{RecipeSourceSaveResult, RecipeWorkspace, RecipeWorkspaceEntry};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1240,6 +1241,18 @@ pub fn list_recipes(source: Option<String>) -> Result<Vec<crate::recipe::Recipe>
 }
 
 #[tauri::command]
+pub fn list_recipes_from_source_text(
+    source_text: String,
+) -> Result<Vec<crate::recipe::Recipe>, String> {
+    load_recipes_from_source_text(&source_text)
+}
+
+#[tauri::command]
+pub fn validate_recipe_source_text(source_text: String) -> Result<RecipeSourceDiagnostics, String> {
+    validate_recipe_source(&source_text)
+}
+
+#[tauri::command]
 pub fn list_recipe_workspace_entries() -> Result<Vec<RecipeWorkspaceEntry>, String> {
     RecipeWorkspace::from_resolved_paths().list_entries()
 }
@@ -1268,6 +1281,15 @@ pub fn export_recipe_source(recipe_id: String, source: Option<String>) -> Result
     let recipe = find_recipe_with_source(&recipe_id, source)
         .ok_or_else(|| format!("recipe not found: {}", recipe_id))?;
     export_recipe_source_document(&recipe)
+}
+
+#[tauri::command]
+pub fn plan_recipe_source(
+    recipe_id: String,
+    params: Map<String, Value>,
+    source_text: String,
+) -> Result<RecipePlan, String> {
+    build_recipe_plan_from_source_text(&recipe_id, &params, &source_text)
 }
 
 #[tauri::command]

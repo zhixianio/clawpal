@@ -1,7 +1,8 @@
 use serde_json::{Map, Value};
 
-use crate::recipe::builtin_recipes;
-use crate::recipe_planner::build_recipe_plan;
+use crate::recipe::{builtin_recipes, load_recipes_from_source_text};
+use crate::recipe_adapter::export_recipe_source;
+use crate::recipe_planner::{build_recipe_plan, build_recipe_plan_from_source_text};
 
 fn sample_inputs() -> Map<String, Value> {
     let mut params = Map::new();
@@ -75,4 +76,22 @@ fn plan_recipe_skips_optional_steps_from_structured_template() {
     assert_eq!(plan.summary.skipped_step_count, 2);
     assert_eq!(plan.summary.action_count, 2);
     assert_eq!(plan.execution_spec.actions.len(), 2);
+}
+
+#[test]
+fn plan_recipe_source_uses_unsaved_draft_text() {
+    let recipe = builtin_recipes()
+        .into_iter()
+        .find(|recipe| recipe.id == "discord-channel-persona")
+        .expect("builtin recipe");
+    let source = export_recipe_source(&recipe).expect("export source");
+    let recipes = load_recipes_from_source_text(&source).expect("parse source");
+
+    let plan =
+        build_recipe_plan_from_source_text("discord-channel-persona", &sample_inputs(), &source)
+            .expect("build plan from source");
+
+    assert_eq!(recipes.len(), 1);
+    assert_eq!(plan.summary.recipe_id, "discord-channel-persona");
+    assert_eq!(plan.execution_spec.kind, "ExecutionSpec");
 }

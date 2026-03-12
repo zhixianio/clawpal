@@ -991,6 +991,7 @@ export function useApi() {
       ),
       getSystemStatus: api.getSystemStatus,
       listRecipes: localCached("listRecipes", 20_000, api.listRecipes),
+      listRecipesFromSourceText: api.listRecipesFromSourceText,
       listRecipeWorkspaceEntries: localCached(
         "listRecipeWorkspaceEntries",
         4_000,
@@ -1010,6 +1011,7 @@ export function useApi() {
         ["listRecipeWorkspaceEntries", "readRecipeWorkspaceSource"],
       ),
       exportRecipeSource: api.exportRecipeSource,
+      validateRecipeSourceText: api.validateRecipeSourceText,
       listRecipeInstances: localCached(
         "listRecipeInstances",
         4_000,
@@ -1017,6 +1019,7 @@ export function useApi() {
       ),
       listRecipeRuns: localCached("listRecipeRuns", 4_000, api.listRecipeRuns),
       planRecipe: localCached("planRecipe", 5_000, api.planRecipe),
+      planRecipeSource: api.planRecipeSource,
       executeRecipe: withInvalidation(api.executeRecipe, [
         "listHistory",
         "listRecipeInstances",
