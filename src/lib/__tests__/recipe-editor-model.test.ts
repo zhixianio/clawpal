@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  appendRecipeEditorActionRow,
+  appendRecipeEditorParam,
+  appendRecipeEditorStep,
   fromRecipeEditorModel,
   parseRecipeSource,
+  removeRecipeEditorActionRow,
+  removeRecipeEditorParam,
+  removeRecipeEditorStep,
   toRecipeEditorModel,
 } from "@/lib/recipe-editor-model";
 
@@ -78,5 +84,38 @@ describe("recipe editor model", () => {
     expect(nextDoc.id).toBe("channel-persona");
     expect(nextDoc.params[0].id).toBe("channel_id");
     expect(nextDoc.steps[0].action).toBe("config_patch");
+  });
+
+  test("appends and removes params steps and actions with sensible defaults", () => {
+    const doc = parseRecipeSource(SAMPLE_SOURCE);
+    const form = toRecipeEditorModel(doc);
+
+    const appendedParam = appendRecipeEditorParam({ ...form, params: [] });
+    expect(appendedParam.params).toHaveLength(1);
+    expect(appendedParam.params[0]).toMatchObject({
+      id: "param_1",
+      label: "Param 1",
+      type: "string",
+      required: false,
+    });
+    expect(removeRecipeEditorParam(appendedParam, 0).params).toHaveLength(0);
+
+    const appendedStep = appendRecipeEditorStep({ ...form, steps: [] });
+    expect(appendedStep.steps).toHaveLength(1);
+    expect(appendedStep.steps[0]).toMatchObject({
+      label: "Step 1",
+      action: "config_patch",
+      args: {},
+    });
+    expect(removeRecipeEditorStep(appendedStep, 0).steps).toHaveLength(0);
+
+    const appendedAction = appendRecipeEditorActionRow({ ...form, actionRows: [] });
+    expect(appendedAction.actionRows).toHaveLength(1);
+    expect(appendedAction.actionRows[0]).toMatchObject({
+      kind: "config_patch",
+      name: "Action 1",
+      argsText: "{}",
+    });
+    expect(removeRecipeEditorActionRow(appendedAction, 0).actionRows).toHaveLength(0);
   });
 });
