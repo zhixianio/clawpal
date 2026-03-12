@@ -10,12 +10,16 @@ export function RecipeSampleParamsForm({
   onChange,
   onPreviewPlan,
   planning,
+  previewDisabled = false,
+  disabledReason,
 }: {
   recipe: Recipe;
   values: Record<string, string>;
   onChange: (id: string, value: string) => void;
   onPreviewPlan: () => void;
   planning: boolean;
+  previewDisabled?: boolean;
+  disabledReason?: string | null;
 }) {
   const { t } = useTranslation();
 
@@ -26,6 +30,11 @@ export function RecipeSampleParamsForm({
         <p className="text-sm text-muted-foreground">
           {t("recipeStudio.sampleParamsDescription")}
         </p>
+        {disabledReason && (
+          <p className="text-sm text-amber-700 dark:text-amber-300">
+            {disabledReason}
+          </p>
+        )}
       </CardHeader>
       <CardContent>
         <ParamForm
@@ -34,6 +43,7 @@ export function RecipeSampleParamsForm({
           onChange={onChange}
           onSubmit={onPreviewPlan}
           submitLabel={planning ? t("recipeStudio.previewPlanPending") : t("recipeStudio.previewPlan")}
+          submitDisabled={previewDisabled}
         />
       </CardContent>
     </Card>

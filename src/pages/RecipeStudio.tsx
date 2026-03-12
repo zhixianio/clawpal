@@ -17,6 +17,7 @@ import {
   serializeRecipeEditorModel,
   toRecipeEditorModel,
 } from "@/lib/recipe-editor-model";
+import { getRecipeStudioActionState } from "@/lib/recipe-studio-actions";
 import type {
   Recipe,
   RecipeEditorModel,
@@ -380,6 +381,19 @@ export function RecipeStudio({
   const modeSummaryBody = mode === "form"
     ? t("recipeStudio.formSummaryBody")
     : t("recipeStudio.sourceSummaryBody");
+  const actionState = useMemo(
+    () => getRecipeStudioActionState({
+      source,
+      validating,
+      validationError,
+      diagnostics,
+      formSyncError,
+      hasDraftRecipe: !!draftRecipe,
+    }),
+    [source, validating, validationError, diagnostics, formSyncError, draftRecipe],
+  );
+  const saveBlockedReason = actionState.saveReasonKey ? t(actionState.saveReasonKey) : undefined;
+  const previewBlockedReason = actionState.previewReasonKey ? t(actionState.previewReasonKey) : undefined;
 
   const completePersist = (slug: string) => {
     const identity = tryParseRecipeIdentity(source, currentRecipeId, currentRecipeName);
@@ -554,10 +568,16 @@ export function RecipeStudio({
                 <Button
                   variant="outline"
                   onClick={() => setSaveDialogMode("save-as")}
+                  disabled={actionState.saveDisabled}
+                  title={saveBlockedReason}
                 >
                   {t("recipeStudio.saveAs")}
                 </Button>
-                <Button onClick={() => void handleSave()}>
+                <Button
+                  onClick={() => void handleSave()}
+                  disabled={actionState.saveDisabled}
+                  title={saveBlockedReason}
+                >
                   {t("recipeStudio.save")}
                 </Button>
               </>
@@ -581,7 +601,8 @@ export function RecipeStudio({
                   origin: currentOrigin,
                   workspaceSlug: currentWorkspaceSlug ?? undefined,
                 })}
-                disabled={!draftRecipe}
+                disabled={actionState.cookDisabled}
+                title={previewBlockedReason}
               >
                 {t("recipeStudio.cookDraft")}
               </Button>
@@ -637,6 +658,8 @@ export function RecipeStudio({
               }}
               onPreviewPlan={() => void handlePreviewPlan()}
               planning={planning}
+              previewDisabled={actionState.previewDisabled}
+              disabledReason={previewBlockedReason}
             />
           )}
           {planError && (

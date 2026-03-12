@@ -49,12 +49,14 @@ export function ParamForm({
   onChange,
   onSubmit,
   submitLabel = "Preview",
+  submitDisabled = false,
 }: {
   recipe: Recipe;
   values: Record<string, string>;
   onChange: (id: string, value: string) => void;
   onSubmit: () => void;
   submitLabel?: string;
+  submitDisabled?: boolean;
 }) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -299,7 +301,7 @@ export function ParamForm({
       })}
       <Button
         type="submit"
-        disabled={hasError}
+        disabled={hasError || submitDisabled}
       >
         {submitLabel}
       </Button>
