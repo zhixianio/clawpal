@@ -17,6 +17,8 @@ import {
   serializeRecipeEditorModel,
   toRecipeEditorModel,
 } from "@/lib/recipe-editor-model";
+import { getRecipeStudioActionState } from "@/lib/recipe-studio-actions";
+import { getRecipeStudioProjectionDiff } from "@/lib/recipe-studio-projection-diff";
 import type {
   Recipe,
   RecipeEditorModel,
@@ -100,6 +102,15 @@ function originLabelKey(origin: RecipeEditorOrigin): string {
 
 function describeDirtyState(dirty: boolean): "recipeStudio.dirty" | "recipeStudio.saved" {
   return dirty ? "recipeStudio.dirty" : "recipeStudio.saved";
+}
+
+function projectionSectionLabelKey(section: string): string {
+  switch (section) {
+    case "documentShape":
+      return "recipeStudio.projectionDiffSectionDocumentShape";
+    default:
+      return "recipeStudio.projectionDiffSectionGeneric";
+  }
 }
 
 function tryParseRecipeIdentity(
@@ -380,6 +391,23 @@ export function RecipeStudio({
   const modeSummaryBody = mode === "form"
     ? t("recipeStudio.formSummaryBody")
     : t("recipeStudio.sourceSummaryBody");
+  const actionState = useMemo(
+    () => getRecipeStudioActionState({
+      source,
+      validating,
+      validationError,
+      diagnostics,
+      formSyncError,
+      hasDraftRecipe: !!draftRecipe,
+    }),
+    [source, validating, validationError, diagnostics, formSyncError, draftRecipe],
+  );
+  const projectionDiff = useMemo(
+    () => getRecipeStudioProjectionDiff(source),
+    [source],
+  );
+  const saveBlockedReason = actionState.saveReasonKey ? t(actionState.saveReasonKey) : undefined;
+  const previewBlockedReason = actionState.previewReasonKey ? t(actionState.previewReasonKey) : undefined;
 
   const completePersist = (slug: string) => {
     const identity = tryParseRecipeIdentity(source, currentRecipeId, currentRecipeName);
@@ -554,10 +582,16 @@ export function RecipeStudio({
                 <Button
                   variant="outline"
                   onClick={() => setSaveDialogMode("save-as")}
+                  disabled={actionState.saveDisabled}
+                  title={saveBlockedReason}
                 >
                   {t("recipeStudio.saveAs")}
                 </Button>
-                <Button onClick={() => void handleSave()}>
+                <Button
+                  onClick={() => void handleSave()}
+                  disabled={actionState.saveDisabled}
+                  title={saveBlockedReason}
+                >
                   {t("recipeStudio.save")}
                 </Button>
               </>
@@ -581,7 +615,8 @@ export function RecipeStudio({
                   origin: currentOrigin,
                   workspaceSlug: currentWorkspaceSlug ?? undefined,
                 })}
-                disabled={!draftRecipe}
+                disabled={actionState.cookDisabled}
+                title={previewBlockedReason}
               >
                 {t("recipeStudio.cookDraft")}
               </Button>
@@ -592,6 +627,33 @@ export function RecipeStudio({
           </div>
         </CardContent>
       </Card>
+
+      {projectionDiff.hasDiff && (
+        <Card className="border-amber-300/70 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-950/20">
+          <CardContent className="space-y-3 py-4">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">{t("recipeStudio.projectionDiffTitle")}</div>
+              <p className="text-sm text-muted-foreground">
+                {mode === "source"
+                  ? t("recipeStudio.projectionDiffSourceBody")
+                  : t("recipeStudio.projectionDiffFormBody")}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {projectionDiff.affectedSections.map((section) => {
+                const labelKey = projectionSectionLabelKey(section);
+                return (
+                  <Badge key={section} variant="outline">
+                    {labelKey === "recipeStudio.projectionDiffSectionGeneric"
+                      ? t(labelKey, { section })
+                      : t(labelKey)}
+                  </Badge>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.85fr)]">
         <div className="space-y-4">
@@ -637,6 +699,8 @@ export function RecipeStudio({
               }}
               onPreviewPlan={() => void handlePreviewPlan()}
               planning={planning}
+              previewDisabled={actionState.previewDisabled}
+              disabledReason={previewBlockedReason}
             />
           )}
           {planError && (

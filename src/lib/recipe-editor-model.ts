@@ -80,6 +80,10 @@ function cloneDocument(doc: RecipeSourceDocument): RecipeSourceDocument {
   return JSON.parse(JSON.stringify(doc)) as RecipeSourceDocument;
 }
 
+function nextOrdinal(size: number): number {
+  return size + 1;
+}
+
 function normalizeExecutionKind(value: string | undefined): RecipeExecutionKind {
   switch (value) {
     case "job":
@@ -161,4 +165,80 @@ export function fromRecipeEditorModel(model: RecipeEditorModel): RecipeSourceDoc
 
 export function serializeRecipeEditorModel(model: RecipeEditorModel): string {
   return JSON.stringify(fromRecipeEditorModel(model), null, 2);
+}
+
+export function appendRecipeEditorParam(model: RecipeEditorModel): RecipeEditorModel {
+  const ordinal = nextOrdinal(model.params.length);
+  return {
+    ...model,
+    params: [
+      ...model.params,
+      {
+        id: `param_${ordinal}`,
+        label: `Param ${ordinal}`,
+        type: "string",
+        required: false,
+      },
+    ],
+  };
+}
+
+export function removeRecipeEditorParam(
+  model: RecipeEditorModel,
+  index: number,
+): RecipeEditorModel {
+  return {
+    ...model,
+    params: model.params.filter((_, itemIndex) => itemIndex !== index),
+  };
+}
+
+export function appendRecipeEditorStep(model: RecipeEditorModel): RecipeEditorModel {
+  const ordinal = nextOrdinal(model.steps.length);
+  return {
+    ...model,
+    steps: [
+      ...model.steps,
+      {
+        label: `Step ${ordinal}`,
+        action: "config_patch",
+        args: {},
+      },
+    ],
+  };
+}
+
+export function removeRecipeEditorStep(
+  model: RecipeEditorModel,
+  index: number,
+): RecipeEditorModel {
+  return {
+    ...model,
+    steps: model.steps.filter((_, itemIndex) => itemIndex !== index),
+  };
+}
+
+export function appendRecipeEditorActionRow(model: RecipeEditorModel): RecipeEditorModel {
+  const ordinal = nextOrdinal(model.actionRows.length);
+  return {
+    ...model,
+    actionRows: [
+      ...model.actionRows,
+      {
+        kind: "config_patch",
+        name: `Action ${ordinal}`,
+        argsText: "{}",
+      },
+    ],
+  };
+}
+
+export function removeRecipeEditorActionRow(
+  model: RecipeEditorModel,
+  index: number,
+): RecipeEditorModel {
+  return {
+    ...model,
+    actionRows: model.actionRows.filter((_, itemIndex) => itemIndex !== index),
+  };
 }

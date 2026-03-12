@@ -1,5 +1,7 @@
 import { useTranslation } from "react-i18next";
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -10,7 +12,26 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  appendRecipeEditorActionRow,
+  appendRecipeEditorParam,
+  appendRecipeEditorStep,
+  removeRecipeEditorActionRow,
+  removeRecipeEditorParam,
+  removeRecipeEditorStep,
+} from "@/lib/recipe-editor-model";
 import type { RecipeEditorModel } from "@/lib/types";
+
+const PARAM_TYPE_OPTIONS = [
+  "string",
+  "number",
+  "boolean",
+  "textarea",
+  "discord_guild",
+  "discord_channel",
+  "model_profile",
+  "agent",
+] as const;
 
 function updateArrayItem<T>(items: T[], index: number, nextValue: T): T[] {
   return items.map((item, itemIndex) => (itemIndex === index ? nextValue : item));
@@ -114,53 +135,192 @@ export function RecipeFormEditor({
       </section>
 
       <section className="space-y-3">
-        <div className="text-sm font-medium">{t("recipeStudio.form.params")}</div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm font-medium">{t("recipeStudio.form.params")}</div>
+          <Button type="button" variant="outline" size="sm" onClick={() => onChange(appendRecipeEditorParam(model))}>
+            {t("recipeStudio.form.addParam")}
+          </Button>
+        </div>
         {model.params.length === 0 ? (
           <div className="rounded-xl border border-dashed px-3 py-4 text-sm text-muted-foreground">
             {t("recipeStudio.form.emptyParams")}
           </div>
         ) : (
           model.params.map((param, index) => (
-            <div key={`${param.id}-${index}`} className="grid gap-2 rounded-xl border p-3 md:grid-cols-4">
-              <Input
-                aria-label={`${t("recipeStudio.form.paramId")} ${index + 1}`}
-                value={param.id}
-                onChange={(event) => onChange({
-                  ...model,
-                  params: updateArrayItem(model.params, index, { ...param, id: event.target.value }),
-                })}
-              />
-              <Input
-                aria-label={`${t("recipeStudio.form.paramLabel")} ${index + 1}`}
-                value={param.label}
-                onChange={(event) => onChange({
-                  ...model,
-                  params: updateArrayItem(model.params, index, { ...param, label: event.target.value }),
-                })}
-              />
-              <Input
-                aria-label={`${t("recipeStudio.form.paramType")} ${index + 1}`}
-                value={param.type}
-                onChange={(event) => onChange({
-                  ...model,
-                  params: updateArrayItem(model.params, index, { ...param, type: event.target.value as typeof param.type }),
-                })}
-              />
-              <Input
-                aria-label={`${t("recipeStudio.form.paramDefault")} ${index + 1}`}
-                value={param.defaultValue ?? ""}
-                onChange={(event) => onChange({
-                  ...model,
-                  params: updateArrayItem(model.params, index, { ...param, defaultValue: event.target.value }),
-                })}
-              />
+            <div key={`${param.id}-${index}`} className="space-y-3 rounded-xl border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">
+                  {t("recipeStudio.form.paramLabel")} {index + 1}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onChange(removeRecipeEditorParam(model, index))}
+                >
+                  {t("recipeStudio.form.remove")}
+                </Button>
+              </div>
+              <div className="grid gap-2 md:grid-cols-4">
+                <Input
+                  aria-label={`${t("recipeStudio.form.paramId")} ${index + 1}`}
+                  value={param.id}
+                  onChange={(event) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, { ...param, id: event.target.value }),
+                  })}
+                />
+                <Input
+                  aria-label={`${t("recipeStudio.form.paramLabel")} ${index + 1}`}
+                  value={param.label}
+                  onChange={(event) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, { ...param, label: event.target.value }),
+                  })}
+                />
+                <Select
+                  value={param.type}
+                  onValueChange={(value) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, {
+                      ...param,
+                      type: value as typeof param.type,
+                    }),
+                  })}
+                  disabled={readOnly}
+                >
+                  <SelectTrigger
+                    aria-label={`${t("recipeStudio.form.paramType")} ${index + 1}`}
+                    className="w-full"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PARAM_TYPE_OPTIONS.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {type}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  aria-label={`${t("recipeStudio.form.paramDefault")} ${index + 1}`}
+                  value={param.defaultValue ?? ""}
+                  onChange={(event) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, { ...param, defaultValue: event.target.value }),
+                  })}
+                />
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <Input
+                  aria-label={`${t("recipeStudio.form.placeholder")} ${index + 1}`}
+                  placeholder={t("recipeStudio.form.placeholder")}
+                  value={param.placeholder ?? ""}
+                  onChange={(event) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, {
+                      ...param,
+                      placeholder: event.target.value || undefined,
+                    }),
+                  })}
+                />
+                <Input
+                  aria-label={`${t("recipeStudio.form.pattern")} ${index + 1}`}
+                  placeholder={t("recipeStudio.form.pattern")}
+                  value={param.pattern ?? ""}
+                  onChange={(event) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, {
+                      ...param,
+                      pattern: event.target.value || undefined,
+                    }),
+                  })}
+                />
+                <Select
+                  value={param.dependsOn ?? "__none__"}
+                  onValueChange={(value) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, {
+                      ...param,
+                      dependsOn: value === "__none__" ? undefined : value,
+                    }),
+                  })}
+                  disabled={readOnly}
+                >
+                  <SelectTrigger
+                    aria-label={`${t("recipeStudio.form.dependsOn")} ${index + 1}`}
+                    className="w-full"
+                  >
+                    <SelectValue placeholder={t("recipeStudio.form.dependsOn")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">
+                      {t("recipeStudio.form.noDependency")}
+                    </SelectItem>
+                    {model.params
+                      .filter((candidate) => candidate.id !== param.id)
+                      .map((candidate) => (
+                        <SelectItem key={candidate.id} value={candidate.id}>
+                          {candidate.id}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    aria-label={`${t("recipeStudio.form.minLength")} ${index + 1}`}
+                    placeholder={t("recipeStudio.form.minLength")}
+                    type="number"
+                    value={param.minLength ?? ""}
+                    onChange={(event) => onChange({
+                      ...model,
+                      params: updateArrayItem(model.params, index, {
+                        ...param,
+                        minLength: event.target.value === "" ? undefined : Number(event.target.value),
+                      }),
+                    })}
+                  />
+                  <Input
+                    aria-label={`${t("recipeStudio.form.maxLength")} ${index + 1}`}
+                    placeholder={t("recipeStudio.form.maxLength")}
+                    type="number"
+                    value={param.maxLength ?? ""}
+                    onChange={(event) => onChange({
+                      ...model,
+                      params: updateArrayItem(model.params, index, {
+                        ...param,
+                        maxLength: event.target.value === "" ? undefined : Number(event.target.value),
+                      }),
+                    })}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`recipe-form-param-required-${index}`}
+                  checked={param.required}
+                  onCheckedChange={(checked) => onChange({
+                    ...model,
+                    params: updateArrayItem(model.params, index, { ...param, required: checked === true }),
+                  })}
+                />
+                <Label htmlFor={`recipe-form-param-required-${index}`}>
+                  {t("recipeStudio.form.required")}
+                </Label>
+              </div>
             </div>
           ))
         )}
       </section>
 
       <section className="space-y-3">
-        <div className="text-sm font-medium">{t("recipeStudio.form.steps")}</div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm font-medium">{t("recipeStudio.form.steps")}</div>
+          <Button type="button" variant="outline" size="sm" onClick={() => onChange(appendRecipeEditorStep(model))}>
+            {t("recipeStudio.form.addStep")}
+          </Button>
+        </div>
         {model.steps.length === 0 ? (
           <div className="rounded-xl border border-dashed px-3 py-4 text-sm text-muted-foreground">
             {t("recipeStudio.form.emptySteps")}
@@ -168,6 +328,19 @@ export function RecipeFormEditor({
         ) : (
           model.steps.map((step, index) => (
             <div key={`${step.label}-${index}`} className="space-y-2 rounded-xl border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">
+                  {t("recipeStudio.form.stepLabel")} {index + 1}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onChange(removeRecipeEditorStep(model, index))}
+                >
+                  {t("recipeStudio.form.remove")}
+                </Button>
+              </div>
               <Input
                 aria-label={`${t("recipeStudio.form.stepLabel")} ${index + 1}`}
                 value={step.label}
@@ -208,7 +381,12 @@ export function RecipeFormEditor({
       </section>
 
       <section className="space-y-3">
-        <div className="text-sm font-medium">{t("recipeStudio.form.actions")}</div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-sm font-medium">{t("recipeStudio.form.actions")}</div>
+          <Button type="button" variant="outline" size="sm" onClick={() => onChange(appendRecipeEditorActionRow(model))}>
+            {t("recipeStudio.form.addAction")}
+          </Button>
+        </div>
         {model.actionRows.length === 0 ? (
           <div className="rounded-xl border border-dashed px-3 py-4 text-sm text-muted-foreground">
             {t("recipeStudio.form.emptyActions")}
@@ -216,6 +394,19 @@ export function RecipeFormEditor({
         ) : (
           model.actionRows.map((action, index) => (
             <div key={`${action.kind}-${index}`} className="space-y-2 rounded-xl border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">
+                  {t("recipeStudio.form.actionName")} {index + 1}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onChange(removeRecipeEditorActionRow(model, index))}
+                >
+                  {t("recipeStudio.form.remove")}
+                </Button>
+              </div>
               <Input
                 aria-label={`${t("recipeStudio.form.actionKind")} ${index + 1}`}
                 value={action.kind}

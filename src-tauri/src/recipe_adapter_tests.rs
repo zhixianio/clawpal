@@ -163,6 +163,56 @@ fn validate_recipe_source_flags_parse_errors() {
 }
 
 #[test]
+fn validate_recipe_source_emits_metadata_warning_for_missing_tags() {
+    let diagnostics = validate_recipe_source(
+        r#"{
+          "recipes": [{
+            "id": "missing-tags",
+            "name": "Missing Tags",
+            "description": "Valid recipe but harder to discover",
+            "version": "1.0.0",
+            "tags": [],
+            "difficulty": "easy",
+            "params": [],
+            "steps": [],
+            "bundle": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "StrategyBundle",
+              "metadata": {},
+              "compatibility": {},
+              "inputs": [],
+              "capabilities": { "allowed": [] },
+              "resources": { "supportedKinds": [] },
+              "execution": { "supportedKinds": ["attachment"] },
+              "runner": {},
+              "outputs": []
+            },
+            "executionSpecTemplate": {
+              "apiVersion": "strategy.platform/v1",
+              "kind": "ExecutionSpec",
+              "metadata": {},
+              "source": {},
+              "target": {},
+              "execution": { "kind": "attachment" },
+              "capabilities": { "usedCapabilities": [] },
+              "resources": { "claims": [] },
+              "secrets": { "bindings": [] },
+              "desiredState": {},
+              "actions": [],
+              "outputs": []
+            }
+          }]
+        }"#,
+    )
+    .expect("validate source");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(diagnostics.warnings.len(), 1);
+    assert_eq!(diagnostics.warnings[0].category, "metadata");
+    assert_eq!(diagnostics.warnings[0].path.as_deref(), Some("tags"));
+}
+
+#[test]
 fn validate_recipe_source_flags_bundle_consistency_errors() {
     let diagnostics = validate_recipe_source(
         r#"{

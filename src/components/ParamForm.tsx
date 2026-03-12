@@ -49,12 +49,14 @@ export function ParamForm({
   onChange,
   onSubmit,
   submitLabel = "Preview",
+  submitDisabled = false,
 }: {
   recipe: Recipe;
   values: Record<string, string>;
   onChange: (id: string, value: string) => void;
   onSubmit: () => void;
   submitLabel?: string;
+  submitDisabled?: boolean;
 }) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -93,9 +95,22 @@ export function ParamForm({
     return discordGuildChannels.filter((gc) => gc.guildId === guildId);
   }, [discordGuildChannels, values]);
 
+  const paramById = useMemo(
+    () => new Map(recipe.params.map((param) => [param.id, param])),
+    [recipe.params],
+  );
+
   const isParamVisible = (param: RecipeParam) => {
     if (!param.dependsOn) return true;
-    return values[param.dependsOn] === "true";
+    const dependencyValue = values[param.dependsOn]?.trim() ?? "";
+    if (!dependencyValue) {
+      return false;
+    }
+    const dependencyParam = paramById.get(param.dependsOn);
+    if (dependencyParam?.type === "boolean") {
+      return dependencyValue === "true";
+    }
+    return true;
   };
 
   const errors = useMemo(() => {
@@ -286,7 +301,7 @@ export function ParamForm({
       })}
       <Button
         type="submit"
-        disabled={hasError}
+        disabled={hasError || submitDisabled}
       >
         {submitLabel}
       </Button>
