@@ -7,6 +7,7 @@ import type {
   RecipeRuntimeInstance,
   RecipeRuntimeRun,
   RecipeStudioDraft,
+  RecipeWorkspaceEntry,
 } from "../lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -44,6 +45,7 @@ export function Recipes({
   const [runs, setRuns] = useState<RecipeRuntimeRun[]>(() => initialRuns ?? []);
   const [source, setSource] = useState("");
   const [loadedSource, setLoadedSource] = useState<string | undefined>(undefined);
+  const [workspaceEntries, setWorkspaceEntries] = useState<RecipeWorkspaceEntry[]>([]);
   const [sourcePreview, setSourcePreview] = useState<string | null>(null);
   const [sourcePreviewName, setSourcePreviewName] = useState<string>("");
   const [copiedSource, setCopiedSource] = useState(false);
@@ -51,15 +53,17 @@ export function Recipes({
   const load = async (nextSource: string) => {
     const value = nextSource.trim();
     try {
-      const [nextRecipes, nextInstances, nextRuns] = await Promise.all([
+      const [nextRecipes, nextInstances, nextRuns, nextWorkspaceEntries] = await Promise.all([
         ua.listRecipes(value || undefined),
         ua.listRecipeInstances(),
         ua.listRecipeRuns(),
+        ua.listRecipeWorkspaceEntries(),
       ]);
       setLoadedSource(value || undefined);
       setRecipes(nextRecipes);
       setInstances(nextInstances);
       setRuns(nextRuns);
+      setWorkspaceEntries(nextWorkspaceEntries);
     } catch (e) {
       console.error("Failed to load recipes:", e);
     }
@@ -124,6 +128,24 @@ export function Recipes({
     }
   };
 
+  const handleOpenWorkspaceEntry = async (entry: RecipeWorkspaceEntry) => {
+    if (!onOpenStudio) {
+      return;
+    }
+    try {
+      const sourceText = await ua.readRecipeWorkspaceSource(entry.slug);
+      onOpenStudio({
+        recipeId: entry.slug,
+        recipeName: entry.slug,
+        source: sourceText,
+        origin: "workspace",
+        workspaceSlug: entry.slug,
+      });
+    } catch (error) {
+      console.error("Failed to open workspace recipe:", error);
+    }
+  };
+
   const handleCopySource = async () => {
     if (!sourcePreview) return;
     const writer = navigator?.clipboard?.writeText;
@@ -153,6 +175,35 @@ export function Recipes({
       <p className="text-sm text-muted-foreground mt-0">
         {t('recipes.loadedFrom', { source: loadedSource || t('recipes.builtinSource') })}
       </p>
+      <Card className="mt-4 mb-4">
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">{t("recipes.workspaceTitle")}</div>
+              <p className="text-sm text-muted-foreground">
+                {workspaceEntries.length > 0
+                  ? t("recipes.workspaceDescription")
+                  : t("recipes.workspaceEmpty")}
+              </p>
+            </div>
+            <Badge variant="outline">{workspaceEntries.length}</Badge>
+          </div>
+          {workspaceEntries.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {workspaceEntries.map((entry) => (
+                <Button
+                  key={entry.slug}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleOpenWorkspaceEntry(entry)}
+                >
+                  {t("recipes.workspaceOpen", { slug: entry.slug })}
+                </Button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
       <Card className="mt-4 mb-4">
         <CardContent className="space-y-4">
           <div className="flex items-start justify-between gap-3 flex-wrap">

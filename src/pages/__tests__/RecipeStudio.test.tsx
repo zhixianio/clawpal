@@ -26,6 +26,9 @@ describe("RecipeStudio", () => {
     expect(html).toContain("Recipe Studio");
     expect(html).toContain("Channel Persona");
     expect(html).toContain("Editable draft");
+    expect(html).toContain("New");
+    expect(html).toContain("Save");
+    expect(html).toContain("Save as");
     expect(html).toContain("textarea");
     expect(html).toContain("ExecutionSpec");
   });

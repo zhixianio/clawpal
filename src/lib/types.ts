@@ -79,6 +79,7 @@ export interface RecipeStudioDraft {
   recipeName: string;
   source: string;
   origin: RecipeEditorOrigin;
+  workspaceSlug?: string;
 }
 
 export interface ChangeItem {
