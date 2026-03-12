@@ -389,9 +389,52 @@ fn import_recipe_library_accepts_repo_example_library() {
         .pointer("/executionSpecTemplate/actions")
         .and_then(Value::as_array)
         .expect("dedicated actions");
-    assert!(actions
+    let action_kinds = actions
         .iter()
-        .all(|action| action.get("kind").and_then(Value::as_str) != Some("bind_channel")));
+        .filter_map(|action| action.get("kind").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        action_kinds,
+        vec![
+            "ensure_model_profile",
+            "create_agent",
+            "upsert_markdown_document"
+        ]
+    );
+
+    let persona_pack_source = workspace
+        .read_recipe_source("agent-persona-pack")
+        .expect("read agent persona pack");
+    let persona_pack_json: Value =
+        serde_json::from_str(&persona_pack_source).expect("parse agent persona pack");
+    let persona_actions = persona_pack_json
+        .pointer("/executionSpecTemplate/actions")
+        .and_then(Value::as_array)
+        .expect("persona pack actions");
+    assert_eq!(
+        persona_actions
+            .iter()
+            .filter_map(|action| action.get("kind").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["set_agent_persona"]
+    );
+
+    let channel_pack_source = workspace
+        .read_recipe_source("channel-persona-pack")
+        .expect("read channel persona pack");
+    let channel_pack_json: Value =
+        serde_json::from_str(&channel_pack_source).expect("parse channel persona pack");
+    let channel_actions = channel_pack_json
+        .pointer("/executionSpecTemplate/actions")
+        .and_then(Value::as_array)
+        .expect("channel persona actions");
+    assert_eq!(
+        channel_actions
+            .iter()
+            .filter_map(|action| action.get("kind").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["set_channel_persona"]
+    );
 }
 
 #[test]

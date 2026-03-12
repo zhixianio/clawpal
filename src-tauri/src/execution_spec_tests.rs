@@ -62,3 +62,21 @@ resources:
 
     assert!(parse_execution_spec(raw).is_err());
 }
+
+#[test]
+fn execution_spec_accepts_recipe_runner_resource_claim_kinds() {
+    let raw = r#"apiVersion: strategy.platform/v1
+kind: ExecutionSpec
+execution:
+  kind: job
+resources:
+  claims:
+    - kind: document
+      path: ~/.openclaw/agents/main/agent/IDENTITY.md
+    - kind: modelProfile
+      id: remote-openai
+    - kind: authProfile
+      id: openai:default"#;
+
+    assert!(parse_execution_spec(raw).is_ok());
+}

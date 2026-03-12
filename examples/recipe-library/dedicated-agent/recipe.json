@@ -17,6 +17,13 @@
   ],
   "steps": [
     {
+      "action": "ensure_model_profile",
+      "label": "Prepare model access",
+      "args": {
+        "profileId": "{{model}}"
+      }
+    },
+    {
       "action": "create_agent",
       "label": "Create dedicated agent",
       "args": {
@@ -26,13 +33,16 @@
       }
     },
     {
-      "action": "setup_identity",
-      "label": "Set agent identity",
+      "action": "upsert_markdown_document",
+      "label": "Write agent identity",
       "args": {
-        "agentId": "{{agent_id}}",
-        "name": "{{name}}",
-        "emoji": "{{emoji}}",
-        "persona": "{{persona}}"
+        "target": {
+          "scope": "agent",
+          "agentId": "{{agent_id}}",
+          "path": "IDENTITY.md"
+        },
+        "mode": "replace",
+        "content": "- Name: {{name}}\n- Emoji: {{emoji}}\n\n## Persona\n{{persona}}\n"
       }
     }
   ],
@@ -47,10 +57,10 @@
     "compatibility": {},
     "inputs": [],
     "capabilities": {
-      "allowed": ["agent.manage", "agent.identity.write"]
+      "allowed": ["agent.manage", "document.write", "model.manage", "secret.sync"]
     },
     "resources": {
-      "supportedKinds": ["agent"]
+      "supportedKinds": ["agent", "document", "modelProfile"]
     },
     "execution": {
       "supportedKinds": ["job"]
@@ -70,20 +80,29 @@
       "kind": "job"
     },
     "capabilities": {
-      "usedCapabilities": ["agent.manage", "agent.identity.write"]
+      "usedCapabilities": ["model.manage", "secret.sync", "agent.manage", "document.write"]
     },
     "resources": {
       "claims": [
-        { "kind": "agent", "id": "{{agent_id}}" }
+        { "kind": "modelProfile", "id": "{{model}}" },
+        { "kind": "agent", "id": "{{agent_id}}" },
+        { "kind": "document", "path": "agent:{{agent_id}}/IDENTITY.md" }
       ]
     },
     "secrets": {
       "bindings": []
     },
     "desiredState": {
-      "actionCount": 2
+      "actionCount": 3
     },
     "actions": [
+      {
+        "kind": "ensure_model_profile",
+        "name": "Prepare model access",
+        "args": {
+          "profileId": "{{model}}"
+        }
+      },
       {
         "kind": "create_agent",
         "name": "Create dedicated agent",
@@ -94,13 +113,16 @@
         }
       },
       {
-        "kind": "setup_identity",
-        "name": "Set agent identity",
+        "kind": "upsert_markdown_document",
+        "name": "Write agent identity",
         "args": {
-          "agentId": "{{agent_id}}",
-          "name": "{{name}}",
-          "emoji": "{{emoji}}",
-          "persona": "{{persona}}"
+          "target": {
+            "scope": "agent",
+            "agentId": "{{agent_id}}",
+            "path": "IDENTITY.md"
+          },
+          "mode": "replace",
+          "content": "- Name: {{name}}\n- Emoji: {{emoji}}\n\n## Persona\n{{persona}}\n"
         }
       }
     ],

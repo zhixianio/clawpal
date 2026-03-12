@@ -59,6 +59,12 @@ export function formatRecipeClaimForPeople(
     case "file":
     case "path":
       return t("cook.reviewClaimFile", { value: detail });
+    case "document":
+      return t("cook.reviewClaimDocument", { value: detail });
+    case "modelProfile":
+      return t("cook.reviewClaimModelProfile", { value: detail });
+    case "authProfile":
+      return t("cook.reviewClaimAuthProfile", { value: detail });
     case "service":
       return t("cook.reviewClaimService", { value: detail });
     default:

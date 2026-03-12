@@ -1634,6 +1634,29 @@ async fn cleanup_remote_recipe_snapshot(
 
 pub(crate) const INTERNAL_SETUP_IDENTITY_COMMAND: &str = "__setup_identity__";
 pub(crate) const INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND: &str = "__systemd_dropin_write__";
+pub(crate) const INTERNAL_AGENT_PERSONA_COMMAND: &str = "__agent_persona__";
+pub(crate) const INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND: &str = "__markdown_document_write__";
+pub(crate) const INTERNAL_MARKDOWN_DOCUMENT_DELETE_COMMAND: &str = "__markdown_document_delete__";
+pub(crate) const INTERNAL_SET_AGENT_MODEL_COMMAND: &str = "__set_agent_model__";
+pub(crate) const INTERNAL_ENSURE_MODEL_PROFILE_COMMAND: &str = "__ensure_model_profile__";
+pub(crate) const INTERNAL_ENSURE_PROVIDER_AUTH_COMMAND: &str = "__ensure_provider_auth__";
+pub(crate) const INTERNAL_DELETE_MODEL_PROFILE_COMMAND: &str = "__delete_model_profile__";
+pub(crate) const INTERNAL_DELETE_PROVIDER_AUTH_COMMAND: &str = "__delete_provider_auth__";
+pub(crate) const INTERNAL_DELETE_AGENT_COMMAND: &str = "__delete_agent__";
+
+fn recipe_action_internal_command(
+    label: String,
+    command_name: &str,
+    payload: Value,
+) -> Result<(String, Vec<String>), String> {
+    Ok((
+        label,
+        vec![
+            command_name.to_string(),
+            serde_json::to_string(&payload).map_err(|error| error.to_string())?,
+        ],
+    ))
+}
 
 fn action_string(value: Option<&Value>) -> Option<String> {
     value.and_then(|value| match value {
@@ -1683,6 +1706,34 @@ fn recipe_action_setup_identity_command(
     )
 }
 
+fn recipe_action_agent_persona_command(
+    agent_id: &str,
+    persona: Option<&str>,
+    clear: bool,
+) -> Result<(String, Vec<String>), String> {
+    let mut payload = Map::new();
+    payload.insert("agentId".into(), Value::String(agent_id.to_string()));
+    if clear {
+        payload.insert("clear".into(), Value::Bool(true));
+    }
+    if let Some(persona) = persona.map(str::trim).filter(|value| !value.is_empty()) {
+        payload.insert("persona".into(), Value::String(persona.to_string()));
+    }
+    recipe_action_internal_command(
+        format!("Update persona: {}", agent_id),
+        INTERNAL_AGENT_PERSONA_COMMAND,
+        Value::Object(payload),
+    )
+}
+
+fn recipe_action_markdown_document_command(
+    label: &str,
+    command_name: &str,
+    args: &Map<String, Value>,
+) -> Result<(String, Vec<String>), String> {
+    recipe_action_internal_command(label.to_string(), command_name, Value::Object(args.clone()))
+}
+
 fn append_config_patch_commands(
     value: &Value,
     path: &str,
@@ -1723,6 +1774,43 @@ fn append_config_patch_commands(
     }
 }
 
+fn channel_persona_patch(
+    channel_type: &str,
+    guild_id: Option<&str>,
+    peer_id: &str,
+    persona: &str,
+) -> Result<Value, String> {
+    match channel_type.trim() {
+        "discord" => {
+            let guild_id = guild_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "set_channel_persona requires guildId for discord channels".to_string()
+                })?;
+            Ok(json!({
+                "channels": {
+                    "discord": {
+                        "guilds": {
+                            guild_id: {
+                                "channels": {
+                                    peer_id: {
+                                        "systemPrompt": persona,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }))
+        }
+        other => Err(format!(
+            "set_channel_persona does not support channel type '{}'",
+            other
+        )),
+    }
+}
+
 fn rewrite_binding_entries(
     bindings: Vec<Value>,
     channel_type: &str,
@@ -1759,6 +1847,61 @@ fn rewrite_binding_entries(
         }
     }));
     next
+}
+
+fn remove_binding_entries(bindings: Vec<Value>, channel_type: &str, peer_id: &str) -> Vec<Value> {
+    bindings
+        .into_iter()
+        .filter(|binding| {
+            let Some(matcher) = binding.get("match").and_then(Value::as_object) else {
+                return true;
+            };
+            let Some(channel) = matcher.get("channel").and_then(Value::as_str) else {
+                return true;
+            };
+            let Some(peer) = matcher.get("peer").and_then(Value::as_object) else {
+                return true;
+            };
+            let Some(existing_peer_id) = peer.get("id").and_then(Value::as_str) else {
+                return true;
+            };
+            !(channel == channel_type && existing_peer_id == peer_id)
+        })
+        .collect()
+}
+
+fn bindings_reference_agent(bindings: &[Value], agent_id: &str) -> bool {
+    bindings
+        .iter()
+        .any(|binding| binding.get("agentId").and_then(Value::as_str) == Some(agent_id))
+}
+
+fn rewrite_agent_bindings_for_delete(
+    bindings: Vec<Value>,
+    agent_id: &str,
+    rebind_to: Option<&str>,
+) -> Vec<Value> {
+    let Some(rebind_to) = rebind_to.map(str::trim).filter(|value| !value.is_empty()) else {
+        return bindings
+            .into_iter()
+            .filter(|binding| binding.get("agentId").and_then(Value::as_str) != Some(agent_id))
+            .collect();
+    };
+
+    bindings
+        .into_iter()
+        .map(|binding| {
+            if binding.get("agentId").and_then(Value::as_str) == Some(agent_id) {
+                let mut next = binding;
+                if let Some(object) = next.as_object_mut() {
+                    object.insert("agentId".into(), Value::String(rebind_to.to_string()));
+                }
+                next
+            } else {
+                binding
+            }
+        })
+        .collect()
 }
 
 async fn resolve_model_value_for_route(
@@ -1928,6 +2071,32 @@ async fn materialize_recipe_action_commands(
 
             Ok(vec![(format!("Create agent: {}", agent_id), command)])
         }
+        "delete_agent" => {
+            let agent_id = action_string(args.get("agentId"))
+                .ok_or_else(|| "delete_agent requires agentId".to_string())?;
+            let force = action_bool(args.get("force"));
+            let rebind_channels_to = action_string(args.get("rebindChannelsTo"));
+            let bindings = list_bindings_for_route(cache, pool, route).await?;
+            if !force
+                && rebind_channels_to.is_none()
+                && bindings_reference_agent(&bindings, &agent_id)
+            {
+                return Err(format!(
+                    "Agent '{}' is still referenced by at least one channel binding",
+                    agent_id
+                ));
+            }
+            recipe_action_internal_command(
+                format!("Delete agent: {}", agent_id),
+                INTERNAL_DELETE_AGENT_COMMAND,
+                json!({
+                    "agentId": agent_id,
+                    "force": force,
+                    "rebindChannelsTo": rebind_channels_to,
+                }),
+            )
+            .map(|command| vec![command])
+        }
         "setup_identity" => {
             let agent_id = action_string(args.get("agentId"))
                 .ok_or_else(|| "setup_identity requires agentId".to_string())?;
@@ -1945,6 +2114,24 @@ async fn materialize_recipe_action_commands(
                 emoji.as_deref(),
                 persona.as_deref(),
             )])
+        }
+        "set_agent_persona" => {
+            let agent_id = action_string(args.get("agentId"))
+                .ok_or_else(|| "set_agent_persona requires agentId".to_string())?;
+            let persona = action_string(args.get("persona"))
+                .ok_or_else(|| "set_agent_persona requires persona".to_string())?;
+            Ok(vec![recipe_action_agent_persona_command(
+                &agent_id,
+                Some(&persona),
+                false,
+            )?])
+        }
+        "clear_agent_persona" => {
+            let agent_id = action_string(args.get("agentId"))
+                .ok_or_else(|| "clear_agent_persona requires agentId".to_string())?;
+            Ok(vec![recipe_action_agent_persona_command(
+                &agent_id, None, true,
+            )?])
         }
         "bind_channel" => {
             let channel_type = action_string(args.get("channelType"))
@@ -1970,6 +2157,81 @@ async fn materialize_recipe_action_commands(
                 ],
             )])
         }
+        "unbind_channel" => {
+            let channel_type = action_string(args.get("channelType"))
+                .ok_or_else(|| "unbind_channel requires channelType".to_string())?;
+            let peer_id = action_string(args.get("peerId"))
+                .ok_or_else(|| "unbind_channel requires peerId".to_string())?;
+            let bindings = list_bindings_for_route(cache, pool, route).await?;
+            let payload = remove_binding_entries(bindings, &channel_type, &peer_id);
+            let payload_json =
+                serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+
+            Ok(vec![(
+                format!("Remove binding for {}:{}", channel_type, peer_id),
+                vec![
+                    "openclaw".into(),
+                    "config".into(),
+                    "set".into(),
+                    "bindings".into(),
+                    payload_json,
+                    "--json".into(),
+                ],
+            )])
+        }
+        "set_agent_model" => {
+            let agent_id = action_string(args.get("agentId"))
+                .ok_or_else(|| "set_agent_model requires agentId".to_string())?;
+            let profile_id = action_string(args.get("profileId"))
+                .ok_or_else(|| "set_agent_model requires profileId".to_string())?;
+            let ensure_profile = args
+                .get("ensureProfile")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let model_value = resolve_model_value_for_route(pool, route, Some(&profile_id)).await?;
+            let mut commands = Vec::new();
+            if ensure_profile {
+                commands.push(recipe_action_internal_command(
+                    format!("Prepare model access: {}", profile_id),
+                    INTERNAL_ENSURE_MODEL_PROFILE_COMMAND,
+                    json!({ "profileId": profile_id }),
+                )?);
+            }
+            commands.push(recipe_action_internal_command(
+                format!("Update model: {}", agent_id),
+                INTERNAL_SET_AGENT_MODEL_COMMAND,
+                json!({
+                    "agentId": agent_id,
+                    "modelValue": model_value,
+                }),
+            )?);
+            Ok(commands)
+        }
+        "set_channel_persona" => {
+            let channel_type = action_string(args.get("channelType"))
+                .ok_or_else(|| "set_channel_persona requires channelType".to_string())?;
+            let peer_id = action_string(args.get("peerId"))
+                .ok_or_else(|| "set_channel_persona requires peerId".to_string())?;
+            let persona = action_string(args.get("persona"))
+                .ok_or_else(|| "set_channel_persona requires persona".to_string())?;
+            let guild_id = action_string(args.get("guildId"));
+            let patch =
+                channel_persona_patch(&channel_type, guild_id.as_deref(), &peer_id, &persona)?;
+            let mut commands = Vec::new();
+            append_config_patch_commands(&patch, "", &mut commands)?;
+            Ok(commands)
+        }
+        "clear_channel_persona" => {
+            let channel_type = action_string(args.get("channelType"))
+                .ok_or_else(|| "clear_channel_persona requires channelType".to_string())?;
+            let peer_id = action_string(args.get("peerId"))
+                .ok_or_else(|| "clear_channel_persona requires peerId".to_string())?;
+            let guild_id = action_string(args.get("guildId"));
+            let patch = channel_persona_patch(&channel_type, guild_id.as_deref(), &peer_id, "")?;
+            let mut commands = Vec::new();
+            append_config_patch_commands(&patch, "", &mut commands)?;
+            Ok(commands)
+        }
         "config_patch" => {
             let patch = if let Some(patch) = args.get("patch") {
                 patch.clone()
@@ -1982,6 +2244,153 @@ async fn materialize_recipe_action_commands(
             let mut commands = Vec::new();
             append_config_patch_commands(&patch, "", &mut commands)?;
             Ok(commands)
+        }
+        "upsert_markdown_document" => Ok(vec![recipe_action_markdown_document_command(
+            action
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Update document"),
+            INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND,
+            args,
+        )?]),
+        "delete_markdown_document" => Ok(vec![recipe_action_markdown_document_command(
+            action
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Delete document"),
+            INTERNAL_MARKDOWN_DOCUMENT_DELETE_COMMAND,
+            args,
+        )?]),
+        "ensure_model_profile" => {
+            let profile_id = action_string(args.get("profileId"))
+                .ok_or_else(|| "ensure_model_profile requires profileId".to_string())?;
+            Ok(vec![recipe_action_internal_command(
+                format!("Prepare model access: {}", profile_id),
+                INTERNAL_ENSURE_MODEL_PROFILE_COMMAND,
+                json!({ "profileId": profile_id }),
+            )?])
+        }
+        "delete_model_profile" => {
+            let profile_id = action_string(args.get("profileId"))
+                .ok_or_else(|| "delete_model_profile requires profileId".to_string())?;
+            let delete_auth_ref = action_bool(args.get("deleteAuthRef"));
+            let profiles = match route.runner.as_str() {
+                "remote_ssh" => {
+                    let host_id = route
+                        .host_id
+                        .clone()
+                        .ok_or_else(|| "remote execution target missing hostId".to_string())?;
+                    remote_list_model_profiles_with_pool(pool, host_id).await?
+                }
+                _ => {
+                    let paths = resolve_paths();
+                    load_model_profiles(&paths)
+                }
+            };
+            let profile = profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+                .ok_or_else(|| format!("Model profile '{}' was not found", profile_id))?;
+            let cfg = match route.runner.as_str() {
+                "remote_ssh" => {
+                    let host_id = route
+                        .host_id
+                        .clone()
+                        .ok_or_else(|| "remote execution target missing hostId".to_string())?;
+                    remote_read_openclaw_config_text_and_json(pool, &host_id)
+                        .await?
+                        .2
+                }
+                _ => {
+                    let paths = resolve_paths();
+                    read_openclaw_config(&paths)?
+                }
+            };
+            let bindings = collect_model_bindings(&cfg, &profiles);
+            if bindings
+                .iter()
+                .any(|binding| binding.model_profile_id.as_deref() == Some(profile_id.as_str()))
+            {
+                return Err(format!(
+                    "Model profile '{}' is still referenced by at least one model binding",
+                    profile_id
+                ));
+            }
+            Ok(vec![recipe_action_internal_command(
+                format!("Remove model access: {}", profile_id),
+                INTERNAL_DELETE_MODEL_PROFILE_COMMAND,
+                json!({
+                    "profileId": profile_id,
+                    "deleteAuthRef": delete_auth_ref,
+                    "authRef": auth_ref_for_runtime_profile(profile),
+                }),
+            )?])
+        }
+        "ensure_provider_auth" => {
+            let provider = action_string(args.get("provider"))
+                .ok_or_else(|| "ensure_provider_auth requires provider".to_string())?;
+            let auth_ref = action_string(args.get("authRef"))
+                .unwrap_or_else(|| format!("{}:default", provider.trim().to_ascii_lowercase()));
+            Ok(vec![recipe_action_internal_command(
+                format!("Prepare provider auth: {}", provider),
+                INTERNAL_ENSURE_PROVIDER_AUTH_COMMAND,
+                json!({
+                    "provider": provider,
+                    "authRef": auth_ref,
+                }),
+            )?])
+        }
+        "delete_provider_auth" => {
+            let auth_ref = action_string(args.get("authRef"))
+                .ok_or_else(|| "delete_provider_auth requires authRef".to_string())?;
+            let force = action_bool(args.get("force"));
+            let profiles = match route.runner.as_str() {
+                "remote_ssh" => {
+                    let host_id = route
+                        .host_id
+                        .clone()
+                        .ok_or_else(|| "remote execution target missing hostId".to_string())?;
+                    remote_list_model_profiles_with_pool(pool, host_id).await?
+                }
+                _ => {
+                    let paths = resolve_paths();
+                    load_model_profiles(&paths)
+                }
+            };
+            let cfg = match route.runner.as_str() {
+                "remote_ssh" => {
+                    let host_id = route
+                        .host_id
+                        .clone()
+                        .ok_or_else(|| "remote execution target missing hostId".to_string())?;
+                    remote_read_openclaw_config_text_and_json(pool, &host_id)
+                        .await?
+                        .2
+                }
+                _ => {
+                    let paths = resolve_paths();
+                    read_openclaw_config(&paths)?
+                }
+            };
+            let bindings = collect_model_bindings(&cfg, &profiles);
+            if !force && auth_ref_is_in_use_by_bindings(&profiles, &bindings, &auth_ref) {
+                return Err(format!(
+                    "Provider auth '{}' is still referenced by at least one model binding",
+                    auth_ref
+                ));
+            }
+            Ok(vec![recipe_action_internal_command(
+                format!("Remove provider auth: {}", auth_ref),
+                INTERNAL_DELETE_PROVIDER_AUTH_COMMAND,
+                json!({
+                    "authRef": auth_ref,
+                    "force": force,
+                }),
+            )?])
         }
         other => Err(format!("unsupported recipe action '{}'", other)),
     }
@@ -2002,8 +2411,13 @@ async fn materialize_recipe_commands(
 
 #[cfg(test)]
 mod recipe_action_materializer_tests {
-    use super::{recipe_action_setup_identity_command, INTERNAL_SETUP_IDENTITY_COMMAND};
-    use serde_json::Value;
+    use super::{
+        recipe_action_agent_persona_command, recipe_action_markdown_document_command,
+        recipe_action_setup_identity_command, remove_binding_entries,
+        INTERNAL_AGENT_PERSONA_COMMAND, INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND,
+        INTERNAL_SETUP_IDENTITY_COMMAND,
+    };
+    use serde_json::{json, Value};
 
     #[test]
     fn setup_identity_materializes_to_internal_command() {
@@ -2037,6 +2451,77 @@ mod recipe_action_materializer_tests {
             payload.get("persona").and_then(Value::as_str),
             Some("New persona")
         );
+    }
+
+    #[test]
+    fn set_agent_persona_materializes_to_internal_command() {
+        let (label, command) =
+            recipe_action_agent_persona_command("lobster", Some("Stay calm."), false)
+                .expect("agent persona command");
+
+        assert_eq!(label, "Update persona: lobster");
+        assert_eq!(command[0], INTERNAL_AGENT_PERSONA_COMMAND);
+        let payload: Value = serde_json::from_str(&command[1]).expect("agent persona payload");
+        assert_eq!(
+            payload.get("agentId").and_then(Value::as_str),
+            Some("lobster")
+        );
+        assert_eq!(
+            payload.get("persona").and_then(Value::as_str),
+            Some("Stay calm.")
+        );
+    }
+
+    #[test]
+    fn markdown_document_write_materializes_to_internal_command() {
+        let args = serde_json::from_value(json!({
+            "target": { "scope": "agent", "agentId": "lobster", "path": "PLAYBOOK.md" },
+            "mode": "replace",
+            "content": "# Playbook\n"
+        }))
+        .expect("markdown args");
+
+        let (label, command) = recipe_action_markdown_document_command(
+            "Write playbook",
+            INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND,
+            &args,
+        )
+        .expect("markdown command");
+
+        assert_eq!(label, "Write playbook");
+        assert_eq!(command[0], INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND);
+        let payload: Value = serde_json::from_str(&command[1]).expect("markdown payload");
+        assert_eq!(
+            payload.pointer("/target/agentId").and_then(Value::as_str),
+            Some("lobster")
+        );
+    }
+
+    #[test]
+    fn remove_binding_entries_drops_matching_channel_binding() {
+        let next = remove_binding_entries(
+            vec![
+                json!({
+                    "agentId": "lobster",
+                    "match": {
+                        "channel": "discord",
+                        "peer": { "kind": "channel", "id": "channel-1" }
+                    }
+                }),
+                json!({
+                    "agentId": "ops",
+                    "match": {
+                        "channel": "discord",
+                        "peer": { "kind": "channel", "id": "channel-2" }
+                    }
+                }),
+            ],
+            "discord",
+            "channel-1",
+        );
+
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].get("agentId").and_then(Value::as_str), Some("ops"));
     }
 }
 
@@ -7187,6 +7672,502 @@ fn sync_main_auth_for_config(
 fn sync_main_auth_for_active_config(paths: &crate::models::OpenClawPaths) -> Result<(), String> {
     let cfg = read_openclaw_config(paths)?;
     sync_main_auth_for_config(paths, &cfg)
+}
+
+fn local_auth_store_path(paths: &crate::models::OpenClawPaths) -> PathBuf {
+    paths
+        .base_dir
+        .join("agents")
+        .join("main")
+        .join("agent")
+        .join("auth-profiles.json")
+}
+
+fn parse_auth_store_json(raw: &str) -> Result<Value, String> {
+    serde_json::from_str(raw).map_err(|error| format!("Failed to parse auth store: {error}"))
+}
+
+fn read_local_auth_store(paths: &crate::models::OpenClawPaths) -> Result<Value, String> {
+    let path = local_auth_store_path(paths);
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|_| r#"{"version":1,"profiles":{}}"#.into());
+    parse_auth_store_json(&raw)
+}
+
+fn write_local_auth_store(
+    paths: &crate::models::OpenClawPaths,
+    auth_json: &Value,
+) -> Result<(), String> {
+    let path = local_auth_store_path(paths);
+    let serialized = serde_json::to_string_pretty(auth_json).map_err(|error| error.to_string())?;
+    write_text(&path, &serialized)
+}
+
+async fn remote_auth_store_path(pool: &SshConnectionPool, host_id: &str) -> Result<String, String> {
+    let roots = resolve_remote_openclaw_roots(pool, host_id).await?;
+    let root = roots
+        .first()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Failed to resolve remote openclaw root".to_string())?;
+    Ok(format!(
+        "{}/agents/main/agent/auth-profiles.json",
+        root.trim_end_matches('/')
+    ))
+}
+
+async fn read_remote_auth_store(
+    pool: &SshConnectionPool,
+    host_id: &str,
+) -> Result<(String, Value), String> {
+    let path = remote_auth_store_path(pool, host_id).await?;
+    let raw = match pool.sftp_read(host_id, &path).await {
+        Ok(content) => content,
+        Err(error) if error.contains("No such file") || error.contains("not found") => {
+            r#"{"version":1,"profiles":{}}"#.to_string()
+        }
+        Err(error) => return Err(error),
+    };
+    Ok((path, parse_auth_store_json(&raw)?))
+}
+
+async fn write_remote_auth_store(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    path: &str,
+    auth_json: &Value,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string_pretty(auth_json).map_err(|error| error.to_string())?;
+    if let Some((dir, _)) = path.rsplit_once('/') {
+        let _ = pool
+            .exec(host_id, &format!("mkdir -p {}", shell_escape(dir)))
+            .await;
+    }
+    pool.sftp_write(host_id, path, &serialized).await
+}
+
+fn upsert_auth_store_entry_internal(
+    root: &mut Value,
+    auth_ref: &str,
+    provider: &str,
+    credential: &InternalProviderCredential,
+) -> Result<bool, String> {
+    if provider.trim().is_empty() {
+        return Err("provider is required".into());
+    }
+    if !root.is_object() {
+        *root = json!({ "version": 1 });
+    }
+    let root_obj = root
+        .as_object_mut()
+        .ok_or_else(|| "failed to prepare auth store".to_string())?;
+    if !root_obj.contains_key("version") {
+        root_obj.insert("version".into(), Value::from(1_u64));
+    }
+    let profiles_value = root_obj
+        .entry("profiles".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !profiles_value.is_object() {
+        *profiles_value = Value::Object(serde_json::Map::new());
+    }
+    let profiles = profiles_value
+        .as_object_mut()
+        .ok_or_else(|| "failed to prepare auth profiles".to_string())?;
+    let payload = match credential.kind {
+        InternalAuthKind::Authorization => json!({
+            "type": "token",
+            "provider": provider,
+            "token": credential.secret,
+        }),
+        InternalAuthKind::ApiKey => json!({
+            "type": "api_key",
+            "provider": provider,
+            "key": credential.secret,
+        }),
+    };
+    let replace = profiles
+        .get(auth_ref)
+        .map(|existing| existing != &payload)
+        .unwrap_or(true);
+    if replace {
+        profiles.insert(auth_ref.to_string(), payload);
+    }
+
+    let last_good_value = root_obj
+        .entry("lastGood".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !last_good_value.is_object() {
+        *last_good_value = Value::Object(serde_json::Map::new());
+    }
+    let last_good = last_good_value
+        .as_object_mut()
+        .ok_or_else(|| "failed to prepare lastGood auth mapping".to_string())?;
+    let provider_key = provider.trim().to_ascii_lowercase();
+    let last_good_changed = last_good
+        .get(&provider_key)
+        .and_then(Value::as_str)
+        .map(|value| value != auth_ref)
+        .unwrap_or(true);
+    if last_good_changed {
+        last_good.insert(provider_key, Value::String(auth_ref.to_string()));
+    }
+    Ok(replace || last_good_changed)
+}
+
+fn remove_auth_store_entry_internal(root: &mut Value, auth_ref: &str) -> bool {
+    let mut changed = false;
+    if let Some(profiles) = root.get_mut("profiles").and_then(Value::as_object_mut) {
+        changed |= profiles.remove(auth_ref).is_some();
+    }
+    if let Some(last_good) = root.get_mut("lastGood").and_then(Value::as_object_mut) {
+        let providers_to_clear = last_good
+            .iter()
+            .filter_map(|(provider, value)| {
+                (value.as_str() == Some(auth_ref)).then_some(provider.clone())
+            })
+            .collect::<Vec<_>>();
+        for provider in providers_to_clear {
+            last_good.remove(&provider);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn auth_ref_for_runtime_profile(profile: &ModelProfile) -> String {
+    profile_target_auth_ref(profile)
+}
+
+fn auth_ref_is_in_use_by_bindings(
+    profiles: &[ModelProfile],
+    bindings: &[ModelBinding],
+    auth_ref: &str,
+) -> bool {
+    bindings.iter().any(|binding| {
+        let Some(profile_id) = binding.model_profile_id.as_deref() else {
+            return false;
+        };
+        profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| auth_ref_for_runtime_profile(profile) == auth_ref)
+            .unwrap_or(false)
+    })
+}
+
+pub(crate) fn set_local_agent_model_for_recipe(
+    paths: &crate::models::OpenClawPaths,
+    agent_id: &str,
+    model_value: Option<String>,
+) -> Result<(), String> {
+    let mut cfg = read_openclaw_config(paths)?;
+    let current = serde_json::to_string_pretty(&cfg).map_err(|error| error.to_string())?;
+    set_agent_model_value(&mut cfg, agent_id, model_value)?;
+    write_config_with_snapshot(paths, &current, &cfg, "recipe-set-agent-model")
+}
+
+pub(crate) async fn set_remote_agent_model_for_recipe(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    agent_id: &str,
+    model_value: Option<String>,
+) -> Result<(), String> {
+    let (config_path, current_text, mut cfg) =
+        remote_read_openclaw_config_text_and_json(pool, host_id).await?;
+    set_agent_model_value(&mut cfg, agent_id, model_value)?;
+    remote_write_config_with_snapshot(
+        pool,
+        host_id,
+        &config_path,
+        &current_text,
+        &cfg,
+        "recipe-set-agent-model",
+    )
+    .await
+}
+
+pub(crate) fn ensure_local_provider_auth_for_recipe(
+    paths: &crate::models::OpenClawPaths,
+    provider: &str,
+    auth_ref: Option<&str>,
+) -> Result<(), String> {
+    let provider_key = provider.trim().to_ascii_lowercase();
+    if provider_key.is_empty() {
+        return Err("provider is required".into());
+    }
+    let credentials = collect_provider_credentials_from_paths(paths);
+    let credential = credentials.get(&provider_key).ok_or_else(|| {
+        format!(
+            "No local credential is available for provider '{}'",
+            provider_key
+        )
+    })?;
+    let auth_ref = auth_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{provider_key}:default"));
+    let mut auth_json = read_local_auth_store(paths)?;
+    if upsert_auth_store_entry_internal(&mut auth_json, &auth_ref, &provider_key, credential)? {
+        write_local_auth_store(paths, &auth_json)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn ensure_remote_provider_auth_for_recipe(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    provider: &str,
+    auth_ref: Option<&str>,
+) -> Result<(), String> {
+    let provider_key = provider.trim().to_ascii_lowercase();
+    if provider_key.is_empty() {
+        return Err("provider is required".into());
+    }
+    let paths = resolve_paths();
+    let credentials = collect_provider_credentials_from_paths(&paths);
+    let credential = credentials.get(&provider_key).ok_or_else(|| {
+        format!(
+            "No local credential is available for provider '{}'",
+            provider_key
+        )
+    })?;
+    let auth_ref = auth_ref
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{provider_key}:default"));
+    let (auth_path, mut auth_json) = read_remote_auth_store(pool, host_id).await?;
+    if upsert_auth_store_entry_internal(&mut auth_json, &auth_ref, &provider_key, credential)? {
+        write_remote_auth_store(pool, host_id, &auth_path, &auth_json).await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_local_provider_auth_for_recipe(
+    paths: &crate::models::OpenClawPaths,
+    auth_ref: &str,
+    force: bool,
+) -> Result<(), String> {
+    let auth_ref = auth_ref.trim();
+    if auth_ref.is_empty() {
+        return Err("authRef is required".into());
+    }
+    let cfg = read_openclaw_config(paths)?;
+    let profiles = load_model_profiles(paths);
+    let bindings = collect_model_bindings(&cfg, &profiles);
+    if !force && auth_ref_is_in_use_by_bindings(&profiles, &bindings, auth_ref) {
+        return Err(format!(
+            "Provider auth '{}' is still referenced by at least one model binding",
+            auth_ref
+        ));
+    }
+    let mut auth_json = read_local_auth_store(paths)?;
+    if remove_auth_store_entry_internal(&mut auth_json, auth_ref) {
+        write_local_auth_store(paths, &auth_json)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn delete_remote_provider_auth_for_recipe(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    auth_ref: &str,
+    force: bool,
+) -> Result<(), String> {
+    let auth_ref = auth_ref.trim();
+    if auth_ref.is_empty() {
+        return Err("authRef is required".into());
+    }
+    let (_, _, cfg) = remote_read_openclaw_config_text_and_json(pool, host_id).await?;
+    let profiles = remote_list_model_profiles_with_pool(pool, host_id.to_string()).await?;
+    let bindings = collect_model_bindings(&cfg, &profiles);
+    if !force && auth_ref_is_in_use_by_bindings(&profiles, &bindings, auth_ref) {
+        return Err(format!(
+            "Provider auth '{}' is still referenced by at least one model binding",
+            auth_ref
+        ));
+    }
+    let (auth_path, mut auth_json) = read_remote_auth_store(pool, host_id).await?;
+    if remove_auth_store_entry_internal(&mut auth_json, auth_ref) {
+        write_remote_auth_store(pool, host_id, &auth_path, &auth_json).await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_local_model_profile_for_recipe(
+    paths: &crate::models::OpenClawPaths,
+    profile_id: &str,
+    delete_auth_ref: bool,
+) -> Result<(), String> {
+    let cfg = read_openclaw_config(paths)?;
+    let profiles = load_model_profiles(paths);
+    let profile = profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .cloned()
+        .ok_or_else(|| format!("Model profile '{}' was not found", profile_id))?;
+    let bindings = collect_model_bindings(&cfg, &profiles);
+    if bindings
+        .iter()
+        .any(|binding| binding.model_profile_id.as_deref() == Some(profile_id))
+    {
+        return Err(format!(
+            "Model profile '{}' is still referenced by at least one model binding",
+            profile_id
+        ));
+    }
+    let mut next = cfg.clone();
+    if let Some(models) = next.get_mut("models").and_then(Value::as_object_mut) {
+        models.remove(&profile_to_model_value(&profile));
+    }
+    let current = serde_json::to_string_pretty(&cfg).map_err(|error| error.to_string())?;
+    write_config_with_snapshot(paths, &current, &next, "recipe-delete-model-profile")?;
+    if delete_auth_ref {
+        delete_local_provider_auth_for_recipe(
+            paths,
+            &auth_ref_for_runtime_profile(&profile),
+            false,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn delete_remote_model_profile_for_recipe(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    profile_id: &str,
+    delete_auth_ref: bool,
+) -> Result<(), String> {
+    let (config_path, current_text, cfg) =
+        remote_read_openclaw_config_text_and_json(pool, host_id).await?;
+    let profiles = remote_list_model_profiles_with_pool(pool, host_id.to_string()).await?;
+    let profile = profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .cloned()
+        .ok_or_else(|| format!("Model profile '{}' was not found", profile_id))?;
+    let bindings = collect_model_bindings(&cfg, &profiles);
+    if bindings
+        .iter()
+        .any(|binding| binding.model_profile_id.as_deref() == Some(profile_id))
+    {
+        return Err(format!(
+            "Model profile '{}' is still referenced by at least one model binding",
+            profile_id
+        ));
+    }
+    let mut next = cfg.clone();
+    if let Some(models) = next.get_mut("models").and_then(Value::as_object_mut) {
+        models.remove(&profile_to_model_value(&profile));
+    }
+    remote_write_config_with_snapshot(
+        pool,
+        host_id,
+        &config_path,
+        &current_text,
+        &next,
+        "recipe-delete-model-profile",
+    )
+    .await?;
+    if delete_auth_ref {
+        delete_remote_provider_auth_for_recipe(
+            pool,
+            host_id,
+            &auth_ref_for_runtime_profile(&profile),
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_local_agent_for_recipe(
+    paths: &crate::models::OpenClawPaths,
+    agent_id: &str,
+    force: bool,
+    rebind_channels_to: Option<&str>,
+) -> Result<(), String> {
+    if agent_id.trim().is_empty() {
+        return Err("agentId is required".into());
+    }
+    let mut cfg = read_openclaw_config(paths)?;
+    let current = serde_json::to_string_pretty(&cfg).map_err(|error| error.to_string())?;
+    let bindings = cfg
+        .get("bindings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !force && rebind_channels_to.is_none() && bindings_reference_agent(&bindings, agent_id) {
+        return Err(format!(
+            "Agent '{}' is still referenced by at least one channel binding",
+            agent_id
+        ));
+    }
+    if let Some(list) = cfg
+        .pointer_mut("/agents/list")
+        .and_then(Value::as_array_mut)
+    {
+        let before = list.len();
+        list.retain(|agent| agent.get("id").and_then(Value::as_str) != Some(agent_id));
+        if before == list.len() {
+            return Err(format!("Agent '{}' not found", agent_id));
+        }
+    } else {
+        return Err("agents.list not found".into());
+    }
+    let next_bindings = rewrite_agent_bindings_for_delete(bindings, agent_id, rebind_channels_to);
+    set_nested_value(&mut cfg, "bindings", Some(Value::Array(next_bindings)))?;
+    write_config_with_snapshot(paths, &current, &cfg, "recipe-delete-agent")
+}
+
+pub(crate) async fn delete_remote_agent_for_recipe(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    agent_id: &str,
+    force: bool,
+    rebind_channels_to: Option<&str>,
+) -> Result<(), String> {
+    if agent_id.trim().is_empty() {
+        return Err("agentId is required".into());
+    }
+    let (config_path, current_text, mut cfg) =
+        remote_read_openclaw_config_text_and_json(pool, host_id).await?;
+    let bindings = cfg
+        .get("bindings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !force && rebind_channels_to.is_none() && bindings_reference_agent(&bindings, agent_id) {
+        return Err(format!(
+            "Agent '{}' is still referenced by at least one channel binding",
+            agent_id
+        ));
+    }
+    if let Some(list) = cfg
+        .pointer_mut("/agents/list")
+        .and_then(Value::as_array_mut)
+    {
+        let before = list.len();
+        list.retain(|agent| agent.get("id").and_then(Value::as_str) != Some(agent_id));
+        if before == list.len() {
+            return Err(format!("Agent '{}' not found", agent_id));
+        }
+    } else {
+        return Err("agents.list not found".into());
+    }
+    let next_bindings = rewrite_agent_bindings_for_delete(bindings, agent_id, rebind_channels_to);
+    set_nested_value(&mut cfg, "bindings", Some(Value::Array(next_bindings)))?;
+    remote_write_config_with_snapshot(
+        pool,
+        host_id,
+        &config_path,
+        &current_text,
+        &cfg,
+        "recipe-delete-agent",
+    )
+    .await
 }
 
 fn write_config_with_snapshot(

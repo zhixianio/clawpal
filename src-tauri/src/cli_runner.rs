@@ -1587,6 +1587,155 @@ fn apply_internal_local_command(
             write_local_systemd_dropin(target, name, content)?;
             Ok(true)
         }
+        Some(crate::commands::INTERNAL_AGENT_PERSONA_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "agent persona command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let agent_id = payload
+                .get("agentId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "agent persona command missing agentId".to_string())?;
+            if payload.get("clear").and_then(serde_json::Value::as_bool) == Some(true) {
+                crate::agent_identity::clear_local_agent_persona(paths, agent_id)?;
+            } else {
+                let persona = payload
+                    .get("persona")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "agent persona command missing persona".to_string())?;
+                crate::agent_identity::set_local_agent_persona(paths, agent_id, persona)?;
+            }
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "markdown write command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            crate::markdown_document::write_local_markdown_document(paths, &payload)?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_MARKDOWN_DOCUMENT_DELETE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "markdown delete command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            crate::markdown_document::delete_local_markdown_document(paths, &payload)?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_SET_AGENT_MODEL_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "set agent model command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let agent_id = payload
+                .get("agentId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "set agent model command missing agentId".to_string())?;
+            let model_value = payload
+                .get("modelValue")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            crate::commands::set_local_agent_model_for_recipe(paths, agent_id, model_value)?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_ENSURE_MODEL_PROFILE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "ensure model profile command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let profile_id = payload
+                .get("profileId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ensure model profile command missing profileId".to_string())?;
+            crate::commands::profiles::ensure_local_model_profiles_internal(
+                paths,
+                &[profile_id.to_string()],
+            )?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_ENSURE_PROVIDER_AUTH_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "ensure provider auth command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let provider = payload
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ensure provider auth command missing provider".to_string())?;
+            let auth_ref = payload.get("authRef").and_then(serde_json::Value::as_str);
+            crate::commands::ensure_local_provider_auth_for_recipe(paths, provider, auth_ref)?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_DELETE_MODEL_PROFILE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "delete model profile command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let profile_id = payload
+                .get("profileId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delete model profile command missing profileId".to_string())?;
+            let delete_auth_ref = payload
+                .get("deleteAuthRef")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            crate::commands::delete_local_model_profile_for_recipe(
+                paths,
+                profile_id,
+                delete_auth_ref,
+            )?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_DELETE_PROVIDER_AUTH_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "delete provider auth command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let auth_ref = payload
+                .get("authRef")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delete provider auth command missing authRef".to_string())?;
+            let force = payload
+                .get("force")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            crate::commands::delete_local_provider_auth_for_recipe(paths, auth_ref, force)?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_DELETE_AGENT_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "delete agent command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let agent_id = payload
+                .get("agentId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delete agent command missing agentId".to_string())?;
+            let force = payload
+                .get("force")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let rebind_channels_to = payload
+                .get("rebindChannelsTo")
+                .and_then(serde_json::Value::as_str);
+            crate::commands::delete_local_agent_for_recipe(
+                paths,
+                agent_id,
+                force,
+                rebind_channels_to,
+            )?;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
@@ -1643,6 +1792,174 @@ async fn apply_internal_remote_command(
                 .map(String::as_str)
                 .ok_or_else(|| "systemd drop-in command missing content".to_string())?;
             write_remote_systemd_dropin(pool, host_id, target, name, content).await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_AGENT_PERSONA_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "agent persona command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let agent_id = payload
+                .get("agentId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "agent persona command missing agentId".to_string())?;
+            if payload.get("clear").and_then(serde_json::Value::as_bool) == Some(true) {
+                crate::agent_identity::clear_remote_agent_persona(pool, host_id, agent_id).await?;
+            } else {
+                let persona = payload
+                    .get("persona")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "agent persona command missing persona".to_string())?;
+                crate::agent_identity::set_remote_agent_persona(pool, host_id, agent_id, persona)
+                    .await?;
+            }
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "markdown write command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            crate::markdown_document::write_remote_markdown_document(pool, host_id, &payload)
+                .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_MARKDOWN_DOCUMENT_DELETE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "markdown delete command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            crate::markdown_document::delete_remote_markdown_document(pool, host_id, &payload)
+                .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_SET_AGENT_MODEL_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "set agent model command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let agent_id = payload
+                .get("agentId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "set agent model command missing agentId".to_string())?;
+            let model_value = payload
+                .get("modelValue")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            crate::commands::set_remote_agent_model_for_recipe(
+                pool,
+                host_id,
+                agent_id,
+                model_value,
+            )
+            .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_ENSURE_MODEL_PROFILE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "ensure model profile command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let profile_id = payload
+                .get("profileId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ensure model profile command missing profileId".to_string())?;
+            crate::commands::profiles::ensure_remote_model_profiles_internal(
+                pool,
+                host_id,
+                &[profile_id.to_string()],
+            )
+            .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_ENSURE_PROVIDER_AUTH_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "ensure provider auth command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let provider = payload
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "ensure provider auth command missing provider".to_string())?;
+            let auth_ref = payload.get("authRef").and_then(serde_json::Value::as_str);
+            crate::commands::ensure_remote_provider_auth_for_recipe(
+                pool, host_id, provider, auth_ref,
+            )
+            .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_DELETE_MODEL_PROFILE_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "delete model profile command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let profile_id = payload
+                .get("profileId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delete model profile command missing profileId".to_string())?;
+            let delete_auth_ref = payload
+                .get("deleteAuthRef")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            crate::commands::delete_remote_model_profile_for_recipe(
+                pool,
+                host_id,
+                profile_id,
+                delete_auth_ref,
+            )
+            .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_DELETE_PROVIDER_AUTH_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "delete provider auth command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let auth_ref = payload
+                .get("authRef")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delete provider auth command missing authRef".to_string())?;
+            let force = payload
+                .get("force")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            crate::commands::delete_remote_provider_auth_for_recipe(pool, host_id, auth_ref, force)
+                .await?;
+            Ok(true)
+        }
+        Some(crate::commands::INTERNAL_DELETE_AGENT_COMMAND) => {
+            let payload = command
+                .get(1)
+                .ok_or_else(|| "delete agent command missing payload".to_string())?;
+            let payload: serde_json::Value =
+                serde_json::from_str(payload).map_err(|error| error.to_string())?;
+            let agent_id = payload
+                .get("agentId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delete agent command missing agentId".to_string())?;
+            let force = payload
+                .get("force")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let rebind_channels_to = payload
+                .get("rebindChannelsTo")
+                .and_then(serde_json::Value::as_str);
+            crate::commands::delete_remote_agent_for_recipe(
+                pool,
+                host_id,
+                agent_id,
+                force,
+                rebind_channels_to,
+            )
+            .await?;
             Ok(true)
         }
         _ => Ok(false),

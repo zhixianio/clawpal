@@ -4,8 +4,17 @@ use std::collections::BTreeSet;
 
 use crate::recipe_bundle::{parse_structured_document, validate_execution_kind, RecipeBundle};
 
-const SUPPORTED_RESOURCE_CLAIM_KINDS: &[&str] =
-    &["path", "file", "service", "channel", "agent", "identity"];
+const SUPPORTED_RESOURCE_CLAIM_KINDS: &[&str] = &[
+    "path",
+    "file",
+    "service",
+    "channel",
+    "agent",
+    "identity",
+    "document",
+    "modelProfile",
+    "authProfile",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]

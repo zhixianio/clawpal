@@ -909,3 +909,166 @@ fn structured_recipe_template_resolves_channel_persona_preset_into_patch() {
         Some("You are a crisp channel ops assistant.")
     );
 }
+
+#[test]
+fn structured_recipe_compilation_infers_capabilities_and_claims_for_new_actions() {
+    let recipe = load_recipes_from_source_text(
+        r##"{
+          "id": "runner-action-suite",
+          "name": "Runner Action Suite",
+          "description": "Exercise the extended action surface",
+          "version": "1.0.0",
+          "tags": ["runner"],
+          "difficulty": "easy",
+          "params": [
+            { "id": "agent_id", "label": "Agent", "type": "agent", "required": true },
+            { "id": "channel_id", "label": "Channel", "type": "discord_channel", "required": true },
+            { "id": "profile_id", "label": "Model profile", "type": "model_profile", "required": true }
+          ],
+          "steps": [
+            {
+              "action": "ensure_model_profile",
+              "label": "Prepare model access",
+              "args": { "profileId": "{{profile_id}}" }
+            },
+            {
+              "action": "set_agent_persona",
+              "label": "Set agent persona",
+              "args": { "agentId": "{{agent_id}}", "persona": "You are direct." }
+            },
+            {
+              "action": "set_channel_persona",
+              "label": "Set channel persona",
+              "args": { "channelType": "discord", "peerId": "{{channel_id}}", "persona": "Stay crisp." }
+            },
+            {
+              "action": "upsert_markdown_document",
+              "label": "Write agent notes",
+              "args": {
+                "target": { "scope": "agent", "agentId": "{{agent_id}}", "path": "PLAYBOOK.md" },
+                "mode": "replace",
+                "content": "# Playbook\n"
+              }
+            },
+            {
+              "action": "ensure_provider_auth",
+              "label": "Ensure provider auth",
+              "args": { "provider": "openai", "authRef": "openai:default" }
+            }
+          ],
+          "bundle": {
+            "apiVersion": "strategy.platform/v1",
+            "kind": "StrategyBundle",
+            "metadata": {},
+            "compatibility": {},
+            "inputs": [],
+            "capabilities": {
+              "allowed": [
+                "model.manage",
+                "agent.identity.write",
+                "config.write",
+                "document.write",
+                "auth.manage",
+                "secret.sync"
+              ]
+            },
+            "resources": {
+              "supportedKinds": ["agent", "channel", "document", "modelProfile", "authProfile"]
+            },
+            "execution": { "supportedKinds": ["job"] },
+            "runner": {},
+            "outputs": []
+          },
+          "executionSpecTemplate": {
+            "apiVersion": "strategy.platform/v1",
+            "kind": "ExecutionSpec",
+            "metadata": { "name": "runner-action-suite" },
+            "source": {},
+            "target": {},
+            "execution": { "kind": "job" },
+            "capabilities": { "usedCapabilities": [] },
+            "resources": { "claims": [] },
+            "secrets": { "bindings": [] },
+            "desiredState": {},
+            "actions": [
+              { "kind": "ensure_model_profile", "name": "Prepare model access", "args": { "profileId": "{{profile_id}}" } },
+              { "kind": "set_agent_persona", "name": "Set agent persona", "args": { "agentId": "{{agent_id}}", "persona": "You are direct." } },
+              { "kind": "set_channel_persona", "name": "Set channel persona", "args": { "channelType": "discord", "peerId": "{{channel_id}}", "persona": "Stay crisp." } },
+              {
+                "kind": "upsert_markdown_document",
+                "name": "Write agent notes",
+                "args": {
+                  "target": { "scope": "agent", "agentId": "{{agent_id}}", "path": "PLAYBOOK.md" },
+                  "mode": "replace",
+                  "content": "# Playbook\n"
+                }
+              },
+              { "kind": "ensure_provider_auth", "name": "Ensure provider auth", "args": { "provider": "openai", "authRef": "openai:default" } }
+            ],
+            "outputs": []
+          }
+        }"##,
+    )
+    .expect("load recipe")
+    .into_iter()
+    .next()
+    .expect("recipe");
+
+    let mut params = Map::new();
+    params.insert("agent_id".into(), Value::String("main".into()));
+    params.insert("channel_id".into(), Value::String("channel-1".into()));
+    params.insert("profile_id".into(), Value::String("remote-openai".into()));
+
+    let spec = compile_recipe_to_spec(&recipe, &params).expect("compile spec");
+
+    assert!(spec
+        .capabilities
+        .used_capabilities
+        .iter()
+        .any(|value| value == "model.manage"));
+    assert!(spec
+        .capabilities
+        .used_capabilities
+        .iter()
+        .any(|value| value == "agent.identity.write"));
+    assert!(spec
+        .capabilities
+        .used_capabilities
+        .iter()
+        .any(|value| value == "config.write"));
+    assert!(spec
+        .capabilities
+        .used_capabilities
+        .iter()
+        .any(|value| value == "document.write"));
+    assert!(spec
+        .capabilities
+        .used_capabilities
+        .iter()
+        .any(|value| value == "auth.manage"));
+    assert!(spec
+        .capabilities
+        .used_capabilities
+        .iter()
+        .any(|value| value == "secret.sync"));
+
+    assert!(spec
+        .resources
+        .claims
+        .iter()
+        .any(|claim| { claim.kind == "agent" && claim.id.as_deref() == Some("main") }));
+    assert!(spec
+        .resources
+        .claims
+        .iter()
+        .any(|claim| { claim.kind == "channel" && claim.id.as_deref() == Some("channel-1") }));
+    assert!(spec.resources.claims.iter().any(|claim| {
+        claim.kind == "document" && claim.path.as_deref() == Some("agent:main/PLAYBOOK.md")
+    }));
+    assert!(spec.resources.claims.iter().any(|claim| {
+        claim.kind == "modelProfile" && claim.id.as_deref() == Some("remote-openai")
+    }));
+    assert!(spec.resources.claims.iter().any(|claim| {
+        claim.kind == "authProfile" && claim.id.as_deref() == Some("openai:default")
+    }));
+}

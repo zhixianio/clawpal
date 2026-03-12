@@ -14,6 +14,13 @@ struct IdentityDocument {
     persona: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersonaChange<'a> {
+    Preserve,
+    Set(&'a str),
+    Clear,
+}
+
 fn normalize_optional_text(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -46,7 +53,7 @@ fn merge_identity_document(
     default_emoji: Option<&str>,
     name: Option<&str>,
     emoji: Option<&str>,
-    persona: Option<&str>,
+    persona: PersonaChange<'_>,
 ) -> Result<IdentityDocument, String> {
     let existing = existing.map(parse_identity_content).unwrap_or_default();
     let name = normalize_optional_text(name)
@@ -55,7 +62,13 @@ fn merge_identity_document(
     let emoji = normalize_optional_text(emoji)
         .or(existing.emoji.clone())
         .or(normalize_optional_text(default_emoji));
-    let persona = normalize_optional_text(persona).or(existing.persona.clone());
+    let persona = match persona {
+        PersonaChange::Preserve => existing.persona.clone(),
+        PersonaChange::Set(persona) => {
+            normalize_optional_text(Some(persona)).or(existing.persona.clone())
+        }
+        PersonaChange::Clear => None,
+    };
 
     let Some(name) = name else {
         return Err(
@@ -76,7 +89,7 @@ fn identity_content(
     default_emoji: Option<&str>,
     name: Option<&str>,
     emoji: Option<&str>,
-    persona: Option<&str>,
+    persona: PersonaChange<'_>,
 ) -> Result<String, String> {
     let merged =
         merge_identity_document(existing, default_name, default_emoji, name, emoji, persona)?;
@@ -278,7 +291,9 @@ pub fn write_local_agent_identity(
             defaults.emoji.as_deref(),
             name,
             emoji,
-            persona,
+            persona
+                .map(PersonaChange::Set)
+                .unwrap_or(PersonaChange::Preserve),
         )?,
     )
     .map_err(|error| format!("Failed to write IDENTITY.md: {}", error))?;
@@ -327,7 +342,142 @@ pub async fn write_remote_agent_identity(
             defaults.emoji.as_deref(),
             name,
             emoji,
-            persona,
+            persona
+                .map(PersonaChange::Set)
+                .unwrap_or(PersonaChange::Preserve),
+        )?,
+    )
+    .await?;
+    Ok(())
+}
+
+pub fn set_local_agent_persona(
+    paths: &OpenClawPaths,
+    agent_id: &str,
+    persona: &str,
+) -> Result<(), String> {
+    let cfg = read_openclaw_config(paths)?;
+    let identity_path = resolve_local_identity_path(&cfg, paths, agent_id)?;
+    let defaults = resolve_identity_defaults(&cfg, agent_id)?;
+    let identity_dir = identity_path
+        .parent()
+        .ok_or_else(|| "Failed to resolve identity directory".to_string())?;
+    fs::create_dir_all(identity_dir).map_err(|error| error.to_string())?;
+    let existing = fs::read_to_string(&identity_path).ok();
+    fs::write(
+        &identity_path,
+        identity_content(
+            existing.as_deref(),
+            defaults.name.as_deref(),
+            defaults.emoji.as_deref(),
+            None,
+            None,
+            PersonaChange::Set(persona),
+        )?,
+    )
+    .map_err(|error| format!("Failed to write IDENTITY.md: {}", error))?;
+    Ok(())
+}
+
+pub fn clear_local_agent_persona(paths: &OpenClawPaths, agent_id: &str) -> Result<(), String> {
+    let cfg = read_openclaw_config(paths)?;
+    let identity_path = resolve_local_identity_path(&cfg, paths, agent_id)?;
+    let defaults = resolve_identity_defaults(&cfg, agent_id)?;
+    let identity_dir = identity_path
+        .parent()
+        .ok_or_else(|| "Failed to resolve identity directory".to_string())?;
+    fs::create_dir_all(identity_dir).map_err(|error| error.to_string())?;
+    let existing = fs::read_to_string(&identity_path).ok();
+    fs::write(
+        &identity_path,
+        identity_content(
+            existing.as_deref(),
+            defaults.name.as_deref(),
+            defaults.emoji.as_deref(),
+            None,
+            None,
+            PersonaChange::Clear,
+        )?,
+    )
+    .map_err(|error| format!("Failed to write IDENTITY.md: {}", error))?;
+    Ok(())
+}
+
+pub async fn set_remote_agent_persona(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    agent_id: &str,
+    persona: &str,
+) -> Result<(), String> {
+    let (_config_path, _raw, cfg) =
+        crate::commands::remote_read_openclaw_config_text_and_json(pool, host_id)
+            .await
+            .map_err(|error| format!("Failed to parse config: {error}"))?;
+    let identity_path = resolve_remote_identity_path(pool, host_id, &cfg, agent_id).await?;
+    let defaults = resolve_identity_defaults(&cfg, agent_id)?;
+    let remote_workspace = identity_path
+        .strip_suffix("/IDENTITY.md")
+        .ok_or_else(|| "Failed to resolve remote identity directory".to_string())?;
+    pool.exec(
+        host_id,
+        &format!("mkdir -p {}", shell_escape(remote_workspace)),
+    )
+    .await?;
+    let existing = match pool.sftp_read(host_id, &identity_path).await {
+        Ok(text) => Some(text),
+        Err(error) if error.contains("No such file") || error.contains("not found") => None,
+        Err(error) => return Err(error),
+    };
+    pool.sftp_write(
+        host_id,
+        &identity_path,
+        &identity_content(
+            existing.as_deref(),
+            defaults.name.as_deref(),
+            defaults.emoji.as_deref(),
+            None,
+            None,
+            PersonaChange::Set(persona),
+        )?,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_remote_agent_persona(
+    pool: &SshConnectionPool,
+    host_id: &str,
+    agent_id: &str,
+) -> Result<(), String> {
+    let (_config_path, _raw, cfg) =
+        crate::commands::remote_read_openclaw_config_text_and_json(pool, host_id)
+            .await
+            .map_err(|error| format!("Failed to parse config: {error}"))?;
+    let identity_path = resolve_remote_identity_path(pool, host_id, &cfg, agent_id).await?;
+    let defaults = resolve_identity_defaults(&cfg, agent_id)?;
+    let remote_workspace = identity_path
+        .strip_suffix("/IDENTITY.md")
+        .ok_or_else(|| "Failed to resolve remote identity directory".to_string())?;
+    pool.exec(
+        host_id,
+        &format!("mkdir -p {}", shell_escape(remote_workspace)),
+    )
+    .await?;
+    let existing = match pool.sftp_read(host_id, &identity_path).await {
+        Ok(text) => Some(text),
+        Err(error) if error.contains("No such file") || error.contains("not found") => None,
+        Err(error) => return Err(error),
+    };
+    pool.sftp_write(
+        host_id,
+        &identity_path,
+        &identity_content(
+            existing.as_deref(),
+            defaults.name.as_deref(),
+            defaults.emoji.as_deref(),
+            None,
+            None,
+            PersonaChange::Clear,
         )?,
     )
     .await?;

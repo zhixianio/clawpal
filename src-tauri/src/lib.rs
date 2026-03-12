@@ -85,6 +85,7 @@ pub mod history;
 pub mod install;
 pub mod json_util;
 pub mod logging;
+pub mod markdown_document;
 pub mod models;
 pub mod node_client;
 pub mod openclaw_doc_resolver;

@@ -15,10 +15,13 @@
   ],
   "steps": [
     {
-      "action": "config_patch",
+      "action": "set_channel_persona",
       "label": "Apply channel persona preset",
       "args": {
-        "patchTemplate": "{\"channels\":{\"discord\":{\"guilds\":{\"{{guild_id}}\":{\"channels\":{\"{{channel_id}}\":{\"systemPrompt\":\"{{presetMap:persona_preset}}\"}}}}}}"
+        "channelType": "discord",
+        "guildId": "{{guild_id}}",
+        "peerId": "{{channel_id}}",
+        "persona": "{{presetMap:persona_preset}}"
       }
     }
   ],
@@ -36,7 +39,7 @@
       "allowed": ["config.write"]
     },
     "resources": {
-      "supportedKinds": ["file", "channel"]
+      "supportedKinds": ["channel"]
     },
     "execution": {
       "supportedKinds": ["attachment"]
@@ -60,8 +63,7 @@
     },
     "resources": {
       "claims": [
-        { "kind": "channel", "id": "{{channel_id}}" },
-        { "kind": "file", "id": "openclaw.config", "path": "openclaw.config" }
+        { "kind": "channel", "id": "{{channel_id}}" }
       ]
     },
     "secrets": {
@@ -72,24 +74,13 @@
     },
     "actions": [
       {
-        "kind": "config_patch",
+        "kind": "set_channel_persona",
         "name": "Apply channel persona preset",
         "args": {
-          "patch": {
-            "channels": {
-              "discord": {
-                "guilds": {
-                  "{{guild_id}}": {
-                    "channels": {
-                      "{{channel_id}}": {
-                        "systemPrompt": "{{presetMap:persona_preset}}"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
+          "channelType": "discord",
+          "guildId": "{{guild_id}}",
+          "peerId": "{{channel_id}}",
+          "persona": "{{presetMap:persona_preset}}"
         }
       }
     ],

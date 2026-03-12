@@ -374,7 +374,23 @@ fn infer_recipe_action_requirements(
         let args = action.args.as_object()?;
         if !matches!(
             kind,
-            "create_agent" | "setup_identity" | "bind_channel" | "config_patch"
+            "create_agent"
+                | "delete_agent"
+                | "setup_identity"
+                | "bind_channel"
+                | "unbind_channel"
+                | "set_agent_model"
+                | "set_agent_persona"
+                | "clear_agent_persona"
+                | "set_channel_persona"
+                | "clear_channel_persona"
+                | "config_patch"
+                | "upsert_markdown_document"
+                | "delete_markdown_document"
+                | "ensure_model_profile"
+                | "delete_model_profile"
+                | "ensure_provider_auth"
+                | "delete_provider_auth"
         ) {
             return None;
         }
@@ -421,7 +437,15 @@ fn collect_action_requirements(
             push_capability(used_capabilities, "agent.manage");
             push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
         }
+        "delete_agent" => {
+            push_capability(used_capabilities, "agent.manage");
+            push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
+        }
         "setup_identity" => {
+            push_capability(used_capabilities, "agent.identity.write");
+            push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
+        }
+        "set_agent_persona" | "clear_agent_persona" => {
             push_capability(used_capabilities, "agent.identity.write");
             push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
         }
@@ -445,6 +469,50 @@ fn collect_action_requirements(
                 },
             );
         }
+        "unbind_channel" => {
+            push_capability(used_capabilities, "binding.manage");
+            let channel_id = rendered_args
+                .get("peerId")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "channel".into(),
+                    id: channel_id,
+                    target: None,
+                    path: None,
+                },
+            );
+        }
+        "set_agent_model" => {
+            push_capability(used_capabilities, "model.manage");
+            if rendered_args
+                .get("ensureProfile")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
+                push_capability(used_capabilities, "secret.sync");
+            }
+            push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
+            push_optional_id_claim(claims, "modelProfile", rendered_args.get("profileId"));
+        }
+        "set_channel_persona" | "clear_channel_persona" => {
+            push_capability(used_capabilities, "config.write");
+            let channel_id = rendered_args
+                .get("peerId")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "channel".into(),
+                    id: channel_id,
+                    target: None,
+                    path: None,
+                },
+            );
+        }
         "config_patch" => {
             push_capability(used_capabilities, "config.write");
             push_claim(
@@ -457,13 +525,125 @@ fn collect_action_requirements(
                 },
             );
         }
+        "upsert_markdown_document" => {
+            push_capability(used_capabilities, "document.write");
+            if let Some(path) = document_target_claim_path(rendered_args) {
+                push_claim(
+                    claims,
+                    ExecutionResourceClaim {
+                        kind: "document".into(),
+                        id: None,
+                        target: None,
+                        path: Some(path),
+                    },
+                );
+            }
+        }
+        "delete_markdown_document" => {
+            push_capability(used_capabilities, "document.delete");
+            if let Some(path) = document_target_claim_path(rendered_args) {
+                push_claim(
+                    claims,
+                    ExecutionResourceClaim {
+                        kind: "document".into(),
+                        id: None,
+                        target: None,
+                        path: Some(path),
+                    },
+                );
+            }
+        }
+        "ensure_model_profile" => {
+            push_capability(used_capabilities, "model.manage");
+            push_capability(used_capabilities, "secret.sync");
+            push_optional_id_claim(claims, "modelProfile", rendered_args.get("profileId"));
+        }
+        "delete_model_profile" => {
+            push_capability(used_capabilities, "model.manage");
+            push_optional_id_claim(claims, "modelProfile", rendered_args.get("profileId"));
+            if action_bool(rendered_args.get("deleteAuthRef")) {
+                if let Some(auth_ref) = action_string(rendered_args.get("authRef")) {
+                    push_claim(
+                        claims,
+                        ExecutionResourceClaim {
+                            kind: "authProfile".into(),
+                            id: Some(auth_ref),
+                            target: None,
+                            path: None,
+                        },
+                    );
+                }
+            }
+        }
+        "ensure_provider_auth" => {
+            push_capability(used_capabilities, "auth.manage");
+            push_capability(used_capabilities, "secret.sync");
+            let auth_ref = action_string(rendered_args.get("authRef")).or_else(|| {
+                action_string(rendered_args.get("provider"))
+                    .map(|provider| format!("{}:default", provider.trim().to_ascii_lowercase()))
+            });
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "authProfile".into(),
+                    id: auth_ref,
+                    target: None,
+                    path: None,
+                },
+            );
+        }
+        "delete_provider_auth" => {
+            push_capability(used_capabilities, "auth.manage");
+            push_optional_id_claim(claims, "authProfile", rendered_args.get("authRef"));
+        }
         _ => {}
     }
+}
+
+fn document_target_claim_path(rendered_args: &Map<String, Value>) -> Option<String> {
+    let target = rendered_args.get("target")?.as_object()?;
+    let scope = target.get("scope").and_then(Value::as_str)?.trim();
+    let path = target.get("path").and_then(Value::as_str)?.trim();
+    if scope.is_empty() || path.is_empty() {
+        return None;
+    }
+
+    if scope == "agent" {
+        let agent_id = target.get("agentId").and_then(Value::as_str)?.trim();
+        if agent_id.is_empty() {
+            return None;
+        }
+        return Some(format!("agent:{agent_id}/{path}"));
+    }
+
+    Some(format!("{scope}:{path}"))
 }
 
 fn push_capability(target: &mut Vec<String>, capability: &str) {
     if !target.iter().any(|item| item == capability) {
         target.push(capability.into());
+    }
+}
+
+fn action_string(value: Option<&Value>) -> Option<String> {
+    value.and_then(|value| match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    })
+}
+
+fn action_bool(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::String(value)) => value.trim().eq_ignore_ascii_case("true"),
+        _ => false,
     }
 }
 

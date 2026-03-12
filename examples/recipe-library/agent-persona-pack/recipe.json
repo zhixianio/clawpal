@@ -14,7 +14,7 @@
   ],
   "steps": [
     {
-      "action": "setup_identity",
+      "action": "set_agent_persona",
       "label": "Apply agent persona preset",
       "args": {
         "agentId": "{{agent_id}}",
@@ -71,7 +71,7 @@
     },
     "actions": [
       {
-        "kind": "setup_identity",
+        "kind": "set_agent_persona",
         "name": "Apply agent persona preset",
         "args": {
           "agentId": "{{agent_id}}",

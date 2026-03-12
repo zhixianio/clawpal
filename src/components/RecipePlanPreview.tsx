@@ -46,6 +46,12 @@ export function RecipePlanPreview({
       case "file":
       case "path":
         return { key, label: t("cook.reviewClaimFile", { value: detail }) };
+      case "document":
+        return { key, label: t("cook.reviewClaimDocument", { value: detail }) };
+      case "modelProfile":
+        return { key, label: t("cook.reviewClaimModelProfile", { value: detail }) };
+      case "authProfile":
+        return { key, label: t("cook.reviewClaimAuthProfile", { value: detail }) };
       case "service":
         return { key, label: t("cook.reviewClaimService", { value: detail }) };
       default:
