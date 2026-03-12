@@ -54,3 +54,13 @@
 - [x] 每步显示执行结果、错误态重试入口、命令摘要
 - [x] 完成 `ready` 后可直接衔接 Doctor/Recipes 配置流程
 - [ ] 四种方式接入真实执行器（当前为可审计命令计划与流程骨架）
+
+## 8. Recipe Authoring Workbench（v0.5）
+
+- [x] 内置 recipe 可 `Fork to workspace`
+- [x] Workspace recipe 支持 `New / Save / Save As / Delete`
+- [x] UI 可直接编辑 canonical recipe source，并通过后端做 validate / list / plan
+- [x] Studio 支持 sample params 与 live plan preview
+- [x] Draft 可直接进入 Cook 并执行
+- [x] Runtime run 可追溯到 `source origin / source digest / workspace path`
+- [x] 至少一个 workspace recipe 可在 `Source / Form` 模式之间往返且不丢关键字段

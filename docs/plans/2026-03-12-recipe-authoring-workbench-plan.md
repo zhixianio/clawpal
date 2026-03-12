@@ -10,6 +10,25 @@
 
 **Deferred / Not in this plan:** 不做远端 recipe 文件编辑，不支持直接写回 HTTP URL source，不做多人协作或云端同步，不做 AST 级 merge/rebase，不做可视化拖拽 builder。
 
+## Delivered Notes
+
+- Status: delivered on branch `chore/recipe-plan-test-fix`
+- Task 1 delivered in `d321e81 feat: add recipe workspace storage commands`
+- Task 1 test temp-root cleanup follow-up landed in `f4685d4 chore: clean recipe workspace test temp roots`
+- Task 2 delivered in `ed17efd feat: add recipe source validation and draft planning`
+- Task 3 delivered in `ccb9436 feat: add recipe studio source editor`
+- Task 4 delivered in `697c73c feat: add recipe workspace save flows`
+- Task 5 delivered in `d0c044e feat: add recipe studio validation and plan sandbox`
+- Task 6 delivered in `8268928 feat: execute recipe drafts from studio`
+- Task 7 delivered in `b9124bc feat: track recipe source metadata in runtime history`
+- Task 8 delivered in `5eff6ad feat: add recipe studio form mode`
+
+## Final Verification
+
+- `cargo test recipe_ --lib`: PASS
+- `bun test src/pages/__tests__/RecipeStudio.test.tsx src/pages/__tests__/Recipes.test.tsx src/pages/__tests__/cook-execution.test.ts src/pages/__tests__/Orchestrator.test.tsx src/pages/__tests__/History.test.tsx`: PASS
+- `bun run typecheck`: PASS
+
 ---
 
 ### Task 1: 建立 workspace recipe 文件模型与后端命令
