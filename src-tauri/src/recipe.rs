@@ -243,6 +243,19 @@ pub fn validate_recipe_source(text: &str) -> Result<RecipeSourceDiagnostics, Str
 }
 
 fn validate_recipe_definition(recipe: &Recipe, diagnostics: &mut RecipeSourceDiagnostics) {
+    if recipe.tags.is_empty() {
+        diagnostics.warnings.push(RecipeSourceDiagnostic {
+            category: "metadata".into(),
+            severity: "warning".into(),
+            recipe_id: Some(recipe.id.clone()),
+            path: Some("tags".into()),
+            message: format!(
+                "recipe '{}' has no tags; discovery in the recipe library may be weaker",
+                recipe.id
+            ),
+        });
+    }
+
     if let Some(template) = &recipe.execution_spec_template {
         if template.actions.len() != recipe.steps.len() {
             diagnostics.errors.push(RecipeSourceDiagnostic {

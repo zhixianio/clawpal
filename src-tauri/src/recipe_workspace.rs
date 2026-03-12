@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config_io::write_text;
 use crate::models::resolve_paths;
+use crate::recipe::validate_recipe_source;
 
 const WORKSPACE_FILE_SUFFIX: &str = ".recipe.json";
 
@@ -87,6 +88,18 @@ impl RecipeWorkspace {
         source: &str,
     ) -> Result<RecipeSourceSaveResult, String> {
         let slug = normalize_slug(raw_slug)?;
+        let diagnostics = validate_recipe_source(source)?;
+        if !diagnostics.errors.is_empty() {
+            let first_error = diagnostics
+                .errors
+                .first()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .unwrap_or("recipe source validation failed");
+            return Err(format!(
+                "recipe source validation failed: {}",
+                first_error
+            ));
+        }
         let path = self.root.join(format!("{}{}", slug, WORKSPACE_FILE_SUFFIX));
         write_text(&path, source)?;
         Ok(RecipeSourceSaveResult {

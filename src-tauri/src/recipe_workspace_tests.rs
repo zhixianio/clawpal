@@ -42,6 +42,88 @@ const SAMPLE_SOURCE: &str = r#"{
   }
 }"#;
 
+const INVALID_SOURCE: &str = r#"{
+  "id": "broken-recipe",
+  "name": "Broken Recipe",
+  "description": "This recipe should fail validation",
+  "version": "1.0.0",
+  "tags": [],
+  "difficulty": "easy",
+  "params": [],
+  "steps": [],
+  "bundle": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "StrategyBundle",
+    "metadata": {},
+    "compatibility": {},
+    "inputs": [],
+    "capabilities": { "allowed": [] },
+    "resources": { "supportedKinds": [] },
+    "execution": { "supportedKinds": ["attachment"] },
+    "runner": {},
+    "outputs": []
+  },
+  "executionSpecTemplate": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "ExecutionSpec",
+    "metadata": {},
+    "source": {},
+    "target": {},
+    "execution": { "kind": "attachment" },
+    "capabilities": { "usedCapabilities": [] },
+    "resources": { "claims": [] },
+    "secrets": { "bindings": [] },
+    "desiredState": {},
+    "actions": [
+      {
+        "kind": "config_patch",
+        "name": "Broken action",
+        "args": {}
+      }
+    ],
+    "outputs": []
+  }
+}"#;
+
+const PARSE_ERROR_SOURCE: &str = "{ broken";
+
+const WARNING_ONLY_SOURCE: &str = r#"{
+  "id": "warning-only",
+  "name": "Warning Only",
+  "description": "Should save with warning diagnostics only",
+  "version": "1.0.0",
+  "tags": [],
+  "difficulty": "easy",
+  "params": [],
+  "steps": [],
+  "bundle": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "StrategyBundle",
+    "metadata": {},
+    "compatibility": {},
+    "inputs": [],
+    "capabilities": { "allowed": [] },
+    "resources": { "supportedKinds": [] },
+    "execution": { "supportedKinds": ["attachment"] },
+    "runner": {},
+    "outputs": []
+  },
+  "executionSpecTemplate": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "ExecutionSpec",
+    "metadata": {},
+    "source": {},
+    "target": {},
+    "execution": { "kind": "attachment" },
+    "capabilities": { "usedCapabilities": [] },
+    "resources": { "claims": [] },
+    "secrets": { "bindings": [] },
+    "desiredState": {},
+    "actions": [],
+    "outputs": []
+  }
+}"#;
+
 struct TempWorkspaceRoot(PathBuf);
 
 impl TempWorkspaceRoot {
@@ -122,4 +204,43 @@ fn list_workspace_entries_returns_saved_recipes() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].slug, "alpha");
     assert_eq!(entries[1].slug, "zeta");
+}
+
+#[test]
+fn workspace_recipe_save_rejects_invalid_recipe_source() {
+    let root = temp_workspace_root();
+    let store = RecipeWorkspace::new(root.path().clone());
+
+    let error = store
+        .save_recipe_source("broken-recipe", INVALID_SOURCE)
+        .expect_err("invalid source should be rejected");
+
+    assert!(error.contains("validation"));
+    assert!(!root.path().join("broken-recipe.recipe.json").exists());
+}
+
+#[test]
+fn workspace_recipe_save_rejects_parse_errors() {
+    let root = temp_workspace_root();
+    let store = RecipeWorkspace::new(root.path().clone());
+
+    let error = store
+        .save_recipe_source("broken-parse", PARSE_ERROR_SOURCE)
+        .expect_err("parse errors should be rejected");
+
+    assert!(error.contains("validation"));
+    assert!(!root.path().join("broken-parse.recipe.json").exists());
+}
+
+#[test]
+fn workspace_recipe_save_allows_warning_only_recipe_source() {
+    let root = temp_workspace_root();
+    let store = RecipeWorkspace::new(root.path().clone());
+
+    let saved = store
+        .save_recipe_source("warning-only", WARNING_ONLY_SOURCE)
+        .expect("warning-only source should still save");
+
+    assert_eq!(saved.slug, "warning-only");
+    assert!(root.path().join("warning-only.recipe.json").exists());
 }
