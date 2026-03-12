@@ -1,10 +1,15 @@
 use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 
 use crate::execution_spec::{
-    ExecutionAction, ExecutionCapabilities, ExecutionMetadata, ExecutionResourceClaim,
-    ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
+    validate_execution_spec, ExecutionAction, ExecutionCapabilities, ExecutionMetadata,
+    ExecutionResourceClaim, ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
 };
-use crate::recipe::{render_step_args, step_references_empty_param, validate, Recipe, RecipeStep};
+use crate::recipe::{
+    render_step_args, render_template_value, step_references_empty_param, validate, Recipe,
+    RecipeStep,
+};
+use crate::recipe_bundle::validate_execution_spec_against_bundle;
 
 pub fn compile_recipe_to_spec(
     recipe: &Recipe,
@@ -15,6 +20,42 @@ pub fn compile_recipe_to_spec(
         return Err(errors.join(", "));
     }
 
+    if recipe.execution_spec_template.is_some() {
+        return compile_structured_recipe_to_spec(recipe, params);
+    }
+
+    compile_step_recipe_to_spec(recipe, params)
+}
+
+fn compile_structured_recipe_to_spec(
+    recipe: &Recipe,
+    params: &Map<String, Value>,
+) -> Result<ExecutionSpec, String> {
+    let template = recipe
+        .execution_spec_template
+        .as_ref()
+        .ok_or_else(|| format!("recipe '{}' is missing executionSpecTemplate", recipe.id))?;
+    let template_value = serde_json::to_value(template).map_err(|error| error.to_string())?;
+    let rendered_template = render_template_value(&template_value, params);
+    let mut spec: ExecutionSpec =
+        serde_json::from_value(rendered_template).map_err(|error| error.to_string())?;
+
+    filter_optional_structured_actions(recipe, params, &mut spec)?;
+    normalize_recipe_spec(recipe, &mut spec, "structuredTemplate");
+
+    if let Some((used_capabilities, claims)) = infer_recipe_action_requirements(&spec.actions) {
+        spec.capabilities.used_capabilities = used_capabilities;
+        spec.resources.claims = claims;
+    }
+
+    validate_recipe_spec(recipe, &spec)?;
+    Ok(spec)
+}
+
+fn compile_step_recipe_to_spec(
+    recipe: &Recipe,
+    params: &Map<String, Value>,
+) -> Result<ExecutionSpec, String> {
     let mut used_capabilities = Vec::new();
     let mut claims = Vec::new();
     let mut actions = Vec::new();
@@ -25,7 +66,12 @@ pub fn compile_recipe_to_spec(
         }
 
         let rendered_args = render_step_args(&step.args, params);
-        collect_step_requirements(step, &rendered_args, &mut used_capabilities, &mut claims);
+        collect_action_requirements(
+            step.action.as_str(),
+            &rendered_args,
+            &mut used_capabilities,
+            &mut claims,
+        );
         actions.push(build_recipe_action(step, rendered_args)?);
     }
 
@@ -38,18 +84,14 @@ pub fn compile_recipe_to_spec(
         "job"
     };
 
-    Ok(ExecutionSpec {
+    let mut spec = ExecutionSpec {
         api_version: "strategy.platform/v1".into(),
         kind: "ExecutionSpec".into(),
         metadata: ExecutionMetadata {
             name: Some(recipe.id.clone()),
             digest: None,
         },
-        source: json!({
-            "recipeId": recipe.id,
-            "recipeVersion": recipe.version,
-            "recipeCompiler": "stepAdapter",
-        }),
+        source: Value::Object(Map::new()),
         target: Value::Object(Map::new()),
         execution: ExecutionTarget {
             kind: execution_kind.into(),
@@ -65,7 +107,109 @@ pub fn compile_recipe_to_spec(
             "kind": "recipe-summary",
             "recipeId": recipe.id,
         })],
-    })
+    };
+
+    normalize_recipe_spec(recipe, &mut spec, "stepAdapter");
+    validate_recipe_spec(recipe, &spec)?;
+    Ok(spec)
+}
+
+fn normalize_recipe_spec(recipe: &Recipe, spec: &mut ExecutionSpec, compiler: &str) {
+    if spec.metadata.name.is_none() {
+        spec.metadata.name = Some(recipe.id.clone());
+    }
+
+    let mut source = spec.source.as_object().cloned().unwrap_or_default();
+    source.insert("recipeId".into(), Value::String(recipe.id.clone()));
+    source.insert(
+        "recipeVersion".into(),
+        Value::String(recipe.version.clone()),
+    );
+    source.insert("recipeCompiler".into(), Value::String(compiler.into()));
+    spec.source = Value::Object(source);
+
+    if let Some(desired_state) = spec.desired_state.as_object_mut() {
+        desired_state.insert("actionCount".into(), json!(spec.actions.len()));
+    } else {
+        spec.desired_state = json!({
+            "actionCount": spec.actions.len(),
+        });
+    }
+
+    if spec.outputs.is_empty() {
+        spec.outputs.push(json!({
+            "kind": "recipe-summary",
+            "recipeId": recipe.id,
+        }));
+    }
+}
+
+fn validate_recipe_spec(recipe: &Recipe, spec: &ExecutionSpec) -> Result<(), String> {
+    if let Some(bundle) = &recipe.bundle {
+        validate_execution_spec_against_bundle(bundle, spec)
+    } else {
+        validate_execution_spec(spec)
+    }
+}
+
+fn filter_optional_structured_actions(
+    recipe: &Recipe,
+    params: &Map<String, Value>,
+    spec: &mut ExecutionSpec,
+) -> Result<(), String> {
+    let skipped_step_indices: BTreeSet<usize> = recipe
+        .steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step_references_empty_param(step, params))
+        .map(|(index, _)| index)
+        .collect();
+    if skipped_step_indices.is_empty() {
+        return Ok(());
+    }
+
+    if spec.actions.len() != recipe.steps.len() {
+        return Err(format!(
+            "recipe '{}' executionSpecTemplate must align actions with UI steps for optional step elision",
+            recipe.id
+        ));
+    }
+
+    spec.actions = spec
+        .actions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| {
+            if skipped_step_indices.contains(&index) {
+                None
+            } else {
+                Some(action.clone())
+            }
+        })
+        .collect();
+    Ok(())
+}
+
+fn infer_recipe_action_requirements(
+    actions: &[ExecutionAction],
+) -> Option<(Vec<String>, Vec<ExecutionResourceClaim>)> {
+    let mut used_capabilities = Vec::new();
+    let mut claims = Vec::new();
+
+    for action in actions {
+        let kind = action.kind.as_deref()?;
+        let args = action.args.as_object()?;
+        if !matches!(
+            kind,
+            "create_agent" | "setup_identity" | "bind_channel" | "config_patch"
+        ) {
+            return None;
+        }
+
+        collect_action_requirements(kind, args, &mut used_capabilities, &mut claims);
+    }
+
+    Some((used_capabilities, claims))
 }
 
 fn build_recipe_action(
@@ -93,13 +237,13 @@ fn build_recipe_action(
     })
 }
 
-fn collect_step_requirements(
-    step: &RecipeStep,
+fn collect_action_requirements(
+    action_kind: &str,
     rendered_args: &Map<String, Value>,
     used_capabilities: &mut Vec<String>,
     claims: &mut Vec<ExecutionResourceClaim>,
 ) {
-    match step.action.as_str() {
+    match action_kind {
         "create_agent" => {
             push_capability(used_capabilities, "agent.manage");
             push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));

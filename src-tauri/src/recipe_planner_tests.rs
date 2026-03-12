@@ -55,3 +55,24 @@ fn plan_recipe_does_not_emit_legacy_bridge_warning() {
         .iter()
         .all(|warning| !warning.to_ascii_lowercase().contains("legacy")));
 }
+
+#[test]
+fn plan_recipe_skips_optional_steps_from_structured_template() {
+    let recipe = builtin_recipes()
+        .into_iter()
+        .find(|recipe| recipe.id == "dedicated-channel-agent")
+        .expect("builtin recipe");
+    let mut params = sample_inputs();
+    params.insert("agent_id".into(), Value::String("bot-alpha".into()));
+    params.insert("model".into(), Value::String("__default__".into()));
+    params.insert("independent".into(), Value::String("true".into()));
+    params.insert("name".into(), Value::String(String::new()));
+    params.insert("emoji".into(), Value::String(String::new()));
+    params.insert("persona".into(), Value::String(String::new()));
+
+    let plan = build_recipe_plan(&recipe, &params).expect("build plan");
+
+    assert_eq!(plan.summary.skipped_step_count, 2);
+    assert_eq!(plan.summary.action_count, 2);
+    assert_eq!(plan.execution_spec.actions.len(), 2);
+}

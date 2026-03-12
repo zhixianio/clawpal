@@ -6,6 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::execution_spec::ExecutionSpec;
+use crate::recipe_bundle::RecipeBundle;
+
 const BUILTIN_RECIPES_JSON: &str = include_str!("../recipes.json");
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,6 +59,10 @@ pub struct Recipe {
     pub difficulty: String,
     pub params: Vec<RecipeParam>,
     pub steps: Vec<RecipeStep>,
+    #[serde(skip_serializing, default)]
+    pub bundle: Option<RecipeBundle>,
+    #[serde(skip_serializing, default)]
+    pub execution_spec_template: Option<ExecutionSpec>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -274,7 +281,12 @@ pub fn render_template_value(value: &Value, params: &Map<String, Value>) -> Valu
         ),
         Value::Object(map) => Value::Object(
             map.iter()
-                .map(|(key, value)| (key.clone(), render_template_value(value, params)))
+                .map(|(key, value)| {
+                    (
+                        render_template_string(key, params),
+                        render_template_value(value, params),
+                    )
+                })
                 .collect(),
         ),
         _ => value.clone(),
