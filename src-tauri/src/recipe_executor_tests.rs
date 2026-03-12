@@ -156,7 +156,7 @@ fn sample_attachment_spec() -> ExecutionSpec {
     }
 }
 
-fn sample_legacy_bridge_spec() -> ExecutionSpec {
+fn sample_action_recipe_spec() -> ExecutionSpec {
     ExecutionSpec {
         api_version: "strategy.platform/v1".into(),
         kind: "ExecutionSpec".into(),
@@ -165,8 +165,8 @@ fn sample_legacy_bridge_spec() -> ExecutionSpec {
             digest: None,
         },
         source: json!({
-            "legacyRecipeId": "discord-channel-persona",
-            "legacyRecipeVersion": "1.0.0",
+            "recipeId": "discord-channel-persona",
+            "recipeVersion": "1.0.0",
         }),
         target: json!({ "kind": "local" }),
         execution: ExecutionTarget { kind: "job".into() },
@@ -176,7 +176,7 @@ fn sample_legacy_bridge_spec() -> ExecutionSpec {
         resources: ExecutionResources::default(),
         secrets: ExecutionSecrets::default(),
         desired_state: json!({
-            "legacyStepCount": 1,
+            "actionCount": 1,
         }),
         actions: vec![ExecutionAction {
             kind: Some("config_patch".into()),
@@ -199,7 +199,10 @@ fn sample_legacy_bridge_spec() -> ExecutionSpec {
                 }
             }),
         }],
-        outputs: vec![],
+        outputs: vec![json!({
+            "kind": "recipe-summary",
+            "recipeId": "discord-channel-persona",
+        })],
     }
 }
 
@@ -248,13 +251,14 @@ fn execute_recipe_returns_run_id_and_summary() {
 }
 
 #[test]
-fn legacy_recipe_spec_can_prepare_without_command_payload() {
+fn action_recipe_spec_can_prepare_without_command_payload() {
     let result = execute_recipe(ExecuteRecipeRequest {
-        spec: sample_legacy_bridge_spec(),
+        spec: sample_action_recipe_spec(),
     })
-    .expect("prepare legacy recipe execution");
+    .expect("prepare action recipe execution");
 
     assert!(!result.run_id.is_empty());
+    assert!(result.summary.contains("discord-channel-persona"));
 }
 
 #[test]

@@ -49,42 +49,147 @@ pub struct ExecuteRecipeResult {
     pub warnings: Vec<String>,
 }
 
-fn is_legacy_recipe_spec(spec: &ExecutionSpec) -> bool {
-    spec.source
-        .get("legacyRecipeId")
+fn has_command_value(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|parts| !parts.is_empty())
+}
+
+fn has_structured_job_command(spec: &ExecutionSpec) -> bool {
+    has_command_value(spec.desired_state.get("command"))
+        || spec
+            .desired_state
+            .get("job")
+            .and_then(|value| value.get("command"))
+            .and_then(Value::as_array)
+            .is_some_and(|parts| !parts.is_empty())
+        || spec.actions.iter().any(|action| {
+            action
+                .args
+                .get("command")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| !parts.is_empty())
+        })
+}
+
+fn has_structured_schedule(spec: &ExecutionSpec) -> bool {
+    spec.desired_state
+        .get("schedule")
+        .and_then(|value| value.get("onCalendar"))
         .and_then(Value::as_str)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || spec.actions.iter().any(|action| {
+            action
+                .args
+                .get("onCalendar")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty())
+        })
+}
+
+fn has_structured_attachment_state(spec: &ExecutionSpec) -> bool {
+    spec.desired_state
+        .get("systemdDropIn")
+        .and_then(Value::as_object)
+        .is_some()
+        || spec
+            .desired_state
+            .get("envPatch")
+            .and_then(Value::as_object)
+            .is_some()
+}
+
+fn collect_claim_resource_refs(spec: &ExecutionSpec) -> Vec<String> {
+    let mut refs = Vec::new();
+    for claim in &spec.resources.claims {
+        for value in [&claim.id, &claim.target, &claim.path] {
+            if let Some(value) = value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if !refs.iter().any(|existing| existing == value) {
+                    refs.push(value.to_string());
+                }
+            }
+        }
+    }
+    refs
+}
+
+fn action_only_materialized_plan(spec: &ExecutionSpec) -> MaterializedExecutionPlan {
+    MaterializedExecutionPlan {
+        execution_kind: spec.execution.kind.clone(),
+        unit_name: String::new(),
+        commands: Vec::new(),
+        resources: collect_claim_resource_refs(spec),
+        warnings: Vec::new(),
+    }
+}
+
+fn summary_subject(spec: &ExecutionSpec, plan: &MaterializedExecutionPlan) -> String {
+    if !plan.unit_name.trim().is_empty() {
+        return plan.unit_name.clone();
+    }
+
+    spec.metadata
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "recipe".into())
 }
 
 pub fn materialize_execution_plan(
     spec: &ExecutionSpec,
 ) -> Result<MaterializedExecutionPlan, String> {
-    if is_legacy_recipe_spec(spec) {
-        return Ok(MaterializedExecutionPlan {
-            execution_kind: spec.execution.kind.clone(),
-            unit_name: String::new(),
-            commands: Vec::new(),
-            resources: Vec::new(),
-            warnings: Vec::new(),
-        });
+    match spec.execution.kind.as_str() {
+        "job" if has_structured_job_command(spec) => {
+            let runtime_plan = systemd::materialize_job(spec)?;
+            Ok(MaterializedExecutionPlan {
+                execution_kind: spec.execution.kind.clone(),
+                unit_name: runtime_plan.unit_name,
+                commands: runtime_plan.commands,
+                resources: runtime_plan.resources,
+                warnings: runtime_plan.warnings,
+            })
+        }
+        "service" if has_structured_job_command(spec) => {
+            let runtime_plan = systemd::materialize_service(spec)?;
+            Ok(MaterializedExecutionPlan {
+                execution_kind: spec.execution.kind.clone(),
+                unit_name: runtime_plan.unit_name,
+                commands: runtime_plan.commands,
+                resources: runtime_plan.resources,
+                warnings: runtime_plan.warnings,
+            })
+        }
+        "schedule" if has_structured_job_command(spec) && has_structured_schedule(spec) => {
+            let runtime_plan = systemd::materialize_schedule(spec)?;
+            Ok(MaterializedExecutionPlan {
+                execution_kind: spec.execution.kind.clone(),
+                unit_name: runtime_plan.unit_name,
+                commands: runtime_plan.commands,
+                resources: runtime_plan.resources,
+                warnings: runtime_plan.warnings,
+            })
+        }
+        "attachment" if has_structured_attachment_state(spec) => {
+            let runtime_plan = systemd::materialize_attachment(spec)?;
+            Ok(MaterializedExecutionPlan {
+                execution_kind: spec.execution.kind.clone(),
+                unit_name: runtime_plan.unit_name,
+                commands: runtime_plan.commands,
+                resources: runtime_plan.resources,
+                warnings: runtime_plan.warnings,
+            })
+        }
+        "job" | "attachment" if !spec.actions.is_empty() => Ok(action_only_materialized_plan(spec)),
+        other => Err(format!("unsupported execution kind: {}", other)),
     }
-
-    let runtime_plan = match spec.execution.kind.as_str() {
-        "job" => systemd::materialize_job(spec)?,
-        "service" => systemd::materialize_service(spec)?,
-        "schedule" => systemd::materialize_schedule(spec)?,
-        "attachment" => systemd::materialize_attachment(spec)?,
-        other => return Err(format!("unsupported execution kind: {}", other)),
-    };
-
-    Ok(MaterializedExecutionPlan {
-        execution_kind: spec.execution.kind.clone(),
-        unit_name: runtime_plan.unit_name,
-        commands: runtime_plan.commands,
-        resources: runtime_plan.resources,
-        warnings: runtime_plan.warnings,
-    })
 }
 
 pub fn route_execution(target: &Value) -> Result<ExecutionRoute, String> {
@@ -135,10 +240,6 @@ pub fn build_runtime_artifacts(
     spec: &ExecutionSpec,
     prepared: &ExecuteRecipePrepared,
 ) -> Vec<RecipeRuntimeArtifact> {
-    if is_legacy_recipe_spec(spec) {
-        return Vec::new();
-    }
-
     let mut artifacts = Vec::new();
     let unit_name = prepared.plan.unit_name.trim();
 
@@ -283,12 +384,23 @@ pub fn build_cleanup_commands(artifacts: &[RecipeRuntimeArtifact]) -> Vec<Vec<St
 pub fn execute_recipe(request: ExecuteRecipeRequest) -> Result<ExecuteRecipePrepared, String> {
     let plan = materialize_execution_plan(&request.spec)?;
     let route = route_execution(&request.spec.target)?;
+    let operation_count = if !plan.commands.is_empty() {
+        plan.commands.len()
+    } else {
+        request.spec.actions.len()
+    };
+    let operation_label = if !plan.commands.is_empty() {
+        "command"
+    } else {
+        "action"
+    };
     let summary = format!(
-        "{} via {} ({} command{})",
-        plan.unit_name,
+        "{} via {} ({} {}{})",
+        summary_subject(&request.spec, &plan),
         route.runner,
-        plan.commands.len(),
-        if plan.commands.len() == 1 { "" } else { "s" }
+        operation_count,
+        operation_label,
+        if operation_count == 1 { "" } else { "s" }
     );
 
     let warnings = plan.warnings.clone();

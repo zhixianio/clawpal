@@ -6,7 +6,7 @@ use crate::execution_spec::{
 };
 use crate::recipe::{render_step_args, step_references_empty_param, validate, Recipe, RecipeStep};
 
-pub fn compile_legacy_recipe_to_spec(
+pub fn compile_recipe_to_spec(
     recipe: &Recipe,
     params: &Map<String, Value>,
 ) -> Result<ExecutionSpec, String> {
@@ -26,7 +26,7 @@ pub fn compile_legacy_recipe_to_spec(
 
         let rendered_args = render_step_args(&step.args, params);
         collect_step_requirements(step, &rendered_args, &mut used_capabilities, &mut claims);
-        actions.push(build_legacy_action(step, rendered_args)?);
+        actions.push(build_recipe_action(step, rendered_args)?);
     }
 
     let execution_kind = if actions
@@ -46,8 +46,9 @@ pub fn compile_legacy_recipe_to_spec(
             digest: None,
         },
         source: json!({
-            "legacyRecipeId": recipe.id,
-            "legacyRecipeVersion": recipe.version,
+            "recipeId": recipe.id,
+            "recipeVersion": recipe.version,
+            "recipeCompiler": "stepAdapter",
         }),
         target: Value::Object(Map::new()),
         execution: ExecutionTarget {
@@ -57,17 +58,17 @@ pub fn compile_legacy_recipe_to_spec(
         resources: ExecutionResources { claims },
         secrets: ExecutionSecrets::default(),
         desired_state: json!({
-            "legacyStepCount": actions.len(),
+            "actionCount": actions.len(),
         }),
         actions,
         outputs: vec![json!({
-            "kind": "legacy-recipe-summary",
+            "kind": "recipe-summary",
             "recipeId": recipe.id,
         })],
     })
 }
 
-fn build_legacy_action(
+fn build_recipe_action(
     step: &RecipeStep,
     mut rendered_args: Map<String, Value>,
 ) -> Result<ExecutionAction, String> {

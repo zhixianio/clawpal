@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 
 use crate::recipe::builtin_recipes;
-use crate::recipe_adapter::compile_legacy_recipe_to_spec;
+use crate::recipe_adapter::compile_recipe_to_spec;
 
 fn sample_params() -> Map<String, Value> {
     let mut params = Map::new();
@@ -20,16 +20,21 @@ fn sample_params() -> Map<String, Value> {
 }
 
 #[test]
-fn legacy_recipe_compiles_to_attachment_or_job_spec() {
+fn recipe_compiles_to_attachment_or_job_spec() {
     let recipe = builtin_recipes()
         .into_iter()
         .find(|recipe| recipe.id == "dedicated-channel-agent")
         .expect("builtin recipe");
 
-    let spec = compile_legacy_recipe_to_spec(&recipe, &sample_params()).expect("compile spec");
+    let spec = compile_recipe_to_spec(&recipe, &sample_params()).expect("compile spec");
 
     assert!(matches!(spec.execution.kind.as_str(), "attachment" | "job"));
     assert!(!spec.actions.is_empty());
+    assert_eq!(
+        spec.source.get("recipeId").and_then(Value::as_str),
+        Some(recipe.id.as_str())
+    );
+    assert!(spec.source.get("legacyRecipeId").is_none());
 }
 
 #[test]
@@ -39,8 +44,12 @@ fn config_patch_only_recipe_compiles_to_attachment_spec() {
         .find(|recipe| recipe.id == "discord-channel-persona")
         .expect("builtin recipe");
 
-    let spec = compile_legacy_recipe_to_spec(&recipe, &sample_params()).expect("compile spec");
+    let spec = compile_recipe_to_spec(&recipe, &sample_params()).expect("compile spec");
 
     assert_eq!(spec.execution.kind, "attachment");
     assert_eq!(spec.actions.len(), 1);
+    assert_eq!(
+        spec.outputs[0].get("kind").and_then(Value::as_str),
+        Some("recipe-summary")
+    );
 }

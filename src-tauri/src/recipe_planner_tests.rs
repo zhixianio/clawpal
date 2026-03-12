@@ -40,3 +40,18 @@ fn plan_recipe_includes_execution_spec_for_executor_bridge() {
     assert_eq!(plan.execution_spec.kind, "ExecutionSpec");
     assert!(!plan.execution_spec.actions.is_empty());
 }
+
+#[test]
+fn plan_recipe_does_not_emit_legacy_bridge_warning() {
+    let recipe = builtin_recipes()
+        .into_iter()
+        .find(|recipe| recipe.id == "discord-channel-persona")
+        .expect("builtin recipe");
+
+    let plan = build_recipe_plan(&recipe, &sample_inputs()).expect("build plan");
+
+    assert!(plan
+        .warnings
+        .iter()
+        .all(|warning| !warning.to_ascii_lowercase().contains("legacy")));
+}

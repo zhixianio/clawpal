@@ -1279,7 +1279,7 @@ fn build_runtime_claims(
 
 fn infer_recipe_id(spec: &crate::execution_spec::ExecutionSpec) -> String {
     spec.source
-        .get("legacyRecipeId")
+        .get("recipeId")
         .and_then(Value::as_str)
         .or_else(|| spec.metadata.name.as_deref())
         .unwrap_or("recipe")
@@ -1535,14 +1535,6 @@ async fn cleanup_remote_recipe_snapshot(
     cleanup_remote_recipe_artifacts(pool, host_id, &snapshot.artifacts).await
 }
 
-fn is_legacy_recipe_spec(spec: &crate::execution_spec::ExecutionSpec) -> bool {
-    spec.source
-        .get("legacyRecipeId")
-        .and_then(Value::as_str)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-}
-
 pub(crate) const INTERNAL_SETUP_IDENTITY_COMMAND: &str = "__setup_identity__";
 pub(crate) const INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND: &str = "__systemd_dropin_write__";
 
@@ -1568,7 +1560,7 @@ fn action_bool(value: Option<&Value>) -> bool {
     }
 }
 
-fn legacy_setup_identity_command(
+fn recipe_action_setup_identity_command(
     agent_id: &str,
     name: &str,
     emoji: Option<&str>,
@@ -1763,7 +1755,7 @@ async fn list_bindings_for_route(
     }
 }
 
-async fn legacy_action_commands(
+async fn materialize_recipe_action_commands(
     action: &crate::execution_spec::ExecutionAction,
     cache: &State<'_, crate::cli_runner::CliCache>,
     pool: &State<'_, SshConnectionPool>,
@@ -1813,7 +1805,7 @@ async fn legacy_action_commands(
             let name = action_string(args.get("name"))
                 .ok_or_else(|| "setup_identity requires name".to_string())?;
             let emoji = action_string(args.get("emoji"));
-            Ok(vec![legacy_setup_identity_command(
+            Ok(vec![recipe_action_setup_identity_command(
                 &agent_id,
                 &name,
                 emoji.as_deref(),
@@ -1856,11 +1848,11 @@ async fn legacy_action_commands(
             append_config_patch_commands(&patch, "", &mut commands)?;
             Ok(commands)
         }
-        other => Err(format!("unsupported legacy action '{}'", other)),
+        other => Err(format!("unsupported recipe action '{}'", other)),
     }
 }
 
-async fn legacy_recipe_commands(
+async fn materialize_recipe_commands(
     spec: &crate::execution_spec::ExecutionSpec,
     cache: &State<'_, crate::cli_runner::CliCache>,
     pool: &State<'_, SshConnectionPool>,
@@ -1868,31 +1860,19 @@ async fn legacy_recipe_commands(
 ) -> Result<Vec<(String, Vec<String>)>, String> {
     let mut commands = Vec::new();
     for action in &spec.actions {
-        commands.extend(legacy_action_commands(action, cache, pool, route).await?);
+        commands.extend(materialize_recipe_action_commands(action, cache, pool, route).await?);
     }
     Ok(commands)
 }
 
-fn legacy_execution_summary(
-    spec: &crate::execution_spec::ExecutionSpec,
-    route: &crate::recipe_executor::ExecutionRoute,
-) -> String {
-    format!(
-        "{} via {} ({} action{})",
-        infer_recipe_id(spec),
-        route.runner,
-        spec.actions.len(),
-        if spec.actions.len() == 1 { "" } else { "s" }
-    )
-}
-
 #[cfg(test)]
-mod legacy_recipe_bridge_tests {
-    use super::{legacy_setup_identity_command, INTERNAL_SETUP_IDENTITY_COMMAND};
+mod recipe_action_materializer_tests {
+    use super::{recipe_action_setup_identity_command, INTERNAL_SETUP_IDENTITY_COMMAND};
 
     #[test]
     fn setup_identity_materializes_to_internal_command() {
-        let (label, command) = legacy_setup_identity_command("lobster", "Lobster", Some("🦞"));
+        let (label, command) =
+            recipe_action_setup_identity_command("lobster", "Lobster", Some("🦞"));
 
         assert_eq!(label, "Setup identity: lobster");
         assert_eq!(
@@ -1990,40 +1970,24 @@ pub async fn execute_recipe(
 ) -> Result<ExecuteRecipeResult, String> {
     let spec = request.spec.clone();
     let prepared = prepare_recipe_execution(request)?;
-    let legacy_spec = is_legacy_recipe_spec(&spec);
     let mut warnings = prepared.warnings.clone();
-    if legacy_spec {
-        warnings.retain(|warning| {
-            !warning.contains(
-                "attachment spec materialized without concrete systemdDropIn/envPatch operations",
-            )
-        });
-    }
     let started_at = Utc::now().to_rfc3339();
-    let summary = if legacy_spec {
-        legacy_execution_summary(&spec, &prepared.route)
-    } else {
-        prepared.summary.clone()
-    };
-    let runtime_artifacts = if legacy_spec {
-        Vec::new()
-    } else {
-        crate::recipe_executor::build_runtime_artifacts(&spec, &prepared)
-    };
+    let summary = prepared.summary.clone();
+    let runtime_artifacts = crate::recipe_executor::build_runtime_artifacts(&spec, &prepared);
 
     match prepared.route.runner.as_str() {
         "local" => {
-            if legacy_spec {
+            if !prepared.plan.commands.is_empty() {
+                crate::cli_runner::enqueue_materialized_plan(queue.inner(), &prepared.plan);
+            } else {
                 let commands =
-                    legacy_recipe_commands(&spec, &cache, &pool, &prepared.route).await?;
+                    materialize_recipe_commands(&spec, &cache, &pool, &prepared.route).await?;
                 if commands.is_empty() {
-                    return Err("legacy recipe did not materialize executable commands".into());
+                    return Err("recipe did not materialize executable commands".into());
                 }
                 for (label, command) in commands {
                     queue.inner().enqueue(label, command);
                 }
-            } else {
-                crate::cli_runner::enqueue_materialized_plan(queue.inner(), &prepared.plan);
             }
             let result = crate::cli_runner::apply_queued_commands(
                 queue,
@@ -2038,9 +2002,7 @@ pub async fn execute_recipe(
                 let error = result
                     .error
                     .unwrap_or_else(|| "recipe execution failed".to_string());
-                if !legacy_spec {
-                    warnings.extend(cleanup_local_recipe_artifacts(&runtime_artifacts));
-                }
+                warnings.extend(cleanup_local_recipe_artifacts(&runtime_artifacts));
                 let _ = persist_recipe_run(
                     &spec,
                     &prepared,
@@ -2080,21 +2042,21 @@ pub async fn execute_recipe(
                 .host_id
                 .clone()
                 .ok_or_else(|| "remote execution target missing hostId".to_string())?;
-            if legacy_spec {
-                let commands =
-                    legacy_recipe_commands(&spec, &cache, &pool, &prepared.route).await?;
-                if commands.is_empty() {
-                    return Err("legacy recipe did not materialize executable commands".into());
-                }
-                for (label, command) in commands {
-                    remote_queues.inner().enqueue(&host_id, label, command);
-                }
-            } else {
+            if !prepared.plan.commands.is_empty() {
                 crate::cli_runner::enqueue_materialized_plan_remote(
                     remote_queues.inner(),
                     &host_id,
                     &prepared.plan,
                 );
+            } else {
+                let commands =
+                    materialize_recipe_commands(&spec, &cache, &pool, &prepared.route).await?;
+                if commands.is_empty() {
+                    return Err("recipe did not materialize executable commands".into());
+                }
+                for (label, command) in commands {
+                    remote_queues.inner().enqueue(&host_id, label, command);
+                }
             }
             let result = crate::cli_runner::remote_apply_queued_commands(
                 pool.clone(),
@@ -2110,11 +2072,9 @@ pub async fn execute_recipe(
                 let error = result
                     .error
                     .unwrap_or_else(|| "remote recipe execution failed".to_string());
-                if !legacy_spec {
-                    warnings.extend(
-                        cleanup_remote_recipe_artifacts(&pool, &host_id, &runtime_artifacts).await,
-                    );
-                }
+                warnings.extend(
+                    cleanup_remote_recipe_artifacts(&pool, &host_id, &runtime_artifacts).await,
+                );
                 let _ = persist_recipe_run(
                     &spec,
                     &prepared,

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::execution_spec::{ExecutionResourceClaim, ExecutionSpec};
 use crate::recipe::{step_references_empty_param, Recipe};
-use crate::recipe_adapter::compile_legacy_recipe_to_spec;
+use crate::recipe_adapter::compile_recipe_to_spec;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,7 +31,7 @@ pub fn build_recipe_plan(
     recipe: &Recipe,
     params: &Map<String, Value>,
 ) -> Result<RecipePlan, String> {
-    let execution_spec = compile_legacy_recipe_to_spec(recipe, params)?;
+    let execution_spec = compile_recipe_to_spec(recipe, params)?;
     let skipped_step_count = recipe
         .steps
         .iter()
@@ -45,13 +45,6 @@ pub fn build_recipe_plan(
             skipped_step_count
         ));
     }
-    if execution_spec.execution.kind == "job" {
-        warnings.push(
-            "Plan preview is compiled from legacy recipe steps; execution still runs through the command queue."
-                .into(),
-        );
-    }
-
     let digest_source = serde_json::to_vec(&execution_spec).map_err(|error| error.to_string())?;
     let execution_spec_digest = Uuid::new_v5(&Uuid::NAMESPACE_OID, &digest_source).to_string();
 
