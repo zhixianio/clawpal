@@ -101,6 +101,7 @@ describe("Recipes runtime summary", () => {
     expect(html).toContain("digest-123");
     expect(html).toContain("Import");
     expect(html).toContain("Cook");
+    expect(html).toContain("Delete");
     expect(html).toContain("agent-persona-pack");
   });
 });

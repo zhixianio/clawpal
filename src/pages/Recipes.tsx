@@ -29,6 +29,13 @@ function formatRunSourceTrace(run: RecipeRuntimeRun): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+function canConfirmWorkspaceDelete(message: string): boolean {
+  if (typeof window === "undefined" || typeof window.confirm !== "function") {
+    return true;
+  }
+  return window.confirm(message);
+}
+
 export function Recipes({
   onCook,
   onOpenStudio,
@@ -207,6 +214,27 @@ export function Recipes({
     }
   };
 
+  const handleDeleteWorkspaceEntry = async (entry: RecipeWorkspaceEntry) => {
+    const confirmed = canConfirmWorkspaceDelete(
+      t("recipes.workspaceDeleteConfirm", { slug: entry.slug }),
+    );
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await ua.deleteRecipeWorkspaceSource(entry.slug);
+      setWorkspaceEntries((current) => current.filter((item) => item.slug !== entry.slug));
+      setImportNotice(t("recipes.workspaceDeleteSuccess", { slug: entry.slug }));
+    } catch (error) {
+      console.error("Failed to delete workspace recipe:", error);
+      setImportNotice(
+        t("recipes.workspaceDeleteFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+
   const handleCopySource = async () => {
     if (!sourcePreview) return;
     const writer = navigator?.clipboard?.writeText;
@@ -279,6 +307,13 @@ export function Recipes({
                       onClick={() => void handleOpenWorkspaceEntry(entry)}
                     >
                       {t("recipes.workspaceOpen", { slug: entry.slug })}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleDeleteWorkspaceEntry(entry)}
+                    >
+                      {t("recipes.workspaceDelete")}
                     </Button>
                   </div>
                 </div>
