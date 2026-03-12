@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { PencilIcon, Trash2Icon } from "lucide-react";
+
 import { RecipeCard } from "../components/RecipeCard";
 import type {
   Recipe,
@@ -9,13 +11,31 @@ import type {
   RecipeStudioDraft,
   RecipeWorkspaceEntry,
 } from "../lib/types";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useApi } from "@/lib/use-api";
 import { formatTime } from "@/lib/utils";
 
@@ -29,11 +49,25 @@ function formatRunSourceTrace(run: RecipeRuntimeRun): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-function canConfirmWorkspaceDelete(message: string): boolean {
-  if (typeof window === "undefined" || typeof window.confirm !== "function") {
-    return true;
-  }
-  return window.confirm(message);
+type WorkspaceDraftPreview = {
+  sourceText?: string;
+  recipe: Recipe | null;
+};
+
+function humanizeWorkspaceSlug(slug: string): string {
+  return slug
+    .split(/[-_]+/)
+    .filter((part) => part.trim().length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function CookIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" className="size-3.5 fill-current">
+      <path d="M5 3.5v9l7-4.5-7-4.5Z" />
+    </svg>
+  );
 }
 
 export function Recipes({
@@ -71,10 +105,43 @@ export function Recipes({
   const [workspaceEntries, setWorkspaceEntries] = useState<RecipeWorkspaceEntry[]>(
     () => initialWorkspaceEntries ?? [],
   );
+  const [workspaceDrafts, setWorkspaceDrafts] = useState<Record<string, WorkspaceDraftPreview>>(
+    {},
+  );
   const [sourcePreview, setSourcePreview] = useState<string | null>(null);
   const [sourcePreviewName, setSourcePreviewName] = useState<string>("");
   const [copiedSource, setCopiedSource] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
+
+  const hydrateWorkspaceDrafts = async (
+    entries: RecipeWorkspaceEntry[],
+  ): Promise<Record<string, WorkspaceDraftPreview>> => {
+    const previews = await Promise.all(
+      entries.map(async (entry) => {
+        try {
+          const sourceText = await ua.readRecipeWorkspaceSource(entry.slug);
+          const workspaceRecipes = await ua.listRecipesFromSourceText(sourceText);
+          return [
+            entry.slug,
+            {
+              sourceText,
+              recipe: workspaceRecipes[0] ?? null,
+            },
+          ] as const;
+        } catch (error) {
+          console.error("Failed to hydrate workspace recipe preview:", error);
+          return [
+            entry.slug,
+            {
+              recipe: null,
+            },
+          ] as const;
+        }
+      }),
+    );
+
+    return Object.fromEntries(previews);
+  };
 
   const load = async (nextSource: string) => {
     const value = nextSource.trim();
@@ -85,11 +152,13 @@ export function Recipes({
         ua.listRecipeRuns(),
         ua.listRecipeWorkspaceEntries(),
       ]);
+      const nextWorkspaceDrafts = await hydrateWorkspaceDrafts(nextWorkspaceEntries);
       setLoadedSource(value || undefined);
       setRecipes(nextRecipes);
       setInstances(nextInstances);
       setRuns(nextRuns);
       setWorkspaceEntries(nextWorkspaceEntries);
+      setWorkspaceDrafts(nextWorkspaceDrafts);
     } catch (e) {
       console.error("Failed to load recipes:", e);
     }
@@ -151,6 +220,24 @@ export function Recipes({
     return counts;
   }, [instances]);
 
+  const workspaceDraftCards = useMemo(
+    () =>
+      workspaceEntries.map((entry) => {
+        const preview = workspaceDrafts[entry.slug];
+        const recipe = preview?.recipe ?? null;
+        return {
+          entry,
+          displayName: recipe?.name?.trim() || humanizeWorkspaceSlug(entry.slug),
+          description:
+            recipe?.description?.trim() || t("recipes.workspaceDraftFallbackDescription"),
+          tags: recipe?.tags?.length ? recipe.tags : [t("recipes.workspaceTag")],
+          stepCount: recipe?.steps?.length ?? 0,
+          difficulty: recipe?.difficulty ?? "normal",
+        };
+      }),
+    [t, workspaceDrafts, workspaceEntries],
+  );
+
   const handleViewSource = async (recipe: Recipe) => {
     try {
       const exported = await ua.exportRecipeSource(recipe.id, loadedSource);
@@ -184,9 +271,9 @@ export function Recipes({
       return;
     }
     try {
-      const sourceText = await ua.readRecipeWorkspaceSource(entry.slug);
-      const workspaceRecipes = await ua.listRecipesFromSourceText(sourceText);
-      const primaryRecipe = workspaceRecipes[0];
+      const hydrated = workspaceDrafts[entry.slug];
+      const sourceText = hydrated?.sourceText ?? await ua.readRecipeWorkspaceSource(entry.slug);
+      const primaryRecipe = hydrated?.recipe ?? (await ua.listRecipesFromSourceText(sourceText))[0];
       onOpenStudio({
         recipeId: primaryRecipe?.id ?? entry.slug,
         recipeName: primaryRecipe?.name ?? entry.slug,
@@ -201,9 +288,9 @@ export function Recipes({
 
   const handleCookWorkspaceEntry = async (entry: RecipeWorkspaceEntry) => {
     try {
-      const sourceText = await ua.readRecipeWorkspaceSource(entry.slug);
-      const workspaceRecipes = await ua.listRecipesFromSourceText(sourceText);
-      const primaryRecipe = workspaceRecipes[0];
+      const hydrated = workspaceDrafts[entry.slug];
+      const sourceText = hydrated?.sourceText ?? await ua.readRecipeWorkspaceSource(entry.slug);
+      const primaryRecipe = hydrated?.recipe ?? (await ua.listRecipesFromSourceText(sourceText))[0];
       onCook(primaryRecipe?.id ?? entry.slug, {
         sourceText,
         sourceOrigin: "saved",
@@ -215,15 +302,14 @@ export function Recipes({
   };
 
   const handleDeleteWorkspaceEntry = async (entry: RecipeWorkspaceEntry) => {
-    const confirmed = canConfirmWorkspaceDelete(
-      t("recipes.workspaceDeleteConfirm", { slug: entry.slug }),
-    );
-    if (!confirmed) {
-      return;
-    }
     try {
       await ua.deleteRecipeWorkspaceSource(entry.slug);
       setWorkspaceEntries((current) => current.filter((item) => item.slug !== entry.slug));
+      setWorkspaceDrafts((current) => {
+        const next = { ...current };
+        delete next[entry.slug];
+        return next;
+      });
       setImportNotice(t("recipes.workspaceDeleteSuccess", { slug: entry.slug }));
     } catch (error) {
       console.error("Failed to delete workspace recipe:", error);
@@ -248,30 +334,34 @@ export function Recipes({
 
   return (
     <section>
-      <h2 className="text-2xl font-bold mb-4">{t('recipes.title')}</h2>
+      <h2 className="text-2xl font-bold mb-4">{t("recipes.title")}</h2>
       <div className="mb-2 flex items-center gap-2">
-        <Label>{t('recipes.sourceLabel')}</Label>
+        <Label>{t("recipes.sourceLabel")}</Label>
         <Input
           value={source}
           onChange={(event) => setSource(event.target.value)}
           placeholder="/path/recipes.json or /path/recipe-library or https://example.com/recipes.json"
           className="w-[380px]"
         />
-        <AsyncActionButton className="ml-2" onClick={() => load(source)} loadingText={t('recipes.loading')}>
-          {t('recipes.load')}
+        <AsyncActionButton
+          className="ml-2"
+          onClick={() => load(source)}
+          loadingText={t("recipes.loading")}
+        >
+          {t("recipes.load")}
         </AsyncActionButton>
-        <AsyncActionButton variant="outline" onClick={handleImport} loadingText={t("recipes.importing")}>
+        <AsyncActionButton
+          variant="outline"
+          onClick={handleImport}
+          loadingText={t("recipes.importing")}
+        >
           {t("recipes.import")}
         </AsyncActionButton>
       </div>
       <p className="text-sm text-muted-foreground mt-0">
-        {t('recipes.loadedFrom', { source: loadedSource || t('recipes.builtinSource') })}
+        {t("recipes.loadedFrom", { source: loadedSource || t("recipes.builtinSource") })}
       </p>
-      {importNotice && (
-        <p className="text-sm text-muted-foreground mt-2">
-          {importNotice}
-        </p>
-      )}
+      {importNotice && <p className="text-sm text-muted-foreground mt-2">{importNotice}</p>}
       <Card className="mt-4 mb-4">
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -286,37 +376,91 @@ export function Recipes({
             <Badge variant="outline">{workspaceEntries.length}</Badge>
           </div>
           {workspaceEntries.length > 0 && (
-            <div className="grid gap-2">
-              {workspaceEntries.map((entry) => (
-                <div
-                  key={entry.slug}
-                  className="flex items-center justify-between gap-3 rounded-xl border bg-background px-3 py-2"
-                >
-                  <div className="text-sm font-medium">{entry.slug}</div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void handleCookWorkspaceEntry(entry)}
-                    >
-                      {t("recipes.workspaceCook")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void handleOpenWorkspaceEntry(entry)}
-                    >
-                      {t("recipes.workspaceOpen", { slug: entry.slug })}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void handleDeleteWorkspaceEntry(entry)}
-                    >
-                      {t("recipes.workspaceDelete")}
-                    </Button>
-                  </div>
-                </div>
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
+              {workspaceDraftCards.map((draft) => (
+                <Card key={draft.entry.slug} className="group">
+                  <CardHeader>
+                    <CardTitle>{draft.displayName}</CardTitle>
+                    <CardDescription>{draft.description}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {draft.tags.map((tag) => (
+                        <Badge
+                          key={`${draft.entry.slug}-${tag}`}
+                          variant="secondary"
+                          className="bg-primary/8 text-primary/80 border-0"
+                        >
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
+                    <p className="text-sm text-muted-foreground flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 bg-muted px-2 py-0.5 rounded-full text-xs">
+                        {t("recipeCard.steps", { count: draft.stepCount })}
+                      </span>
+                      <span className="inline-flex items-center gap-1 bg-muted px-2 py-0.5 rounded-full text-xs">
+                        {t(`recipeCard.${draft.difficulty}`)}
+                      </span>
+                    </p>
+                  </CardContent>
+                  <CardFooter>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title={t("recipes.workspaceCook")}
+                        aria-label={t("recipes.workspaceCook")}
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => void handleCookWorkspaceEntry(draft.entry)}
+                      >
+                        <CookIcon />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title={t("recipes.workspaceOpen", { slug: draft.displayName })}
+                        aria-label={t("recipes.workspaceOpen", { slug: draft.displayName })}
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => void handleOpenWorkspaceEntry(draft.entry)}
+                      >
+                        <PencilIcon className="size-3.5" />
+                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            title={t("recipes.workspaceDelete")}
+                            aria-label={t("recipes.workspaceDelete")}
+                            className="text-muted-foreground hover:text-destructive"
+                          >
+                            <Trash2Icon className="size-3.5" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>{t("recipes.workspaceDeleteTitle")}</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              {t("recipes.workspaceDeleteDescription", {
+                                name: draft.displayName,
+                              })}
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
+                            <AlertDialogAction
+                              variant="destructive"
+                              onClick={() => void handleDeleteWorkspaceEntry(draft.entry)}
+                            >
+                              {t("recipes.workspaceDelete")}
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </CardFooter>
+                </Card>
               ))}
             </div>
           )}
@@ -328,9 +472,7 @@ export function Recipes({
             <div className="space-y-1">
               <div className="text-sm font-medium">{t("recipes.runtimeTitle")}</div>
               <p className="text-sm text-muted-foreground">
-                {latestRun
-                  ? t("recipes.runtimeDescription")
-                  : t("recipes.runtimeEmpty")}
+                {latestRun ? t("recipes.runtimeDescription") : t("recipes.runtimeEmpty")}
               </p>
             </div>
             {onOpenRuntimeDashboard && (
@@ -384,14 +526,10 @@ export function Recipes({
               onCook={() => onCook(recipe.id, { source: loadedSource })}
               onViewSource={() => void handleViewSource(recipe)}
               onEditSource={
-                loadedSource
-                  ? () => void handleOpenStudio(recipe, "external")
-                  : undefined
+                loadedSource ? () => void handleOpenStudio(recipe, "external") : undefined
               }
               onForkToWorkspace={
-                !loadedSource
-                  ? () => void handleOpenStudio(recipe, "workspace")
-                  : undefined
+                !loadedSource ? () => void handleOpenStudio(recipe, "workspace") : undefined
               }
             />
             {(latestRunByRecipe.has(recipe.id) || instanceCountByRecipe.has(recipe.id)) && (
@@ -406,9 +544,7 @@ export function Recipes({
                 </div>
                 {latestRunByRecipe.get(recipe.id) ? (
                   <>
-                    <div className="mt-1 text-sm">
-                      {latestRunByRecipe.get(recipe.id)?.summary}
-                    </div>
+                    <div className="mt-1 text-sm">{latestRunByRecipe.get(recipe.id)?.summary}</div>
                     <div className="mt-1 text-muted-foreground">
                       {displayRunStatus(latestRunByRecipe.get(recipe.id)?.status ?? "")}
                       {" · "}
@@ -416,7 +552,8 @@ export function Recipes({
                     </div>
                     {formatRunSourceTrace(latestRunByRecipe.get(recipe.id)!) && (
                       <div className="mt-1 text-muted-foreground">
-                        {t("recipes.runtimeSourceTrace")}: {formatRunSourceTrace(latestRunByRecipe.get(recipe.id)!)}
+                        {t("recipes.runtimeSourceTrace")}:{" "}
+                        {formatRunSourceTrace(latestRunByRecipe.get(recipe.id)!)}
                       </div>
                     )}
                   </>

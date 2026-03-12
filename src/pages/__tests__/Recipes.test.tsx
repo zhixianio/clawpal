@@ -100,8 +100,10 @@ describe("Recipes runtime summary", () => {
     expect(html).toContain("Fork to workspace");
     expect(html).toContain("digest-123");
     expect(html).toContain("Import");
-    expect(html).toContain("Cook");
-    expect(html).toContain("Delete");
-    expect(html).toContain("agent-persona-pack");
+    expect(html).toContain("Agent Persona Pack");
+    expect(html).toContain('title="Cook"');
+    expect(html).toContain('title="Open Agent Persona Pack"');
+    expect(html).toContain('title="Delete"');
+    expect(html).not.toContain(">agent-persona-pack<");
   });
 });
