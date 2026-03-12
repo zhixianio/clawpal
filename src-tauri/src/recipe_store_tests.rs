@@ -24,7 +24,20 @@ fn sample_run() -> Run {
             path: Some("~/.openclaw/openclaw.json".into()),
         }],
         warnings: vec![],
+        source_origin: None,
+        source_digest: None,
+        workspace_path: None,
     }
+}
+
+fn sample_run_with_source() -> Run {
+    let mut run = sample_run();
+    run.source_origin = Some("draft".into());
+    run.source_digest = Some("digest-123".into());
+    run.workspace_path = Some(
+        "/Users/chen/.clawpal/recipes/workspace/channel-persona.recipe.json".into(),
+    );
+    run
 }
 
 #[test]
@@ -61,4 +74,19 @@ fn list_all_runs_returns_latest_runs() {
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].id, "run_02");
     assert_eq!(runs[1].id, "run_01");
+}
+
+#[test]
+fn recorded_run_persists_source_digest_and_origin() {
+    let store = RecipeStore::for_test();
+    store.record_run(sample_run_with_source())
+        .expect("record run with source");
+
+    let stored = store.list_runs("inst_01").expect("list runs");
+    assert_eq!(stored[0].source_origin.as_deref(), Some("draft"));
+    assert_eq!(stored[0].source_digest.as_deref(), Some("digest-123"));
+    assert!(stored[0]
+        .workspace_path
+        .as_deref()
+        .is_some_and(|path| path.ends_with("channel-persona.recipe.json")));
 }

@@ -30,6 +30,10 @@ pub struct ExecuteRecipeRequest {
     pub spec: ExecutionSpec,
     #[serde(default)]
     pub source_origin: Option<String>,
+    #[serde(default)]
+    pub source_text: Option<String>,
+    #[serde(default)]
+    pub workspace_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

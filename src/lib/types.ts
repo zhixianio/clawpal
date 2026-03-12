@@ -202,6 +202,8 @@ export type RecipeSourceOrigin = "saved" | "draft";
 export interface ExecuteRecipeRequest {
   spec: ExecutionSpec;
   sourceOrigin?: RecipeSourceOrigin;
+  sourceText?: string;
+  workspaceSlug?: string;
 }
 
 export interface ExecuteRecipeResult {
@@ -231,6 +233,9 @@ export interface RecipeRuntimeRun {
   artifacts: RecipeRuntimeArtifact[];
   resourceClaims: ExecutionResourceClaim[];
   warnings: string[];
+  sourceOrigin?: string;
+  sourceDigest?: string;
+  workspacePath?: string;
 }
 
 export interface RecipeRuntimeInstance {

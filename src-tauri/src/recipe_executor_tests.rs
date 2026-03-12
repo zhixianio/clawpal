@@ -110,6 +110,8 @@ fn sample_execution_request() -> ExecuteRecipeRequest {
     ExecuteRecipeRequest {
         spec: sample_job_spec(),
         source_origin: None,
+        source_text: None,
+        workspace_slug: None,
     }
 }
 
@@ -256,6 +258,8 @@ fn action_recipe_spec_can_prepare_without_command_payload() {
     let result = execute_recipe(ExecuteRecipeRequest {
         spec: sample_action_recipe_spec(),
         source_origin: None,
+        source_text: None,
+        workspace_slug: None,
     })
     .expect("prepare action recipe execution");
 
@@ -302,6 +306,8 @@ fn schedule_execution_builds_unit_and_timer_artifacts() {
     let prepared = execute_recipe(ExecuteRecipeRequest {
         spec: spec.clone(),
         source_origin: None,
+        source_text: None,
+        workspace_slug: None,
     })
     .expect("prepare schedule execution");
 
@@ -321,6 +327,8 @@ fn attachment_execution_builds_dropin_and_reload_artifacts() {
     let prepared = execute_recipe(ExecuteRecipeRequest {
         spec: spec.clone(),
         source_origin: None,
+        source_text: None,
+        workspace_slug: None,
     })
     .expect("prepare attachment execution");
 

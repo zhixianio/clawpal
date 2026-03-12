@@ -59,6 +59,9 @@ describe("Orchestrator runtime timeline", () => {
                   },
                 ],
                 warnings: [],
+                sourceOrigin: "draft",
+                sourceDigest: "digest-123",
+                workspacePath: "/tmp/channel-persona.recipe.json",
               },
             ],
             initialEvents: [],
@@ -70,5 +73,6 @@ describe("Orchestrator runtime timeline", () => {
     expect(html).toContain("Resource claims");
     expect(html).toContain("Rendered patch");
     expect(html).toContain("openclaw.config");
+    expect(html).toContain("digest-123");
   });
 });

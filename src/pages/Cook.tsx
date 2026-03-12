@@ -28,12 +28,14 @@ export function Cook({
   recipeSource,
   recipeSourceText,
   recipeSourceOrigin = "saved",
+  recipeWorkspaceSlug,
 }: {
   recipeId: string;
   onDone?: () => void;
   recipeSource?: string;
   recipeSourceText?: string;
   recipeSourceOrigin?: "saved" | "draft";
+  recipeWorkspaceSlug?: string;
 }) {
   const { t } = useTranslation();
   const ua = useApi();
@@ -193,7 +195,7 @@ export function Cook({
           instanceId,
           isRemote,
           isDocker,
-        }, recipeSourceOrigin),
+        }, recipeSourceOrigin, recipeSourceText, recipeWorkspaceSlug),
       });
       setExecutionResult(result);
       setStepStatuses((current) => markCookStatuses(current, "done"));

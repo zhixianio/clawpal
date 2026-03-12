@@ -76,6 +76,11 @@ impl RecipeWorkspace {
             .map_err(|error| format!("failed to read recipe source '{}': {}", slug, error))
     }
 
+    pub fn resolve_recipe_source_path(&self, raw_slug: &str) -> Result<String, String> {
+        self.path_for_slug(raw_slug)
+            .map(|path| path.to_string_lossy().to_string())
+    }
+
     pub fn save_recipe_source(
         &self,
         raw_slug: &str,

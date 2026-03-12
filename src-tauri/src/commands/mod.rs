@@ -1365,8 +1365,38 @@ fn persist_recipe_run(
             artifacts: crate::recipe_executor::build_runtime_artifacts(spec, prepared),
             resource_claims: build_runtime_claims(spec),
             warnings: warnings.to_vec(),
+            source_origin: infer_recipe_source_origin(spec),
+            source_digest: infer_recipe_source_digest(spec),
+            workspace_path: infer_recipe_workspace_path(spec),
         })
         .map(|_| ())
+}
+
+fn infer_recipe_source_origin(spec: &crate::execution_spec::ExecutionSpec) -> Option<String> {
+    spec.source
+        .get("recipeSourceOrigin")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn infer_recipe_source_digest(spec: &crate::execution_spec::ExecutionSpec) -> Option<String> {
+    spec.source
+        .get("recipeSourceDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn infer_recipe_workspace_path(spec: &crate::execution_spec::ExecutionSpec) -> Option<String> {
+    spec.source
+        .get("recipeWorkspacePath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn find_recipe_run(run_id: &str) -> Result<Option<RecipeRuntimeRun>, String> {
@@ -2005,6 +2035,8 @@ mod runtime_artifact_tests {
         let prepared = prepare_recipe_execution(ExecuteRecipeRequest {
             spec: spec.clone(),
             source_origin: None,
+            source_text: None,
+            workspace_slug: None,
         })
         .expect("prepare recipe execution");
         let artifacts = build_runtime_artifacts(&spec, &prepared);
@@ -2026,17 +2058,46 @@ pub async fn execute_recipe(
     remote_queues: State<'_, crate::cli_runner::RemoteCommandQueues>,
     mut request: ExecuteRecipeRequest,
 ) -> Result<ExecuteRecipeResult, String> {
+    let mut source = request.spec.source.as_object().cloned().unwrap_or_default();
+
     if let Some(source_origin) = request
         .source_origin
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let mut source = request.spec.source.as_object().cloned().unwrap_or_default();
         source.insert(
             "recipeSourceOrigin".into(),
             Value::String(source_origin.to_string()),
         );
+    }
+
+    if let Some(source_text) = request
+        .source_text
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        source.insert(
+            "recipeSourceDigest".into(),
+            Value::String(
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, source_text.as_bytes())
+                    .to_string(),
+            ),
+        );
+    }
+
+    if let Some(workspace_slug) = request
+        .workspace_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(path) = RecipeWorkspace::from_resolved_paths().resolve_recipe_source_path(workspace_slug) {
+            source.insert("recipeWorkspacePath".into(), Value::String(path));
+        }
+    }
+
+    if !source.is_empty() {
         request.spec.source = Value::Object(source);
     }
     let spec = request.spec.clone();

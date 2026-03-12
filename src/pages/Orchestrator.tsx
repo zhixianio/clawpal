@@ -31,6 +31,12 @@ function formatClaim(claim: RecipeRuntimeRun["resourceClaims"][number]): string 
     .join(" · ");
 }
 
+function formatSourceTrace(run: RecipeRuntimeRun): string | null {
+  const parts = [run.sourceOrigin, run.sourceDigest, run.workspacePath]
+    .filter((value): value is string => !!value && value.trim().length > 0);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function Orchestrator({
   initialRuns,
   initialEvents,
@@ -163,6 +169,12 @@ export function Orchestrator({
                   {run.warnings.length > 0 && (
                     <div className="rounded border bg-muted/30 p-2 text-xs whitespace-pre-wrap break-all">
                       {run.warnings.join("\n")}
+                    </div>
+                  )}
+
+                  {formatSourceTrace(run) && (
+                    <div className="rounded border bg-muted/20 p-2 text-xs whitespace-pre-wrap break-all">
+                      {t("orchestrator.sourceTrace")}: {formatSourceTrace(run)}
                     </div>
                   )}
                 </CardContent>

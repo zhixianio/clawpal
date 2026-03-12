@@ -614,6 +614,7 @@
   "orchestrator.runtimeEmpty": "还没有记录到菜谱运行。",
   "orchestrator.artifacts": "产物",
   "orchestrator.resourceClaims": "资源占用",
+  "orchestrator.sourceTrace": "来源追踪",
   "orchestrator.eventLogTitle": "事件日志",
 
   "history.title": "历史",
@@ -638,6 +639,7 @@
   "history.runId": "运行 ID",
   "history.runArtifacts": "产物",
   "history.runClaims": "资源声明",
+  "history.sourceTrace": "来源追踪",
 
   "channels.title": "频道",
   "channels.noChannels": "未配置频道。请在 OpenClaw 配置中添加频道插件，然后刷新查看。",
@@ -667,6 +669,7 @@
   "recipes.runtimeOpenDashboard": "打开面板",
   "recipes.runtimeRecentRun": "最近一次运行",
   "recipes.runtimeNoRuns": "暂无运行",
+  "recipes.runtimeSourceTrace": "来源追踪",
   "recipes.runtimeInstancesForRecipe_one": "{{count}} 个实例",
   "recipes.runtimeInstancesForRecipe_other": "{{count}} 个实例",
   "recipes.sourceDialogTitle": "{{name}} 源文档",

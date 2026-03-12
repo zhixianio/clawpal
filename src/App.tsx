@@ -176,6 +176,7 @@ export function App() {
   const [recipeSource, setRecipeSource] = useState<string | undefined>(undefined);
   const [recipeSourceText, setRecipeSourceText] = useState<string | undefined>(undefined);
   const [recipeSourceOrigin, setRecipeSourceOrigin] = useState<RecipeSourceOrigin>("saved");
+  const [recipeSourceWorkspaceSlug, setRecipeSourceWorkspaceSlug] = useState<string | undefined>(undefined);
   const [recipeEditorRecipeId, setRecipeEditorRecipeId] = useState<string | null>(null);
   const [recipeEditorRecipeName, setRecipeEditorRecipeName] = useState("");
   const [recipeEditorSource, setRecipeEditorSource] = useState("");
@@ -1704,6 +1705,7 @@ export function App() {
                 setRecipeSource(source);
                 setRecipeSourceText(undefined);
                 setRecipeSourceOrigin("saved");
+                setRecipeSourceWorkspaceSlug(undefined);
                 setCookReturnRoute("recipes");
                 navigateRoute("cook");
               }}
@@ -1723,6 +1725,7 @@ export function App() {
                 setRecipeSource(undefined);
                 setRecipeSourceText(draft.source);
                 setRecipeSourceOrigin("draft");
+                setRecipeSourceWorkspaceSlug(draft.workspaceSlug);
                 setCookReturnRoute("recipe-studio");
                 setRecipeEditorRecipeId(draft.recipeId);
                 setRecipeEditorRecipeName(draft.recipeName);
@@ -1743,6 +1746,7 @@ export function App() {
               recipeSource={recipeSource}
               recipeSourceText={recipeSourceText}
               recipeSourceOrigin={recipeSourceOrigin}
+              recipeWorkspaceSlug={recipeSourceWorkspaceSlug}
               onDone={() => {
                 navigateRoute(cookReturnRoute);
               }}

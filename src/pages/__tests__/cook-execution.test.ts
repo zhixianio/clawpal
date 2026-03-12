@@ -75,9 +75,13 @@ describe("cook execution helpers", () => {
         isDocker: false,
       },
       "draft",
+      "{\n  \"id\": \"draft\"\n}",
+      "channel-persona",
     );
 
     expect(request.sourceOrigin).toBe("draft");
+    expect(request.sourceText).toContain("\"id\": \"draft\"");
+    expect(request.workspaceSlug).toBe("channel-persona");
     expect(request.spec.target).toEqual({ kind: "local" });
   });
 });

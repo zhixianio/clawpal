@@ -48,6 +48,12 @@ pub struct Run {
     pub resource_claims: Vec<ResourceClaim>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

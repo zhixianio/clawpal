@@ -23,6 +23,12 @@ function displayRunStatus(status: string): string {
   return status.replace(/_/g, " ");
 }
 
+function formatRunSourceTrace(run: RecipeRuntimeRun): string | null {
+  const parts = [run.sourceOrigin, run.sourceDigest, run.workspacePath]
+    .filter((value): value is string => !!value && value.trim().length > 0);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function Recipes({
   onCook,
   onOpenStudio,
@@ -249,6 +255,11 @@ export function Recipes({
                 </span>
               </div>
               <p className="text-sm mt-2">{latestRun.summary}</p>
+              {formatRunSourceTrace(latestRun) && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  {t("recipes.runtimeSourceTrace")}: {formatRunSourceTrace(latestRun)}
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -291,6 +302,11 @@ export function Recipes({
                       {" · "}
                       {formatTime(latestRunByRecipe.get(recipe.id)?.startedAt ?? "")}
                     </div>
+                    {formatRunSourceTrace(latestRunByRecipe.get(recipe.id)!) && (
+                      <div className="mt-1 text-muted-foreground">
+                        {t("recipes.runtimeSourceTrace")}: {formatRunSourceTrace(latestRunByRecipe.get(recipe.id)!)}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="mt-1 text-muted-foreground">{t("recipes.runtimeNoRuns")}</div>

@@ -50,6 +50,9 @@ describe("History runtime association", () => {
                 },
               ],
               warnings: [],
+              sourceOrigin: "draft",
+              sourceDigest: "digest-123",
+              workspacePath: "/tmp/channel-persona.recipe.json",
             },
           ],
         }),
@@ -61,6 +64,7 @@ describe("History runtime association", () => {
     expect(html).toContain("run_01");
     expect(html).toContain("Rendered patch");
     expect(html).toContain("openclaw.config");
+    expect(html).toContain("digest-123");
   });
 
   test("falls back to history item artifacts when runtime run is unavailable", async () => {

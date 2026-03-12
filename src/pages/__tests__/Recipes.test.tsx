@@ -69,17 +69,20 @@ describe("Recipes runtime summary", () => {
                 startedAt: "2026-03-11T10:00:00Z",
                 finishedAt: "2026-03-11T10:00:03Z",
                 artifacts: [],
-                resourceClaims: [
-                  {
-                    kind: "path",
-                    id: "openclaw.config",
-                    path: "~/.openclaw/config.json",
-                  },
-                ],
-                warnings: [],
-              },
-            ],
-          }),
+              resourceClaims: [
+                {
+                  kind: "path",
+                  id: "openclaw.config",
+                  path: "~/.openclaw/config.json",
+                },
+              ],
+              warnings: [],
+              sourceOrigin: "draft",
+              sourceDigest: "digest-123",
+              workspacePath: "/tmp/channel-persona.recipe.json",
+            },
+          ],
+        }),
         }),
       }),
     );
@@ -89,5 +92,6 @@ describe("Recipes runtime summary", () => {
     expect(html).toContain("succeeded");
     expect(html).toContain("View source");
     expect(html).toContain("Fork to workspace");
+    expect(html).toContain("digest-123");
   });
 });

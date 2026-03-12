@@ -617,6 +617,7 @@
   "orchestrator.runtimeEmpty": "No recipe runs recorded yet.",
   "orchestrator.artifacts": "Artifacts",
   "orchestrator.resourceClaims": "Resource claims",
+  "orchestrator.sourceTrace": "Source trace",
   "orchestrator.eventLogTitle": "Event Log",
 
   "history.title": "History",
@@ -641,6 +642,7 @@
   "history.runId": "Run ID",
   "history.runArtifacts": "Artifacts",
   "history.runClaims": "Resource claims",
+  "history.sourceTrace": "Source trace",
 
   "channels.title": "Channels",
   "channels.noChannels": "No channels configured. Add channel plugins in your OpenClaw config, then refresh to see them here.",
@@ -670,6 +672,7 @@
   "recipes.runtimeOpenDashboard": "Open dashboard",
   "recipes.runtimeRecentRun": "Recent run",
   "recipes.runtimeNoRuns": "No runs yet",
+  "recipes.runtimeSourceTrace": "Source trace",
   "recipes.runtimeInstancesForRecipe_one": "{{count}} instance",
   "recipes.runtimeInstancesForRecipe_other": "{{count}} instances",
   "recipes.sourceDialogTitle": "{{name}} source",

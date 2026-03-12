@@ -30,6 +30,12 @@ function formatResourceClaimLabel(run: RecipeRuntimeRun, index: number) {
   return claim.id || claim.path || claim.target || claim.kind;
 }
 
+function formatRunSourceTrace(run: RecipeRuntimeRun): string | null {
+  const parts = [run.sourceOrigin, run.sourceDigest, run.workspacePath]
+    .filter((value): value is string => !!value && value.trim().length > 0);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 export function History({
   onOpenRuntimeDashboard,
   initialHistory = [],
@@ -148,6 +154,11 @@ export function History({
                     {associatedRun.resourceClaims.length > 0 && (
                       <p className="text-xs text-muted-foreground">
                         {t("history.runClaims")}: {associatedRun.resourceClaims.map((_, index) => formatResourceClaimLabel(associatedRun, index)).join(", ")}
+                      </p>
+                    )}
+                    {formatRunSourceTrace(associatedRun) && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("history.sourceTrace")}: {formatRunSourceTrace(associatedRun)}
                       </p>
                     )}
                   </div>

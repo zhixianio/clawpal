@@ -26,10 +26,14 @@ export function buildCookExecuteRequest(
   spec: ExecutionSpec,
   context: CookExecutionContext,
   sourceOrigin: RecipeSourceOrigin,
+  sourceText?: string,
+  workspaceSlug?: string,
 ): ExecuteRecipeRequest {
   return {
     spec: buildCookExecutionSpec(spec, context),
     sourceOrigin,
+    sourceText,
+    workspaceSlug,
   };
 }
 
