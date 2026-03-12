@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import { RecipeFormEditor } from "@/components/RecipeFormEditor";
 import { RecipeSaveDialog } from "@/components/RecipeSaveDialog";
 import { RecipeSampleParamsForm } from "@/components/RecipeSampleParamsForm";
 import { RecipeSourceEditor } from "@/components/RecipeSourceEditor";
@@ -10,8 +11,15 @@ import { RecipePlanPreview } from "@/components/RecipePlanPreview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  fromRecipeEditorModel,
+  parseRecipeSource,
+  serializeRecipeEditorModel,
+  toRecipeEditorModel,
+} from "@/lib/recipe-editor-model";
 import type {
   Recipe,
+  RecipeEditorModel,
   RecipeEditorOrigin,
   RecipePlan,
   RecipeSourceDiagnostics,
@@ -66,6 +74,7 @@ const NEW_RECIPE_SOURCE = JSON.stringify(
 );
 
 type SaveDialogMode = "save-as" | "fork" | null;
+type RecipeStudioMode = "source" | "form";
 
 function isRecipeShape(value: unknown): value is Recipe {
   return !!(
@@ -161,6 +170,36 @@ function canConfirmDiscard(message: string): boolean {
   return window.confirm(message);
 }
 
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function tryBuildEditorModel(source: string): RecipeEditorModel | null {
+  try {
+    return toRecipeEditorModel(parseRecipeSource(source));
+  } catch {
+    return null;
+  }
+}
+
+function syncDraftRecipeFromModel(model: RecipeEditorModel): Recipe | null {
+  try {
+    const nextDoc = fromRecipeEditorModel(model);
+    return {
+      id: nextDoc.id,
+      name: nextDoc.name,
+      description: nextDoc.description,
+      version: nextDoc.version,
+      tags: nextDoc.tags,
+      difficulty: nextDoc.difficulty,
+      params: nextDoc.params,
+      steps: nextDoc.steps,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function RecipeStudio({
   recipeId,
   recipeName,
@@ -184,8 +223,13 @@ export function RecipeStudio({
     () => tryParseRecipeFromSource(initialSource, recipeId),
     [initialSource, recipeId],
   );
+  const initialEditorModel = useMemo(
+    () => tryBuildEditorModel(initialSource),
+    [initialSource],
+  );
   const [source, setSource] = useState(initialSource);
   const [baselineSource, setBaselineSource] = useState(initialSource);
+  const [mode, setMode] = useState<RecipeStudioMode>("source");
   const [currentRecipeId, setCurrentRecipeId] = useState(recipeId);
   const [currentRecipeName, setCurrentRecipeName] = useState(recipeName);
   const [currentOrigin, setCurrentOrigin] = useState<RecipeEditorOrigin>(origin);
@@ -199,6 +243,8 @@ export function RecipeStudio({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [draftRecipe, setDraftRecipe] = useState<Recipe | null>(initialDraftRecipe);
+  const [formModel, setFormModel] = useState<RecipeEditorModel | null>(initialEditorModel);
+  const [formSyncError, setFormSyncError] = useState<string | null>(null);
   const [sampleParams, setSampleParams] = useState<Record<string, string>>(() => {
     if (!initialDraftRecipe) {
       return {};
@@ -216,11 +262,14 @@ export function RecipeStudio({
   useEffect(() => {
     setSource(initialSource);
     setBaselineSource(initialSource);
+    setMode("source");
     setCurrentRecipeId(recipeId);
     setCurrentRecipeName(recipeName);
     setCurrentOrigin(origin);
     setCurrentWorkspaceSlug(workspaceSlug ?? null);
     setDraftRecipe(tryParseRecipeFromSource(initialSource, recipeId));
+    setFormModel(tryBuildEditorModel(initialSource));
+    setFormSyncError(null);
     setSampleParams(() => {
       const parsedRecipe = tryParseRecipeFromSource(initialSource, recipeId);
       if (!parsedRecipe) {
@@ -271,6 +320,20 @@ export function RecipeStudio({
   }, [source, ua]);
 
   useEffect(() => {
+    if (!source.trim()) {
+      setFormSyncError(null);
+      return;
+    }
+    const nextModel = tryBuildEditorModel(source);
+    if (nextModel) {
+      setFormModel(nextModel);
+      setFormSyncError(null);
+      return;
+    }
+    setFormSyncError(t("recipeStudio.formSyncSourceError"));
+  }, [source, t]);
+
+  useEffect(() => {
     let cancelled = false;
     void ua.listRecipesFromSourceText(source)
       .then((recipes) => {
@@ -311,6 +374,12 @@ export function RecipeStudio({
     () => currentWorkspaceSlug ?? suggestSlug(source, currentRecipeId),
     [currentRecipeId, currentWorkspaceSlug, source],
   );
+  const modeSummaryTitle = mode === "form"
+    ? t("recipeStudio.formSummaryTitle")
+    : t("recipeStudio.sourceSummaryTitle");
+  const modeSummaryBody = mode === "form"
+    ? t("recipeStudio.formSummaryBody")
+    : t("recipeStudio.sourceSummaryBody");
 
   const completePersist = (slug: string) => {
     const identity = tryParseRecipeIdentity(source, currentRecipeId, currentRecipeName);
@@ -407,6 +476,25 @@ export function RecipeStudio({
     }
   };
 
+  const handleFormChange = (nextModel: RecipeEditorModel) => {
+    setFormModel(nextModel);
+    const nextDraftRecipe = syncDraftRecipeFromModel(nextModel);
+    if (nextDraftRecipe) {
+      setDraftRecipe(nextDraftRecipe);
+      setCurrentRecipeId(nextDraftRecipe.id);
+      setCurrentRecipeName(nextDraftRecipe.name);
+    }
+    try {
+      const nextSource = serializeRecipeEditorModel(nextModel);
+      setSource(nextSource);
+      setFormSyncError(null);
+    } catch (error) {
+      setFormSyncError(
+        t("recipeStudio.formSyncFormError", { error: describeError(error) }),
+      );
+    }
+  };
+
   return (
     <section className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -435,12 +523,25 @@ export function RecipeStudio({
       <Card className="border-dashed bg-muted/10">
         <CardContent className="flex items-center justify-between gap-3 flex-wrap py-4">
           <div>
-            <div className="text-sm font-medium">{t("recipeStudio.sourceSummaryTitle")}</div>
+            <div className="text-sm font-medium">{modeSummaryTitle}</div>
             <p className="text-sm text-muted-foreground">
-              {t("recipeStudio.sourceSummaryBody")}
+              {modeSummaryBody}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              variant={mode === "source" ? "default" : "outline"}
+              onClick={() => setMode("source")}
+            >
+              {t("recipeStudio.modeSource")}
+            </Button>
+            <Button
+              variant={mode === "form" ? "default" : "outline"}
+              onClick={() => setMode("form")}
+              disabled={!formModel}
+            >
+              {t("recipeStudio.modeForm")}
+            </Button>
             <Button variant="outline" onClick={handleNewDraft}>
               {t("recipeStudio.new")}
             </Button>
@@ -493,12 +594,34 @@ export function RecipeStudio({
       </Card>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.85fr)]">
-        <RecipeSourceEditor
-          value={source}
-          readOnly={readOnly}
-          origin={currentOrigin}
-          onChange={setSource}
-        />
+        <div className="space-y-4">
+          {mode === "source" ? (
+            <RecipeSourceEditor
+              value={source}
+              readOnly={readOnly}
+              origin={currentOrigin}
+              onChange={setSource}
+            />
+          ) : formModel ? (
+            <>
+              <RecipeFormEditor
+                model={formModel}
+                readOnly={readOnly}
+                onChange={handleFormChange}
+              />
+              {formSyncError && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                  <div className="font-medium">{t("recipeStudio.formSyncErrorTitle")}</div>
+                  <p>{formSyncError}</p>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="rounded-xl border border-dashed px-4 py-6 text-sm text-muted-foreground">
+              {t("recipeStudio.formUnavailable")}
+            </div>
+          )}
+        </div>
         <div className="space-y-4">
           <RecipeValidationPanel
             diagnostics={diagnostics}

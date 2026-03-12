@@ -67,6 +67,7 @@ describe("RecipeStudio", () => {
     expect(html).toContain("Save as");
     expect(html).toContain("Cook draft");
     expect(html).toContain("Preview plan");
+    expect(html).toContain("Form");
     expect(html).toContain("textarea");
     expect(html).toContain("ExecutionSpec");
   });

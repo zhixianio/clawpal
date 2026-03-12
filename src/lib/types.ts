@@ -82,6 +82,28 @@ export interface RecipeStudioDraft {
   workspaceSlug?: string;
 }
 
+export interface RecipeEditorActionRow {
+  kind: string;
+  name: string;
+  argsText: string;
+}
+
+export interface RecipeEditorModel {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  tagsText: string;
+  difficulty: Recipe["difficulty"];
+  params: RecipeParam[];
+  steps: RecipeStep[];
+  actionRows: RecipeEditorActionRow[];
+  bundleCapabilities: string[];
+  bundleResources: string[];
+  executionKind: RecipeExecutionKind;
+  sourceDocument: unknown;
+}
+
 export interface ChangeItem {
   path: string;
   op: string;
