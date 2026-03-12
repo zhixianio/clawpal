@@ -16,10 +16,21 @@ const SAMPLE_SOURCE = JSON.stringify({
   difficulty: "easy",
   params: [
     {
+      id: "guild_id",
+      label: "Guild",
+      type: "discord_guild",
+      required: true,
+    },
+    {
       id: "channel_id",
       label: "Channel",
       type: "discord_channel",
       required: true,
+      placeholder: "channel-123",
+      pattern: "^[0-9]+$",
+      minLength: 3,
+      maxLength: 32,
+      dependsOn: "guild_id",
     },
   ],
   steps: [
@@ -90,5 +101,12 @@ describe("RecipeFormEditor", () => {
     expect(html).toContain("Add action");
     expect(html).toContain("Remove");
     expect(html).toContain("Required");
+    expect(html).toContain("Placeholder");
+    expect(html).toContain("Pattern");
+    expect(html).toContain("Depends on");
+    expect(html).toContain("Min length");
+    expect(html).toContain("Max length");
+    expect(html).toContain("channel-123");
+    expect(html).toContain("guild_id");
   });
 });
