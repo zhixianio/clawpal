@@ -1513,7 +1513,9 @@ async fn cleanup_remote_recipe_snapshot(
 ) -> Vec<String> {
     if let Some(run_id) = snapshot.run_id.as_deref() {
         match find_recipe_run(run_id) {
-            Ok(Some(run)) => return cleanup_remote_recipe_artifacts(pool, host_id, &run.artifacts).await,
+            Ok(Some(run)) => {
+                return cleanup_remote_recipe_artifacts(pool, host_id, &run.artifacts).await
+            }
             Ok(None) if !snapshot.artifacts.is_empty() => {}
             Ok(None) => {
                 return vec![format!(
@@ -1542,6 +1544,7 @@ fn is_legacy_recipe_spec(spec: &crate::execution_spec::ExecutionSpec) -> bool {
 }
 
 pub(crate) const INTERNAL_SETUP_IDENTITY_COMMAND: &str = "__setup_identity__";
+pub(crate) const INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND: &str = "__systemd_dropin_write__";
 
 fn action_string(value: Option<&Value>) -> Option<String> {
     value.and_then(|value| match value {
@@ -1968,8 +1971,12 @@ mod runtime_artifact_tests {
             .expect("prepare recipe execution");
         let artifacts = build_runtime_artifacts(&spec, &prepared);
 
-        assert!(artifacts.iter().any(|artifact| artifact.kind == "systemdUnit"));
-        assert!(artifacts.iter().any(|artifact| artifact.kind == "systemdTimer"));
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.kind == "systemdUnit"));
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.kind == "systemdTimer"));
     }
 }
 

@@ -19,7 +19,9 @@ fn merge_auth_precheck_issues(
             continue;
         }
 
-        let resolved = resolved_keys.iter().find(|item| item.profile_id == profile.id);
+        let resolved = resolved_keys
+            .iter()
+            .find(|item| item.profile_id == profile.id);
         if resolved.is_some_and(|item| item.resolved) {
             continue;
         }
@@ -114,15 +116,15 @@ pub async fn precheck_auth(
 
     match &instance.instance_type {
         clawpal_core::instance::InstanceType::RemoteSsh => {
-            let (profiles, _) = super::profiles::collect_remote_profiles_from_openclaw(
+            let (profiles, _) =
+                super::profiles::collect_remote_profiles_from_openclaw(&pool, &instance_id, true)
+                    .await?;
+            let resolved = super::profiles::resolve_remote_api_keys_for_profiles(
                 &pool,
                 &instance_id,
-                true,
+                &profiles,
             )
-                .await?;
-            let resolved =
-                super::profiles::resolve_remote_api_keys_for_profiles(&pool, &instance_id, &profiles)
-                    .await;
+            .await;
             Ok(merge_auth_precheck_issues(&profiles, &resolved))
         }
         _ => {

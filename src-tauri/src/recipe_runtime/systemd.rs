@@ -71,20 +71,56 @@ pub fn materialize_attachment(spec: &ExecutionSpec) -> Result<SystemdRuntimePlan
     let unit_name = attachment_unit_name(spec);
     let mut commands = Vec::new();
     let mut warnings = Vec::new();
+    let mut needs_daemon_reload = false;
 
-    if let Some(drop_in_name) = spec
+    if let Some(drop_in) = spec
         .desired_state
         .get("systemdDropIn")
-        .and_then(|value| value.get("name"))
-        .and_then(Value::as_str)
+        .and_then(Value::as_object)
     {
-        commands.push(vec![
-            "systemctl".into(),
-            "--user".into(),
-            "edit".into(),
-            "--drop-in".into(),
-            drop_in_name.into(),
-        ]);
+        let target = drop_in
+            .get("unit")
+            .or_else(|| drop_in.get("target"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let name = drop_in
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let content = extract_drop_in_content(drop_in);
+        let missing_target = target.is_none();
+        let missing_name = name.is_none();
+        let missing_content = content.is_none();
+
+        match (target, name, content) {
+            (Some(target), Some(name), Some(content)) => {
+                commands.push(vec![
+                    crate::commands::INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND.into(),
+                    target.to_string(),
+                    name.to_string(),
+                    content,
+                ]);
+                needs_daemon_reload = true;
+            }
+            _ => {
+                let mut missing = Vec::new();
+                if missing_target {
+                    missing.push("unit/target");
+                }
+                if missing_name {
+                    missing.push("name");
+                }
+                if missing_content {
+                    missing.push("content");
+                }
+                warnings.push(format!(
+                    "attachment systemdDropIn is missing {}",
+                    missing.join(", ")
+                ));
+            }
+        }
     }
 
     if spec
@@ -93,6 +129,10 @@ pub fn materialize_attachment(spec: &ExecutionSpec) -> Result<SystemdRuntimePlan
         .and_then(Value::as_object)
         .is_some()
     {
+        needs_daemon_reload = true;
+    }
+
+    if needs_daemon_reload {
         commands.push(vec![
             "systemctl".into(),
             "--user".into(),
@@ -113,6 +153,18 @@ pub fn materialize_attachment(spec: &ExecutionSpec) -> Result<SystemdRuntimePlan
         resources: collect_resource_refs(spec),
         warnings,
     })
+}
+
+fn extract_drop_in_content(drop_in: &serde_json::Map<String, Value>) -> Option<String> {
+    ["content", "contents", "text", "body"]
+        .iter()
+        .find_map(|key| {
+            drop_in
+                .get(*key)
+                .and_then(Value::as_str)
+                .map(|value| value.to_string())
+                .filter(|value| !value.trim().is_empty())
+        })
 }
 
 fn build_systemd_run_command(

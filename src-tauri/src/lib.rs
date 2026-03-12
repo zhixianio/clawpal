@@ -70,8 +70,8 @@ use crate::node_client::NodeClient;
 use crate::ssh::SshConnectionPool;
 
 pub mod access_discovery;
-pub mod agent_identity;
 pub mod agent_fallback;
+pub mod agent_identity;
 pub mod bridge_client;
 pub mod bug_report;
 pub mod cli_runner;

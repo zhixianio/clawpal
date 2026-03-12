@@ -1,14 +1,15 @@
 use serde_json::{json, Value};
 
+use crate::commands::INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND;
 use crate::execution_spec::{
     ExecutionAction, ExecutionCapabilities, ExecutionMetadata, ExecutionResourceClaim,
     ExecutionResources, ExecutionSecrets, ExecutionSpec, ExecutionTarget,
 };
-use crate::recipe_store::Artifact;
 use crate::recipe_executor::{
     build_cleanup_commands, build_runtime_artifacts, execute_recipe, materialize_execution_plan,
     route_execution, ExecuteRecipeRequest,
 };
+use crate::recipe_store::Artifact;
 
 fn sample_target(kind: &str) -> Value {
     match kind {
@@ -108,6 +109,50 @@ fn sample_schedule_spec() -> ExecutionSpec {
 fn sample_execution_request() -> ExecuteRecipeRequest {
     ExecuteRecipeRequest {
         spec: sample_job_spec(),
+    }
+}
+
+fn sample_attachment_spec() -> ExecutionSpec {
+    ExecutionSpec {
+        api_version: "strategy.platform/v1".into(),
+        kind: "ExecutionSpec".into(),
+        metadata: ExecutionMetadata {
+            name: Some("gateway-env".into()),
+            digest: None,
+        },
+        source: Value::Null,
+        target: json!({ "kind": "local" }),
+        execution: ExecutionTarget {
+            kind: "attachment".into(),
+        },
+        capabilities: ExecutionCapabilities {
+            used_capabilities: vec!["service.manage".into()],
+        },
+        resources: ExecutionResources {
+            claims: vec![ExecutionResourceClaim {
+                kind: "service".into(),
+                id: Some("openclaw-gateway".into()),
+                target: Some("openclaw-gateway.service".into()),
+                path: None,
+            }],
+        },
+        secrets: ExecutionSecrets::default(),
+        desired_state: json!({
+            "systemdDropIn": {
+                "unit": "openclaw-gateway.service",
+                "name": "10-channel.conf",
+                "content": "[Service]\nEnvironment=OPENCLAW_CHANNEL=discord\n",
+            },
+            "envPatch": {
+                "OPENCLAW_CHANNEL": "discord",
+            }
+        }),
+        actions: vec![ExecutionAction {
+            kind: Some("attachment".into()),
+            name: Some("Apply gateway env".into()),
+            args: json!({}),
+        }],
+        outputs: vec![],
     }
 }
 
@@ -213,6 +258,30 @@ fn legacy_recipe_spec_can_prepare_without_command_payload() {
 }
 
 #[test]
+fn attachment_spec_materializes_dropin_write_and_daemon_reload() {
+    let spec = sample_attachment_spec();
+    let plan = materialize_execution_plan(&spec).expect("materialize attachment execution plan");
+
+    assert_eq!(
+        plan.commands[0],
+        vec![
+            INTERNAL_SYSTEMD_DROPIN_WRITE_COMMAND.to_string(),
+            "openclaw-gateway.service".to_string(),
+            "10-channel.conf".to_string(),
+            "[Service]\nEnvironment=OPENCLAW_CHANNEL=discord\n".to_string(),
+        ]
+    );
+    assert!(plan.commands.iter().any(|command| {
+        command
+            == &vec![
+                "systemctl".to_string(),
+                "--user".to_string(),
+                "daemon-reload".to_string(),
+            ]
+    }));
+}
+
+#[test]
 fn schedule_execution_builds_unit_and_timer_artifacts() {
     let spec = sample_schedule_spec();
     let prepared = execute_recipe(ExecuteRecipeRequest { spec: spec.clone() })
@@ -220,10 +289,30 @@ fn schedule_execution_builds_unit_and_timer_artifacts() {
 
     let artifacts = build_runtime_artifacts(&spec, &prepared);
 
+    assert!(artifacts.iter().any(
+        |artifact| artifact.kind == "systemdUnit" && artifact.label == prepared.plan.unit_name
+    ));
     assert!(artifacts
         .iter()
-        .any(|artifact| artifact.kind == "systemdUnit" && artifact.label == prepared.plan.unit_name));
-    assert!(artifacts.iter().any(|artifact| artifact.kind == "systemdTimer"));
+        .any(|artifact| artifact.kind == "systemdTimer"));
+}
+
+#[test]
+fn attachment_execution_builds_dropin_and_reload_artifacts() {
+    let spec = sample_attachment_spec();
+    let prepared = execute_recipe(ExecuteRecipeRequest { spec: spec.clone() })
+        .expect("prepare attachment execution");
+
+    let artifacts = build_runtime_artifacts(&spec, &prepared);
+
+    assert!(artifacts
+        .iter()
+        .any(|artifact| artifact.kind == "systemdDropIn"
+            && artifact.path.as_deref()
+                == Some("~/.config/systemd/user/openclaw-gateway.service.d/10-channel.conf")));
+    assert!(artifacts
+        .iter()
+        .any(|artifact| artifact.kind == "systemdDaemonReload"));
 }
 
 #[test]

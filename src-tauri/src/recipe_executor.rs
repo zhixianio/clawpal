@@ -3,8 +3,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::execution_spec::ExecutionSpec;
-use crate::recipe_store::Artifact as RecipeRuntimeArtifact;
 use crate::recipe_runtime::systemd;
+use crate::recipe_store::Artifact as RecipeRuntimeArtifact;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -112,9 +112,14 @@ pub fn route_execution(target: &Value) -> Result<ExecutionRoute, String> {
     }
 }
 
-fn push_unique_artifact(artifacts: &mut Vec<RecipeRuntimeArtifact>, artifact: RecipeRuntimeArtifact) {
+fn push_unique_artifact(
+    artifacts: &mut Vec<RecipeRuntimeArtifact>,
+    artifact: RecipeRuntimeArtifact,
+) {
     if !artifacts.iter().any(|existing| {
-        existing.kind == artifact.kind && existing.label == artifact.label && existing.path == artifact.path
+        existing.kind == artifact.kind
+            && existing.label == artifact.label
+            && existing.path == artifact.path
     }) {
         artifacts.push(artifact);
     }
@@ -255,11 +260,7 @@ pub fn build_cleanup_commands(artifacts: &[RecipeRuntimeArtifact]) -> Vec<Vec<St
             "systemdDaemonReload" => {
                 push_unique_command(
                     &mut commands,
-                    vec![
-                        "systemctl".into(),
-                        "--user".into(),
-                        "daemon-reload".into(),
-                    ],
+                    vec!["systemctl".into(), "--user".into(), "daemon-reload".into()],
                 );
             }
             _ => {}

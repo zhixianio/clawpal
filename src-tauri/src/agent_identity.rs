@@ -15,7 +15,11 @@ fn identity_content(name: &str, emoji: Option<&str>) -> String {
     content
 }
 
-fn resolve_workspace(cfg: &Value, agent_id: &str, default_workspace: Option<&str>) -> Result<String, String> {
+fn resolve_workspace(
+    cfg: &Value,
+    agent_id: &str,
+    default_workspace: Option<&str>,
+) -> Result<String, String> {
     clawpal_core::doctor::resolve_agent_workspace_from_config(cfg, agent_id, default_workspace)
 }
 
@@ -26,12 +30,16 @@ pub fn write_local_agent_identity(
     emoji: Option<&str>,
 ) -> Result<(), String> {
     let cfg = read_openclaw_config(paths)?;
-    let workspace = resolve_workspace(&cfg, agent_id, None).map(|path| shellexpand::tilde(&path).to_string())?;
+    let workspace = resolve_workspace(&cfg, agent_id, None)
+        .map(|path| shellexpand::tilde(&path).to_string())?;
     let workspace_path = Path::new(&workspace);
     fs::create_dir_all(workspace_path)
         .map_err(|error| format!("Failed to create workspace dir: {}", error))?;
-    fs::write(workspace_path.join("IDENTITY.md"), identity_content(name, emoji))
-        .map_err(|error| format!("Failed to write IDENTITY.md: {}", error))?;
+    fs::write(
+        workspace_path.join("IDENTITY.md"),
+        identity_content(name, emoji),
+    )
+    .map_err(|error| format!("Failed to write IDENTITY.md: {}", error))?;
     Ok(())
 }
 
@@ -47,12 +55,10 @@ pub async fn write_remote_agent_identity(
     name: &str,
     emoji: Option<&str>,
 ) -> Result<(), String> {
-    let (_config_path, _raw, cfg) = crate::commands::remote_read_openclaw_config_text_and_json(
-        pool,
-        host_id,
-    )
-    .await
-    .map_err(|error| format!("Failed to parse config: {error}"))?;
+    let (_config_path, _raw, cfg) =
+        crate::commands::remote_read_openclaw_config_text_and_json(pool, host_id)
+            .await
+            .map_err(|error| format!("Failed to parse config: {error}"))?;
 
     let workspace = resolve_workspace(&cfg, agent_id, Some("~/.openclaw/agents"))?;
     let remote_workspace = if workspace.starts_with("~/") {
@@ -60,8 +66,11 @@ pub async fn write_remote_agent_identity(
     } else {
         format!("~/{workspace}")
     };
-    pool.exec(host_id, &format!("mkdir -p {}", shell_escape(&remote_workspace)))
-        .await?;
+    pool.exec(
+        host_id,
+        &format!("mkdir -p {}", shell_escape(&remote_workspace)),
+    )
+    .await?;
     pool.sftp_write(
         host_id,
         &format!("{remote_workspace}/IDENTITY.md"),

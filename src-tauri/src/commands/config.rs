@@ -21,7 +21,9 @@ fn history_page_from_snapshot_index(index: crate::history::SnapshotIndex) -> His
     }
 }
 
-fn fallback_snapshot_meta_from_remote_entry(entry: &crate::ssh::SftpEntry) -> Option<crate::history::SnapshotMeta> {
+fn fallback_snapshot_meta_from_remote_entry(
+    entry: &crate::ssh::SftpEntry,
+) -> Option<crate::history::SnapshotMeta> {
     if entry.name.starts_with('.') || entry.is_dir {
         return None;
     }
@@ -56,7 +58,10 @@ pub(crate) async fn read_remote_snapshot_index(
         Err(error) if super::is_remote_missing_path_error(&error) => {
             Ok(crate::history::SnapshotIndex::default())
         }
-        Err(error) => Err(format!("Failed to read remote snapshot metadata: {}", error)),
+        Err(error) => Err(format!(
+            "Failed to read remote snapshot metadata: {}",
+            error
+        )),
     }
 }
 
@@ -411,8 +416,14 @@ mod tests {
 
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].run_id.as_deref(), Some("run_remote_01"));
-        assert_eq!(page.items[0].recipe_id.as_deref(), Some("discord-channel-persona"));
+        assert_eq!(
+            page.items[0].recipe_id.as_deref(),
+            Some("discord-channel-persona")
+        );
         assert_eq!(page.items[0].artifacts.len(), 1);
-        assert_eq!(page.items[0].artifacts[0].label, "clawpal-job-hourly.service");
+        assert_eq!(
+            page.items[0].artifacts[0].label,
+            "clawpal-job-hourly.service"
+        );
     }
 }

@@ -110,15 +110,15 @@ pub fn add_snapshot(
     upsert_snapshot(
         &mut next,
         SnapshotMeta {
-        id: id.clone(),
-        recipe_id,
-        created_at: ts.clone(),
-        config_path: snapshot_path.to_string_lossy().to_string(),
-        source: source.to_string(),
-        can_rollback: rollbackable,
-        run_id: run_id.clone(),
-        rollback_of: rollback_of.clone(),
-        artifacts: artifacts.clone(),
+            id: id.clone(),
+            recipe_id,
+            created_at: ts.clone(),
+            config_path: snapshot_path.to_string_lossy().to_string(),
+            source: source.to_string(),
+            can_rollback: rollbackable,
+            run_id: run_id.clone(),
+            rollback_of: rollback_of.clone(),
+            artifacts: artifacts.clone(),
         },
     );
     write_snapshots(metadata_path, &next)?;
@@ -205,7 +205,10 @@ mod tests {
         );
         assert_eq!(snapshot.artifacts.len(), 1);
         assert_eq!(snapshot.artifacts[0].label, "clawpal-job-hourly.service");
-        assert_eq!(index.items.first().map(|item| item.artifacts.len()), Some(1));
+        assert_eq!(
+            index.items.first().map(|item| item.artifacts.len()),
+            Some(1)
+        );
 
         let _ = fs::remove_dir_all(temp_root);
     }
