@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import i18n from "@/i18n";
 import type { AgentOverview, ModelProfile, Recipe, RecipeParam } from "../lib/types";
 import { useApi } from "@/lib/use-api";
 import { Input } from "@/components/ui/input";
@@ -15,33 +14,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-function validateField(param: RecipeParam, value: string): string | null {
-  const trim = value.trim();
-  if (param.required && trim.length === 0) {
-    return i18n.t('paramForm.isRequired', { label: param.label });
-  }
-  // Select-based types only need required check
-  if (param.type === "discord_guild" || param.type === "discord_channel" || param.type === "model_profile" || param.type === "agent") {
-    return null;
-  }
-  if (param.minLength != null && trim.length < param.minLength) {
-    return i18n.t('paramForm.tooShort', { label: param.label });
-  }
-  if (param.maxLength != null && trim.length > param.maxLength) {
-    return i18n.t('paramForm.tooLong', { label: param.label });
-  }
-  if (param.pattern && trim.length > 0) {
-    try {
-      if (!new RegExp(param.pattern).test(trim)) {
-        return i18n.t('paramForm.invalidFormat', { label: param.label });
-      }
-    } catch {
-      return i18n.t('paramForm.invalidRule', { label: param.label });
-    }
-  }
-  return null;
-}
+import {
+  buildTouchedParamsOnSubmit,
+  findFirstInvalidVisibleParamId,
+  isParamVisible,
+  validateVisibleParamValues,
+} from "./param-form-state";
+import { loadRecipeModelProfiles } from "./param-form-model-profiles";
 
 export function ParamForm({
   recipe,
@@ -67,7 +46,9 @@ export function ParamForm({
   const needsProfiles = recipe.params.some((p) => p.type === "model_profile");
   useEffect(() => {
     if (!needsProfiles) return;
-    ua.listModelProfiles().then(setModelProfiles).catch((e) => console.error("Failed to load model profiles:", e));
+    loadRecipeModelProfiles(ua)
+      .then(setModelProfiles)
+      .catch((e) => console.error("Failed to load model profiles:", e));
   }, [needsProfiles, ua]);
 
   // Lazily load agents if any param needs them
@@ -93,21 +74,8 @@ export function ParamForm({
     return discordGuildChannels.filter((gc) => gc.guildId === guildId);
   }, [discordGuildChannels, values]);
 
-  const isParamVisible = (param: RecipeParam) => {
-    if (!param.dependsOn) return true;
-    return values[param.dependsOn] === "true";
-  };
-
   const errors = useMemo(() => {
-    const next: Record<string, string> = {};
-    for (const param of recipe.params) {
-      if (!isParamVisible(param)) continue;
-      const err = validateField(param, values[param.id] || "");
-      if (err) {
-        next[param.id] = err;
-      }
-    }
-    return next;
+    return validateVisibleParamValues(recipe.params, values);
   }, [recipe.params, values]);
   const hasError = Object.keys(errors).length > 0;
 
@@ -124,6 +92,29 @@ export function ParamForm({
           />
           <Label htmlFor={param.id} className="font-normal">{param.label}</Label>
         </div>
+      );
+    }
+
+    if ((param.options?.length ?? 0) > 0) {
+      return (
+        <Select
+          value={values[param.id] || undefined}
+          onValueChange={(val) => {
+            onChange(param.id, val);
+            setTouched((prev) => ({ ...prev, [param.id]: true }));
+          }}
+        >
+          <SelectTrigger id={param.id} size="sm" className="w-full">
+            <SelectValue placeholder={param.placeholder || param.label} />
+          </SelectTrigger>
+          <SelectContent>
+            {param.options?.map((option) => (
+              <SelectItem key={`${param.id}-${option.value}`} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       );
     }
 
@@ -207,7 +198,6 @@ export function ParamForm({
     }
 
     if (param.type === "model_profile") {
-      const enabledProfiles = modelProfiles.filter((p) => p.enabled);
       return (
         <Select
           value={values[param.id] || undefined}
@@ -223,7 +213,7 @@ export function ParamForm({
             <SelectItem value="__default__">
               <span className="text-muted-foreground">{t('paramForm.useGlobalDefault')}</span>
             </SelectItem>
-            {enabledProfiles.map((p) => (
+            {modelProfiles.map((p) => (
               <SelectItem key={p.id} value={p.id}>
                 {p.provider}/{p.model}
               </SelectItem>
@@ -239,7 +229,6 @@ export function ParamForm({
           id={param.id}
           value={values[param.id] || ""}
           placeholder={param.placeholder}
-          onBlur={() => setTouched((prev) => ({ ...prev, [param.id]: true }))}
           onChange={(e) => {
             onChange(param.id, e.target.value);
             setTouched((prev) => ({ ...prev, [param.id]: true }));
@@ -254,7 +243,6 @@ export function ParamForm({
         value={values[param.id] || ""}
         placeholder={param.placeholder}
         required={param.required}
-        onBlur={() => setTouched((prev) => ({ ...prev, [param.id]: true }))}
         onChange={(e) => {
           onChange(param.id, e.target.value);
           setTouched((prev) => ({ ...prev, [param.id]: true }));
@@ -267,12 +255,22 @@ export function ParamForm({
     <form className="space-y-4" onSubmit={(e) => {
       e.preventDefault();
       if (hasError) {
+        setTouched((prev) => ({
+          ...prev,
+          ...buildTouchedParamsOnSubmit(recipe.params, values),
+        }));
+        const firstInvalidId = findFirstInvalidVisibleParamId(recipe.params, values);
+        if (firstInvalidId && typeof document !== "undefined") {
+          queueMicrotask(() => {
+            document.getElementById(firstInvalidId)?.focus();
+          });
+        }
         return;
       }
       onSubmit();
     }}>
       {recipe.params.map((param: RecipeParam) => {
-        if (!isParamVisible(param)) return null;
+        if (!isParamVisible(param, values)) return null;
         const isBool = param.type === "boolean";
         return (
           <div key={param.id} className="space-y-1.5">
@@ -286,7 +284,9 @@ export function ParamForm({
       })}
       <Button
         type="submit"
-        disabled={hasError}
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
       >
         {submitLabel}
       </Button>

@@ -75,6 +75,30 @@ function renderArgs(
   return result;
 }
 
+function noopCommands(): Promise<[string, string[]][]> {
+  return Promise.resolve([]);
+}
+
+async function unsupportedCommands(action: string): Promise<[string, string[]][]> {
+  throw new Error(`${action} is documented but not supported by the local Recipe command preview`);
+}
+
+function stringList(value: unknown): string[] {
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
 const registry: Record<string, ActionDef> = {
   create_agent: {
     toCommands: async (args, ctx) => {
@@ -82,47 +106,43 @@ const registry: Record<string, ActionDef> = {
         args.modelProfileId as string | undefined,
         ctx,
       );
-      // --non-interactive requires --workspace; for non-independent agents
-      // we must resolve the default workspace from config.
       let workspace: string | undefined;
-      if (args.independent) {
-        workspace = args.agentId as string;
-      } else {
-        // Read default workspace from config
-        const rawConfig = await callWithLobsterGuidance(
-          "readRawConfig",
-          ctx,
-          () => (ctx?.isRemote
-            ? api.remoteReadRawConfig(ctx.instanceId)
-            : api.readRawConfig()),
-        );
+      if (ctx) {
         try {
+          const rawConfig = await callWithLobsterGuidance(
+            "readRawConfig",
+            ctx,
+            () => (ctx.isRemote ? api.remoteReadRawConfig(ctx.instanceId) : api.readRawConfig()),
+          );
           const cfg = JSON.parse(rawConfig);
           workspace = cfg?.agents?.defaults?.workspace ?? cfg?.agents?.default?.workspace;
-        } catch { /* ignore parse errors */ }
+        } catch {
+          // ignore and fall back to agent overview
+        }
         if (!workspace) {
-          // Fallback: use workspace of first existing agent
           try {
             const agents = await callWithLobsterGuidance(
               "listAgentsOverview",
               ctx,
-              () => (ctx?.isRemote
+              () => (ctx.isRemote
                 ? api.remoteListAgentsOverview(ctx.instanceId)
                 : api.listAgentsOverview()),
             );
-            workspace = agents.find((a) => a.workspace)?.workspace;
-          } catch { /* ignore */ }
+            workspace = agents.find((agent) => agent.workspace)?.workspace ?? undefined;
+          } catch {
+            // ignore and surface a precise error below if still unresolved
+          }
         }
       }
       const cmd: string[] = ["openclaw", "agents", "add", args.agentId as string, "--non-interactive"];
-      if (modelValue) cmd.push("--model", modelValue);
       if (workspace) cmd.push("--workspace", workspace);
+      if (modelValue) cmd.push("--model", modelValue);
       return [[`Create agent: ${args.agentId}`, cmd]];
     },
     describe: (args) => {
       const model = args.modelProfileId as string | undefined;
       const modelLabel = !model || model === "__default__" ? "default model" : model;
-      return `Create ${args.independent ? "independent " : ""}agent "${args.agentId}" (${modelLabel})`;
+      return `Create agent "${args.agentId}" (${modelLabel})`;
     },
   },
   setup_identity: {
@@ -133,9 +153,71 @@ const registry: Record<string, ActionDef> = {
       return [];
     },
     describe: (args) => {
-      const emoji = args.emoji ? ` ${args.emoji}` : "";
-      return `Set identity: ${args.name}${emoji}`;
+      const name = typeof args.name === "string" && args.name.trim().length > 0
+        ? args.name
+        : undefined;
+      const emoji = typeof args.emoji === "string" && args.emoji.trim().length > 0
+        ? ` ${args.emoji}`
+        : "";
+      if (name) {
+        return `Set identity: ${name}${emoji}`;
+      }
+      if (args.agentId) {
+        return `Update persona: ${args.agentId}`;
+      }
+      return "Update agent identity";
     },
+  },
+  set_agent_identity: {
+    toCommands: async (args) => {
+      const fromIdentity = args.fromIdentity === true;
+      const agentId = typeof args.agentId === "string" ? args.agentId : undefined;
+      const workspace = typeof args.workspace === "string" ? args.workspace : undefined;
+      const command = ["openclaw", "agents", "set-identity"];
+      if (agentId) command.push("--agent", agentId);
+      if (workspace) command.push("--workspace", workspace);
+      if (fromIdentity) command.push("--from-identity");
+      if (typeof args.name === "string" && args.name.trim()) command.push("--name", args.name);
+      if (typeof args.theme === "string" && args.theme.trim()) command.push("--theme", args.theme);
+      if (typeof args.emoji === "string" && args.emoji.trim()) command.push("--emoji", args.emoji);
+      if (typeof args.avatar === "string" && args.avatar.trim()) command.push("--avatar", args.avatar);
+      return [[agentId ? `Set identity: ${agentId}` : "Set identity from workspace", command]];
+    },
+    describe: (args) => {
+      if (typeof args.agentId === "string" && args.agentId.trim()) {
+        return `Update identity fields for agent "${args.agentId}"`;
+      }
+      if (args.fromIdentity) {
+        return "Load identity fields from workspace";
+      }
+      return "Update agent identity";
+    },
+  },
+  delete_agent: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "agents", "delete", String(args.agentId)];
+      if (args.force === true) command.push("--force");
+      return [[`Delete agent: ${args.agentId}`, command]];
+    },
+    describe: (args) => `Delete agent "${args.agentId}"`,
+  },
+  bind_agent: {
+    toCommands: async (args) => [[
+      `Bind ${args.binding} → ${args.agentId}`,
+      ["openclaw", "agents", "bind", "--agent", String(args.agentId), "--bind", String(args.binding)],
+    ]],
+    describe: (args) => `Bind ${args.binding} to agent "${args.agentId}"`,
+  },
+  unbind_agent: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "agents", "unbind", "--agent", String(args.agentId)];
+      if (args.all === true) command.push("--all");
+      else if (args.binding) command.push("--bind", String(args.binding));
+      return [[`Unbind ${args.agentId}`, command]];
+    },
+    describe: (args) => args.all === true
+      ? `Remove all bindings from agent "${args.agentId}"`
+      : `Remove binding ${args.binding} from agent "${args.agentId}"`,
   },
   bind_channel: {
     toCommands: async (args, ctx) => {
@@ -169,6 +251,258 @@ const registry: Record<string, ActionDef> = {
     },
     describe: (args) =>
       `Bind ${args.channelType} channel → agent "${args.agentId}"`,
+  },
+  unbind_channel: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Remove binding for ${args.channelType} channel ${args.peerId}`,
+  },
+  set_agent_model: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Set agent "${args.agentId}" to model profile "${args.profileId}"`,
+  },
+  set_agent_persona: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Apply persona to agent "${args.agentId}"`,
+  },
+  clear_agent_persona: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Clear persona for agent "${args.agentId}"`,
+  },
+  set_channel_persona: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Set persona for ${args.channelType} channel "${args.peerId}"`,
+  },
+  clear_channel_persona: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Clear persona for ${args.channelType} channel "${args.peerId}"`,
+  },
+  upsert_markdown_document: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => {
+      const target = args.target as Record<string, unknown> | undefined;
+      const scope = typeof target?.scope === "string" ? target.scope : "document";
+      const path = typeof target?.path === "string" ? target.path : "";
+      return `Update ${scope} document ${path}`.trim();
+    },
+  },
+  delete_markdown_document: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => {
+      const target = args.target as Record<string, unknown> | undefined;
+      const scope = typeof target?.scope === "string" ? target.scope : "document";
+      const path = typeof target?.path === "string" ? target.path : "";
+      return `Delete ${scope} document ${path}`.trim();
+    },
+  },
+  ensure_model_profile: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Prepare model access for profile "${args.profileId}"`,
+  },
+  delete_model_profile: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Remove model profile "${args.profileId}"`,
+  },
+  ensure_provider_auth: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Prepare provider auth for "${args.provider}"`,
+  },
+  delete_provider_auth: {
+    toCommands: async () => noopCommands(),
+    describe: (args) => `Remove provider auth "${args.authRef}"`,
+  },
+  list_agents: {
+    toCommands: async () => [["List agents", ["openclaw", "agents", "list", "--json"]]],
+    describe: () => "List agents",
+  },
+  list_agent_bindings: {
+    toCommands: async () => [["List agent bindings", ["openclaw", "agents", "bindings"]]],
+    describe: () => "List agent bindings",
+  },
+  show_config_file: {
+    toCommands: async () => [["Show config file", ["openclaw", "config", "file"]]],
+    describe: () => "Show the active config file path",
+  },
+  get_config_value: {
+    toCommands: async (args) => [[
+      `Get config value: ${args.path}`,
+      ["openclaw", "config", "get", String(args.path)],
+    ]],
+    describe: (args) => `Read config value ${args.path}`,
+  },
+  set_config_value: {
+    toCommands: async (args) => {
+      const value = args.value;
+      const strictJson = args.strictJson === true || typeof value !== "string";
+      const serialized = strictJson ? JSON.stringify(value) : String(value ?? "");
+      const command = ["openclaw", "config", "set", String(args.path), serialized];
+      if (strictJson) command.push("--strict-json");
+      return [[`Set config value: ${args.path}`, command]];
+    },
+    describe: (args) => `Set config value ${args.path}`,
+  },
+  unset_config_value: {
+    toCommands: async (args) => [[
+      `Unset config value: ${args.path}`,
+      ["openclaw", "config", "unset", String(args.path)],
+    ]],
+    describe: (args) => `Unset config value ${args.path}`,
+  },
+  validate_config: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "config", "validate"];
+      if (args.jsonOutput === true) command.push("--json");
+      return [["Validate config", command]];
+    },
+    describe: () => "Validate the active config",
+  },
+  models_status: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "models", "status"];
+      if (args.jsonOutput === true) command.push("--json");
+      if (args.plain === true) command.push("--plain");
+      if (args.check === true) command.push("--check");
+      if (args.probe === true) command.push("--probe");
+      if (typeof args.probeProvider === "string" && args.probeProvider.trim()) {
+        command.push("--probe-provider", args.probeProvider);
+      }
+      for (const profile of stringList(args.probeProfile)) {
+        command.push("--probe-profile", profile);
+      }
+      if (typeof args.probeTimeoutMs === "string" && args.probeTimeoutMs.trim()) {
+        command.push("--probe-timeout", args.probeTimeoutMs);
+      }
+      if (typeof args.probeConcurrency === "string" && args.probeConcurrency.trim()) {
+        command.push("--probe-concurrency", args.probeConcurrency);
+      }
+      if (typeof args.probeMaxTokens === "string" && args.probeMaxTokens.trim()) {
+        command.push("--probe-max-tokens", args.probeMaxTokens);
+      }
+      if (typeof args.agentId === "string" && args.agentId.trim()) {
+        command.push("--agent", args.agentId);
+      }
+      return [["Inspect model status", command]];
+    },
+    describe: () => "Inspect model status",
+  },
+  list_models: {
+    toCommands: async () => [["List models", ["openclaw", "models", "list"]]],
+    describe: () => "List available models",
+  },
+  set_default_model: {
+    toCommands: async (args) => [[
+      `Set default model: ${args.modelOrAlias}`,
+      ["openclaw", "models", "set", String(args.modelOrAlias)],
+    ]],
+    describe: (args) => `Set the default model to ${args.modelOrAlias}`,
+  },
+  scan_models: {
+    toCommands: async () => [["Scan models", ["openclaw", "models", "scan"]]],
+    describe: () => "Scan model availability",
+  },
+  list_model_aliases: {
+    toCommands: async () => [["List model aliases", ["openclaw", "models", "aliases", "list"]]],
+    describe: () => "List model aliases",
+  },
+  list_model_fallbacks: {
+    toCommands: async () => [["List model fallbacks", ["openclaw", "models", "fallbacks", "list"]]],
+    describe: () => "List model fallbacks",
+  },
+  add_model_auth_profile: {
+    toCommands: async () => unsupportedCommands("add_model_auth_profile"),
+    describe: () => "Add a provider auth profile",
+  },
+  login_model_auth: {
+    toCommands: async () => unsupportedCommands("login_model_auth"),
+    describe: () => "Run a provider auth login flow",
+  },
+  setup_model_auth_token: {
+    toCommands: async () => unsupportedCommands("setup_model_auth_token"),
+    describe: () => "Prompt for a setup token",
+  },
+  paste_model_auth_token: {
+    toCommands: async () => unsupportedCommands("paste_model_auth_token"),
+    describe: () => "Paste a model auth token",
+  },
+  list_channels: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "channels", "list"];
+      if (args.noUsage === true) command.push("--no-usage");
+      return [["List channels", command]];
+    },
+    describe: () => "List configured channels",
+  },
+  channels_status: {
+    toCommands: async () => [["Inspect channel status", ["openclaw", "channels", "status"]]],
+    describe: () => "Inspect channel status",
+  },
+  read_channel_logs: {
+    toCommands: async () => unsupportedCommands("read_channel_logs"),
+    describe: () => "Read channel logs",
+  },
+  add_channel_account: {
+    toCommands: async () => unsupportedCommands("add_channel_account"),
+    describe: () => "Add a channel account",
+  },
+  remove_channel_account: {
+    toCommands: async () => unsupportedCommands("remove_channel_account"),
+    describe: () => "Remove a channel account",
+  },
+  login_channel_account: {
+    toCommands: async () => unsupportedCommands("login_channel_account"),
+    describe: () => "Run a channel login flow",
+  },
+  logout_channel_account: {
+    toCommands: async () => unsupportedCommands("logout_channel_account"),
+    describe: () => "Run a channel logout flow",
+  },
+  inspect_channel_capabilities: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "channels", "capabilities"];
+      if (typeof args.channel === "string" && args.channel.trim()) {
+        command.push("--channel", args.channel);
+      }
+      if (typeof args.target === "string" && args.target.trim()) {
+        command.push("--target", args.target);
+      }
+      return [["Inspect channel capabilities", command]];
+    },
+    describe: () => "Inspect channel capabilities",
+  },
+  resolve_channel_targets: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "channels", "resolve", "--channel", String(args.channel)];
+      if (typeof args.kind === "string" && args.kind.trim()) {
+        command.push("--kind", args.kind);
+      }
+      command.push(...stringList(args.terms));
+      return [["Resolve channel targets", command]];
+    },
+    describe: (args) => `Resolve targets in ${args.channel}`,
+  },
+  reload_secrets: {
+    toCommands: async () => [["Reload secrets", ["openclaw", "secrets", "reload"]]],
+    describe: () => "Reload runtime secrets",
+  },
+  audit_secrets: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "secrets", "audit"];
+      if (args.check === true) command.push("--check");
+      return [["Audit secrets", command]];
+    },
+    describe: () => "Audit secret references",
+  },
+  configure_secrets: {
+    toCommands: async () => unsupportedCommands("configure_secrets"),
+    describe: () => "Run the interactive secret configuration flow",
+  },
+  apply_secrets_plan: {
+    toCommands: async (args) => {
+      const command = ["openclaw", "secrets", "apply", "--from", String(args.fromPath)];
+      if (args.dryRun === true) command.push("--dry-run");
+      if (args.jsonOutput === true) command.push("--json");
+      return [[`Apply secrets plan: ${args.fromPath}`, command]];
+    },
+    describe: (args) => `Apply secrets plan from ${args.fromPath}`,
   },
   config_patch: {
     toCommands: async (args) => {

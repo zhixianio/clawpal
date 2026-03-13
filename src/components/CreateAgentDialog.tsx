@@ -4,7 +4,6 @@ import { useApi } from "@/lib/use-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -33,19 +32,18 @@ export function CreateAgentDialog({
   onOpenChange,
   modelProfiles,
   onCreated,
+  allowPersona = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   modelProfiles: ModelProfile[];
   onCreated: (result: CreateAgentResult) => void;
+  allowPersona?: boolean;
 }) {
   const { t } = useTranslation();
   const ua = useApi();
   const [agentId, setAgentId] = useState("");
   const [model, setModel] = useState("");
-  const [independent, setIndependent] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [emoji, setEmoji] = useState("");
   const [persona, setPersona] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
@@ -53,9 +51,6 @@ export function CreateAgentDialog({
   const reset = () => {
     setAgentId("");
     setModel("");
-    setIndependent(false);
-    setDisplayName("");
-    setEmoji("");
     setPersona("");
     setError("");
   };
@@ -77,38 +72,44 @@ export function CreateAgentDialog({
         return profileToModelValue(profile);
       };
       const modelValue = resolveModelValue(model || undefined);
-
-      // Build CLI command for queue
-      // --non-interactive requires --workspace; for non-independent agents
-      // we must resolve the default workspace from config.
-      const command: string[] = ["openclaw", "agents", "add", id, "--non-interactive"];
-      if (modelValue) {
-        command.push("--model", modelValue);
-      }
-      if (independent) {
-        command.push("--workspace", id);
-      } else {
-        // Resolve default workspace: from config, or from existing agents
-        let defaultWs: string | undefined;
+      if (ua.isRemote) {
+        let workspace: string | undefined;
         try {
           const rawConfig = await ua.readRawConfig();
           const cfg = JSON.parse(rawConfig);
-          defaultWs = cfg?.agents?.defaults?.workspace ?? cfg?.agents?.default?.workspace;
-        } catch { /* ignore */ }
-        if (!defaultWs) {
-          // Fallback: use workspace of first existing agent
-          try {
-            const existingAgents = await ua.listAgents();
-            defaultWs = existingAgents.find((a) => a.workspace)?.workspace ?? undefined;
-          } catch { /* ignore */ }
+          workspace = cfg?.agents?.defaults?.workspace ?? cfg?.agents?.default?.workspace;
+        } catch {
+          // ignore and fall back to existing agents
         }
-        if (defaultWs) command.push("--workspace", defaultWs);
+
+        try {
+          const existingAgents = await ua.listAgents();
+          const absoluteWorkspace = existingAgents.find(
+            (agent) => agent.workspace && !agent.workspace.startsWith("~"),
+          )?.workspace;
+          if (!workspace || workspace.startsWith("~")) {
+            workspace = absoluteWorkspace ?? workspace;
+          }
+        } catch {
+          // ignore and surface a dedicated error below if still unresolved
+        }
+
+        if (!workspace) {
+          throw new Error("OpenClaw default workspace could not be resolved for non-interactive agent creation.");
+        }
+
+        const command: string[] = ["openclaw", "agents", "add", id, "--non-interactive", "--workspace", workspace];
+        if (modelValue) {
+          command.push("--model", modelValue);
+        }
+        await ua.queueCommand(`Create agent: ${id}`, command);
+      } else {
+        await ua.createAgent(id, modelValue);
       }
-      await ua.queueCommand(`Create agent: ${id}`, command);
 
       onOpenChange(false);
       const result: CreateAgentResult = { agentId: id };
-      if (persona.trim()) result.persona = persona.trim();
+      if (allowPersona && persona.trim()) result.persona = persona.trim();
       reset();
       onCreated(result);
     } catch (e) {
@@ -157,51 +158,16 @@ export function CreateAgentDialog({
               </SelectContent>
             </Select>
           </div>
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="create-agent-independent"
-              checked={independent}
-              onCheckedChange={(checked) => {
-                const val = checked === true;
-                setIndependent(val);
-                if (!val) {
-                  setDisplayName("");
-                  setEmoji("");
-                  setPersona("");
-                }
-              }}
-            />
-            <Label htmlFor="create-agent-independent">{t('createAgent.independent')}</Label>
-          </div>
-          {independent && (
-            <>
-              <div className="space-y-1.5">
-                <Label>{t('createAgent.displayName')}</Label>
-                <Input
-                  placeholder={t('createAgent.displayNamePlaceholder')}
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>{t('createAgent.emoji')}</Label>
-                <Input
-                  placeholder="e.g. \uD83E\uDD16"
-                  value={emoji}
-                  onChange={(e) => setEmoji(e.target.value)}
-                  className="w-20"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>{t('createAgent.persona')}</Label>
-                <Textarea
-                  placeholder={t('createAgent.personaPlaceholder')}
-                  value={persona}
-                  onChange={(e) => setPersona(e.target.value)}
-                  rows={3}
-                />
-              </div>
-            </>
+          {allowPersona && (
+            <div className="space-y-1.5">
+              <Label>{t('createAgent.persona')}</Label>
+              <Textarea
+                placeholder={t('createAgent.personaPlaceholder')}
+                value={persona}
+                onChange={(e) => setPersona(e.target.value)}
+                rows={3}
+              />
+            </div>
           )}
           {error && (
             <p className="text-sm text-destructive">{error}</p>

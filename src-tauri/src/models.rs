@@ -13,6 +13,7 @@ pub struct OpenClawPaths {
     pub clawpal_dir: PathBuf,
     pub history_dir: PathBuf,
     pub metadata_path: PathBuf,
+    pub recipe_runtime_dir: PathBuf,
 }
 
 fn expand_user_path(raw: &str) -> PathBuf {
@@ -72,6 +73,7 @@ pub fn resolve_paths() -> OpenClawPaths {
     let config_path = openclaw_dir.join("openclaw.json");
     let history_dir = clawpal_dir.join("history");
     let metadata_path = clawpal_dir.join("metadata.json");
+    let recipe_runtime_dir = clawpal_dir.join("recipe-runtime");
 
     OpenClawPaths {
         openclaw_dir: openclaw_dir.clone(),
@@ -80,5 +82,6 @@ pub fn resolve_paths() -> OpenClawPaths {
         clawpal_dir,
         history_dir,
         metadata_path,
+        recipe_runtime_dir,
     }
 }

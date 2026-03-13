@@ -65,6 +65,16 @@ const RUSSH_SFTP_TIMEOUT_SECS: u64 = 30;
 #[derive(Clone)]
 struct SshHandler;
 
+fn russh_exec_timeout_secs_from_env_var(raw: Option<String>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(RUSSH_EXEC_TIMEOUT_SECS)
+}
+
+fn russh_exec_timeout_secs() -> u64 {
+    russh_exec_timeout_secs_from_env_var(std::env::var("CLAWPAL_RUSSH_EXEC_TIMEOUT_SECS").ok())
+}
+
 #[async_trait::async_trait]
 impl client::Handler for SshHandler {
     type Error = russh::Error;
@@ -147,7 +157,8 @@ impl SshSession {
             .await
             .map_err(|e| SshError::CommandFailed(e.to_string()))?;
 
-        let wait_result = timeout(Duration::from_secs(RUSSH_EXEC_TIMEOUT_SECS), async {
+        let exec_timeout_secs = russh_exec_timeout_secs();
+        let wait_result = timeout(Duration::from_secs(exec_timeout_secs), async {
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
             let mut exit_code = -1;
@@ -170,9 +181,7 @@ impl SshSession {
         .await;
 
         let (stdout, stderr, exit_code) = wait_result.map_err(|_| {
-            SshError::CommandFailed(format!(
-                "russh exec timed out after {RUSSH_EXEC_TIMEOUT_SECS}s"
-            ))
+            SshError::CommandFailed(format!("russh exec timed out after {exec_timeout_secs}s"))
         })?;
 
         Ok(ExecResult {
@@ -947,5 +956,27 @@ mod tests {
         for p in &paths {
             assert!(p.contains("id_ed25519") || p.contains("id_rsa"));
         }
+    }
+
+    #[test]
+    fn russh_exec_timeout_secs_uses_default_without_env_override() {
+        assert_eq!(
+            russh_exec_timeout_secs_from_env_var(None),
+            RUSSH_EXEC_TIMEOUT_SECS
+        );
+        assert_eq!(
+            russh_exec_timeout_secs_from_env_var(Some(String::new())),
+            RUSSH_EXEC_TIMEOUT_SECS
+        );
+        assert_eq!(
+            russh_exec_timeout_secs_from_env_var(Some("not-a-number".into())),
+            RUSSH_EXEC_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn russh_exec_timeout_secs_accepts_positive_env_override() {
+        assert_eq!(russh_exec_timeout_secs_from_env_var(Some("60".into())), 60);
+        assert_eq!(russh_exec_timeout_secs_from_env_var(Some("5".into())), 5);
     }
 }

@@ -130,22 +130,38 @@ export async function explainAndBuildGuidanceError({
     return new Error(original);
   }
 
+  let explained: Awaited<ReturnType<typeof api.explainOperationError>>;
   try {
     const language =
       i18n.language ||
       (typeof navigator !== "undefined" ? navigator.language : "en");
-    const explained = await api.explainOperationError(
+    explained = await api.explainOperationError(
       instanceId,
       method,
       transport,
       original,
       language,
     );
-    const shouldEmit =
-      emitEvent
-      && typeof window !== "undefined"
-      && shouldEmitAgentGuidance(instanceId, method, original);
-    if (shouldEmit) {
+  } catch {
+    logDevGuidanceError("explainAndBuildGuidanceError", {
+      method,
+      instanceId,
+      transport,
+      rawError: original,
+    });
+    return new Error(original);
+  }
+
+  const shouldEmit =
+    emitEvent
+    && typeof window !== "undefined"
+    && typeof window.dispatchEvent === "function"
+    && typeof CustomEvent === "function"
+    && shouldEmitAgentGuidance(instanceId, method, original);
+
+  let emitted = false;
+  if (shouldEmit) {
+    try {
       window.dispatchEvent(
         new CustomEvent("clawpal:agent-guidance", {
           detail: {
@@ -159,21 +175,23 @@ export async function explainAndBuildGuidanceError({
           },
         }),
       );
+      emitted = true;
+    } catch (eventError) {
+      logDevGuidanceError("explainAndBuildGuidanceError:event", {
+        method,
+        instanceId,
+        transport,
+        rawError: original,
+        eventError,
+      });
     }
-    const wrapped = new Error(explained.message || original);
-    if (shouldEmit) {
-      (wrapped as any)._guidanceEmitted = true;
-    }
-    return wrapped;
-  } catch {
-    logDevGuidanceError("explainAndBuildGuidanceError", {
-      method,
-      instanceId,
-      transport,
-      rawError: original,
-    });
-    return new Error(original);
   }
+
+  const wrapped = new Error(explained.message || original);
+  if (emitted) {
+    (wrapped as any)._guidanceEmitted = true;
+  }
+  return wrapped;
 }
 
 // ── withGuidance wrapper for App-level lifecycle calls ──

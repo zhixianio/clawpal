@@ -5,17 +5,58 @@ on:
     branches:
       - main
       - develop
+      - feat/recipe
   pull_request:
     branches:
       - main
       - develop
+      - feat/recipe
 
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  recipe-docker-e2e:
+    name: Docker Recipe E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Verify Docker is available
+        run: docker info
+
+      - name: Run recipe docker e2e
+        env:
+          CLAWPAL_RUN_DOCKER_RECIPE_E2E: "1"
+        run: cargo test -p clawpal --test recipe_docker_e2e -- --nocapture --test-threads=1
+        working-directory: src-tauri
+
   profile-e2e:
+    name: Provider Auth E2E
     runs-on: ubuntu-latest
     environment: ${{ (github.base_ref == 'main' || github.ref == 'refs/heads/main') && 'production' || 'development' }}
     steps:

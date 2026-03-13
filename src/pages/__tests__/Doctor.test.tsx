@@ -3,6 +3,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
 
+import doctorImage from "@/assets/doctor.png";
 import i18n from "@/i18n";
 import { InstanceContext } from "@/lib/instance-context";
 import { Doctor } from "../Doctor";
@@ -55,7 +56,7 @@ describe("Doctor page rescue header", () => {
     expect(html).toContain("flex flex-col items-center");
     expect(html).toContain("role=\"img\"");
     expect(html).toContain("alt=\"Diagnose\"");
-    expect(html).toContain("src=\"/Users/ChenYu/Documents/Github/clawpal/src/assets/doctor.png\"");
+    expect(html).toContain(`src="${doctorImage}"`);
     expect(html).toContain("aria-label=\"Open logs\"");
     expect(html).toContain(">Diagnose<");
     expect(html).toContain("Run a structured check before attempting repairs on the primary profile.");

@@ -1,0 +1,97 @@
+{
+  "id": "channel-persona-pack",
+  "name": "Channel Persona Pack",
+  "description": "Import a preset persona into a Discord channel",
+  "version": "1.0.0",
+  "tags": ["discord", "persona", "preset"],
+  "difficulty": "easy",
+  "presentation": {
+    "resultSummary": "Updated persona for channel {{channel_id}}"
+  },
+  "params": [
+    { "id": "guild_id", "label": "Guild", "type": "discord_guild", "required": true },
+    { "id": "channel_id", "label": "Channel", "type": "discord_channel", "required": true },
+    { "id": "persona_preset", "label": "Persona Preset", "type": "string", "required": true, "placeholder": "Select a preset" }
+  ],
+  "steps": [
+    {
+      "action": "set_channel_persona",
+      "label": "Apply channel persona preset",
+      "args": {
+        "channelType": "discord",
+        "guildId": "{{guild_id}}",
+        "peerId": "{{channel_id}}",
+        "persona": "{{presetMap:persona_preset}}"
+      }
+    }
+  ],
+  "bundle": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "StrategyBundle",
+    "metadata": {
+      "name": "channel-persona-pack",
+      "version": "1.0.0",
+      "description": "Import a preset persona into a Discord channel"
+    },
+    "compatibility": {},
+    "inputs": [],
+    "capabilities": {
+      "allowed": ["config.write"]
+    },
+    "resources": {
+      "supportedKinds": ["channel"]
+    },
+    "execution": {
+      "supportedKinds": ["attachment"]
+    },
+    "runner": {},
+    "outputs": [{ "kind": "recipe-summary", "recipeId": "channel-persona-pack" }]
+  },
+  "executionSpecTemplate": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "ExecutionSpec",
+    "metadata": {
+      "name": "channel-persona-pack"
+    },
+    "source": {},
+    "target": {},
+    "execution": {
+      "kind": "attachment"
+    },
+    "capabilities": {
+      "usedCapabilities": ["config.write"]
+    },
+    "resources": {
+      "claims": [
+        { "kind": "channel", "id": "{{channel_id}}" }
+      ]
+    },
+    "secrets": {
+      "bindings": []
+    },
+    "desiredState": {
+      "actionCount": 1
+    },
+    "actions": [
+      {
+        "kind": "set_channel_persona",
+        "name": "Apply channel persona preset",
+        "args": {
+          "channelType": "discord",
+          "guildId": "{{guild_id}}",
+          "peerId": "{{channel_id}}",
+          "persona": "{{presetMap:persona_preset}}"
+        }
+      }
+    ],
+    "outputs": [{ "kind": "recipe-summary", "recipeId": "channel-persona-pack" }]
+  },
+  "clawpalImport": {
+    "presetParams": {
+      "persona_preset": [
+        { "value": "incident", "label": "Incident Commander", "asset": "assets/personas/incident.md" },
+        { "value": "support", "label": "Support Concierge", "asset": "assets/personas/support.md" }
+      ]
+    }
+  }
+}

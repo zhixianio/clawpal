@@ -1,0 +1,136 @@
+{
+  "id": "dedicated-agent",
+  "name": "Dedicated Agent",
+  "description": "Create an agent and set its identity and persona",
+  "version": "1.0.0",
+  "tags": ["agent", "identity", "persona"],
+  "difficulty": "easy",
+  "presentation": {
+    "resultSummary": "Created dedicated agent {{name}} ({{agent_id}})"
+  },
+  "params": [
+    { "id": "agent_id", "label": "Agent ID", "type": "string", "required": true, "placeholder": "e.g. ops-bot" },
+    { "id": "model", "label": "Model", "type": "model_profile", "required": true, "defaultValue": "__default__" },
+    { "id": "name", "label": "Display Name", "type": "string", "required": true, "placeholder": "e.g. Ops Bot" },
+    { "id": "emoji", "label": "Emoji", "type": "string", "required": false, "placeholder": "e.g. :satellite:" },
+    { "id": "persona", "label": "Persona", "type": "textarea", "required": true, "placeholder": "Describe the role and tone for this agent." }
+  ],
+  "steps": [
+    {
+      "action": "ensure_model_profile",
+      "label": "Prepare model access",
+      "args": {
+        "profileId": "{{model}}"
+      }
+    },
+    {
+      "action": "create_agent",
+      "label": "Create dedicated agent",
+      "args": {
+        "agentId": "{{agent_id}}",
+        "modelProfileId": "{{model}}"
+      }
+    },
+    {
+      "action": "set_agent_identity",
+      "label": "Set agent identity",
+      "args": {
+        "agentId": "{{agent_id}}",
+        "name": "{{name}}",
+        "emoji": "{{emoji}}"
+      }
+    },
+    {
+      "action": "set_agent_persona",
+      "label": "Set agent persona",
+      "args": {
+        "agentId": "{{agent_id}}",
+        "persona": "{{persona}}"
+      }
+    }
+  ],
+  "bundle": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "StrategyBundle",
+    "metadata": {
+      "name": "dedicated-agent",
+      "version": "1.0.0",
+      "description": "Create a dedicated agent"
+    },
+    "compatibility": {},
+    "inputs": [],
+    "capabilities": {
+      "allowed": ["agent.manage", "agent.identity.write", "model.manage", "secret.sync"]
+    },
+    "resources": {
+      "supportedKinds": ["agent", "modelProfile"]
+    },
+    "execution": {
+      "supportedKinds": ["job"]
+    },
+    "runner": {},
+    "outputs": [{ "kind": "recipe-summary", "recipeId": "dedicated-agent" }]
+  },
+  "executionSpecTemplate": {
+    "apiVersion": "strategy.platform/v1",
+    "kind": "ExecutionSpec",
+    "metadata": {
+      "name": "dedicated-agent"
+    },
+    "source": {},
+    "target": {},
+    "execution": {
+      "kind": "job"
+    },
+    "capabilities": {
+      "usedCapabilities": ["model.manage", "secret.sync", "agent.manage", "agent.identity.write"]
+    },
+    "resources": {
+      "claims": [
+        { "kind": "modelProfile", "id": "{{model}}" },
+        { "kind": "agent", "id": "{{agent_id}}" }
+      ]
+    },
+    "secrets": {
+      "bindings": []
+    },
+    "desiredState": {
+      "actionCount": 4
+    },
+    "actions": [
+      {
+        "kind": "ensure_model_profile",
+        "name": "Prepare model access",
+        "args": {
+          "profileId": "{{model}}"
+        }
+      },
+      {
+        "kind": "create_agent",
+        "name": "Create dedicated agent",
+        "args": {
+          "agentId": "{{agent_id}}",
+          "modelProfileId": "{{model}}"
+        }
+      },
+      {
+        "kind": "set_agent_identity",
+        "name": "Set agent identity",
+        "args": {
+          "agentId": "{{agent_id}}",
+          "name": "{{name}}",
+          "emoji": "{{emoji}}"
+        }
+      },
+      {
+        "kind": "set_agent_persona",
+        "name": "Set agent persona",
+        "args": {
+          "agentId": "{{agent_id}}",
+          "persona": "{{persona}}"
+        }
+      }
+    ],
+    "outputs": [{ "kind": "recipe-summary", "recipeId": "dedicated-agent" }]
+  }
+}

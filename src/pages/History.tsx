@@ -22,19 +22,45 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import type { HistoryItem, PreviewResult } from "../lib/types";
+import type { HistoryItem, PreviewResult, RecipeRuntimeRun } from "../lib/types";
 import { formatTime } from "@/lib/utils";
 
-export function History() {
+function formatResourceClaimLabel(run: RecipeRuntimeRun, index: number) {
+  const claim = run.resourceClaims[index];
+  return claim.id || claim.path || claim.target || claim.kind;
+}
+
+function formatRunSourceTrace(run: RecipeRuntimeRun): string | null {
+  const parts = [run.sourceOrigin, run.sourceDigest, run.workspacePath]
+    .filter((value): value is string => !!value && value.trim().length > 0);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+export function History({
+  onOpenRuntimeDashboard,
+  initialHistory = [],
+  initialRuns = [],
+}: {
+  onOpenRuntimeDashboard?: () => void;
+  initialHistory?: HistoryItem[];
+  initialRuns?: RecipeRuntimeRun[];
+}) {
   const { t } = useTranslation();
   const ua = useApi();
-  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [history, setHistory] = useState<HistoryItem[]>(initialHistory);
+  const [runtimeRuns, setRuntimeRuns] = useState<RecipeRuntimeRun[]>(initialRuns);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [message, setMessage] = useState("");
 
   const refreshHistory = () => {
-    return ua.listHistory()
-      .then((resp) => setHistory(resp.items))
+    return Promise.all([
+      ua.listHistory(),
+      ua.listRecipeRuns().catch(() => [] as RecipeRuntimeRun[]),
+    ])
+      .then(([resp, runs]) => {
+        setHistory(resp.items);
+        setRuntimeRuns(runs);
+      })
       .catch(() => setMessage(t('history.failedLoad')));
   };
 
@@ -46,14 +72,47 @@ export function History() {
   const historyMap = new Map(
     history.map((h) => [h.id, h])
   );
+  const runtimeRunMap = new Map(
+    runtimeRuns.map((run) => [run.id, run])
+  );
+  const latestRun = runtimeRuns[0];
 
   return (
     <section>
       <h2 className="text-2xl font-bold mb-4">{t('history.title')}</h2>
+      <Card className="mb-4">
+        <CardContent>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">{t("history.runtimeTitle")}</div>
+              {latestRun ? (
+                <>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline">{latestRun.status}</Badge>
+                    <span className="text-sm">{latestRun.summary}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {formatTime(latestRun.startedAt)} · {latestRun.instanceId} · {latestRun.runner}
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">{t("history.runtimeEmpty")}</p>
+              )}
+            </div>
+            {onOpenRuntimeDashboard && (
+              <Button variant="outline" size="sm" onClick={onOpenRuntimeDashboard}>
+                {t("history.runtimeOpenDashboard")}
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
       <div className="space-y-3">
         {history.map((item) => {
           const isRollback = item.source === "rollback";
           const rollbackTarget = item.rollbackOf ? historyMap.get(item.rollbackOf) : undefined;
+          const associatedRun = item.runId ? runtimeRunMap.get(item.runId) : undefined;
+          const associatedArtifacts = associatedRun?.artifacts ?? item.artifacts ?? [];
           return (
             <Card key={item.id} className={isRollback ? "border-dashed opacity-75" : ""}>
               <CardContent>
@@ -83,6 +142,32 @@ export function History() {
                     <Badge variant="outline" className="text-muted-foreground">{t('history.notRollbackable')}</Badge>
                   )}
                 </div>
+                {associatedRun && (
+                  <div className="mt-3 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap text-sm">
+                      <Badge variant="outline">{associatedRun.status}</Badge>
+                      <span>{associatedRun.summary}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t("history.runId")}: {associatedRun.id} · {associatedRun.runner} · {formatTime(associatedRun.startedAt)}
+                    </p>
+                    {associatedRun.resourceClaims.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("history.runClaims")}: {associatedRun.resourceClaims.map((_, index) => formatResourceClaimLabel(associatedRun, index)).join(", ")}
+                      </p>
+                    )}
+                    {formatRunSourceTrace(associatedRun) && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("history.sourceTrace")}: {formatRunSourceTrace(associatedRun)}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {associatedArtifacts.length > 0 && (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {t("history.runArtifacts")}: {associatedArtifacts.map((artifact) => artifact.label).join(", ")}
+                  </p>
+                )}
                 {!isRollback && (
                   <div className="flex gap-2 mt-2">
                     <Button
@@ -123,10 +208,9 @@ export function History() {
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                             onClick={async () => {
                               try {
-                                const p = await ua.previewRollback(item.id);
-                                const label = `Rollback to ${item.recipeId || formatTime(item.createdAt)}`;
-                                await ua.queueCommand(label, ["__rollback__", p.configAfter]);
-                                setMessage(t('history.rollbackQueued'));
+                                await ua.rollback(item.id);
+                                setMessage(t('history.rollbackCompleted'));
+                                await refreshHistory();
                               } catch (err) {
                                 setMessage(String(err));
                               }

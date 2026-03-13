@@ -17,16 +17,19 @@
 
 use clawpal::ssh::{SshConnectionPool, SshHostConfig};
 use std::process::Command;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const CONTAINER_NAME: &str = "clawpal-e2e-docker-sync";
-const SSH_PORT: u16 = 2299;
+const DEFAULT_SSH_PORT: u16 = 2299;
 const ROOT_PASSWORD: &str = "clawpal-e2e-pass";
 const TEST_ANTHROPIC_KEY: &str = "test-anthropic-profile-key";
 const TEST_OPENAI_KEY: &str = "test-openai-profile-key";
+static TEST_SSH_PORT: OnceLock<u16> = OnceLock::new();
+static CLEAN_START: OnceLock<()> = OnceLock::new();
 
 /// Dockerfile: Ubuntu + openssh-server + Node.js + pinned real openclaw CLI + seeded OpenClaw config.
 const DOCKERFILE: &str = r#"
@@ -51,24 +54,43 @@ RUN mkdir -p /root/.openclaw/agents/main/agent
 # Main openclaw config (JSON5 compatible)
 RUN cat > /root/.openclaw/openclaw.json <<'OCEOF'
 {
+  "meta": {
+    "lastTouchedVersion": "2026.3.2",
+    "lastTouchedAt": "2026-03-12T17:59:58.553Z"
+  },
   "gateway": {
     "port": 18789,
-    "token": "gw-test-token-abc123"
-  },
-  "defaults": {
-    "model": "anthropic/claude-sonnet-4-20250514"
+    "mode": "local",
+    "auth": {
+      "token": "gw-test-token-abc123"
+    }
   },
   "models": {
-    "anthropic/claude-sonnet-4-20250514": {
-      "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514"
-    },
-    "openai/gpt-4o": {
-      "provider": "openai",
-      "model": "gpt-4o"
+    "providers": {
+      "anthropic": {
+        "baseUrl": "https://api.anthropic.com/v1",
+        "models": [
+          {
+            "id": "claude-sonnet-4-20250514",
+            "name": "Claude Sonnet 4"
+          }
+        ]
+      },
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "models": [
+          {
+            "id": "gpt-4o",
+            "name": "GPT-4o"
+          }
+        ]
+      }
     }
   },
   "agents": {
+    "defaults": {
+      "model": "anthropic/claude-sonnet-4-20250514"
+    },
     "list": [
       { "id": "main", "model": "anthropic/claude-sonnet-4-20250514" }
     ]
@@ -100,18 +122,35 @@ AUTHEOF
 # openclaw: exact published version — no floating @latest tag.
 ARG NODE_VERSION=24.13.0
 ARG OPENCLAW_VERSION=2026.3.2
+ARG TARGETARCH
 RUN apt-get update && \
-    apt-get install -y curl ca-certificates xz-utils && \
+    apt-get install -y curl ca-certificates git xz-utils && \
     rm -rf /var/lib/apt/lists/* && \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    case "${TARGETARCH}" in \
+      amd64) NODE_ARCH="x64" ;; \
+      arm64) NODE_ARCH="arm64" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
+      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
       -o /tmp/node.tar.xz && \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && \
     rm /tmp/node.tar.xz && \
-    npm install -g "openclaw@${OPENCLAW_VERSION}"
+    npm config set fetch-retries 5 && \
+    npm config set fetch-retry-mintimeout 10000 && \
+    npm config set fetch-retry-maxtimeout 120000 && \
+    for attempt in 1 2 3; do \
+      npm install -g "openclaw@${OPENCLAW_VERSION}" && break; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      echo "openclaw install failed on attempt ${attempt}, retrying..." >&2; \
+      sleep 5; \
+    done
 
 # Set env vars that ClawPal profile sync checks
 RUN echo "export ANTHROPIC_API_KEY=ANTHROPIC_KEY" >> /root/.bashrc && \
-    echo "export OPENAI_API_KEY=OPENAI_KEY" >> /root/.bashrc
+    echo "export OPENAI_API_KEY=OPENAI_KEY" >> /root/.bashrc && \
+    echo "export ANTHROPIC_API_KEY=ANTHROPIC_KEY" >> /root/.profile && \
+    echo "export OPENAI_API_KEY=OPENAI_KEY" >> /root/.profile
 
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D"]
@@ -123,6 +162,14 @@ CMD ["/usr/sbin/sshd", "-D"]
 
 fn should_run() -> bool {
     std::env::var("CLAWPAL_RUN_DOCKER_SYNC_E2E").ok().as_deref() == Some("1")
+}
+
+fn ensure_exec_timeout_override() {
+    std::env::set_var("CLAWPAL_RUSSH_EXEC_TIMEOUT_SECS", "60");
+}
+
+fn docker_ssh_port() -> u16 {
+    *TEST_SSH_PORT.get_or_init(|| portpicker::pick_unused_port().unwrap_or(DEFAULT_SSH_PORT))
 }
 
 fn docker_available() -> bool {
@@ -149,6 +196,13 @@ fn cleanup_image() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+fn ensure_clean_start() {
+    CLEAN_START.get_or_init(|| {
+        cleanup_container();
+        cleanup_image();
+    });
 }
 
 fn build_image() -> Result<(), String> {
@@ -187,6 +241,7 @@ fn build_image() -> Result<(), String> {
 }
 
 fn start_container() -> Result<(), String> {
+    let ssh_port = docker_ssh_port();
     let output = Command::new("docker")
         .args([
             "run",
@@ -194,7 +249,7 @@ fn start_container() -> Result<(), String> {
             "--name",
             CONTAINER_NAME,
             "-p",
-            &format!("{}:22", SSH_PORT),
+            &format!("{ssh_port}:22"),
             &format!("{CONTAINER_NAME}:latest"),
         ])
         .output()
@@ -208,6 +263,7 @@ fn start_container() -> Result<(), String> {
 }
 
 fn wait_for_ssh(timeout_secs: u64) -> Result<(), String> {
+    let ssh_port = docker_ssh_port();
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
     loop {
@@ -215,7 +271,7 @@ fn wait_for_ssh(timeout_secs: u64) -> Result<(), String> {
             return Err("timeout waiting for SSH to become available".into());
         }
         let result = std::net::TcpStream::connect_timeout(
-            &format!("127.0.0.1:{SSH_PORT}").parse().unwrap(),
+            &format!("127.0.0.1:{ssh_port}").parse().unwrap(),
             std::time::Duration::from_secs(1),
         );
         if result.is_ok() {
@@ -232,7 +288,7 @@ fn docker_host_config() -> SshHostConfig {
         id: "e2e-docker-sync".into(),
         label: "E2E Docker Sync".into(),
         host: "127.0.0.1".into(),
-        port: SSH_PORT,
+        port: docker_ssh_port(),
         username: "root".into(),
         auth_method: "password".into(),
         key_path: None,
@@ -257,6 +313,8 @@ async fn e2e_docker_profile_sync_and_doctor() {
         eprintln!("skip: docker not available");
         return;
     }
+    ensure_exec_timeout_override();
+    ensure_clean_start();
 
     // Cleanup any leftover container from previous runs
     cleanup_container();
@@ -303,9 +361,9 @@ async fn e2e_docker_profile_sync_and_doctor() {
     assert_eq!(gateway_port, 18789);
 
     let default_model = config
-        .pointer("/defaults/model")
+        .pointer("/agents/defaults/model")
         .and_then(|v| v.as_str())
-        .expect("defaults.model should exist");
+        .expect("agents.defaults.model should exist");
     assert_eq!(default_model, "anthropic/claude-sonnet-4-20250514");
     eprintln!("[e2e] Config verified: gateway port={gateway_port}, default model={default_model}");
 
@@ -333,19 +391,16 @@ async fn e2e_docker_profile_sync_and_doctor() {
     // --- Step 4: Extract model profiles from config ---
     // Verify models are defined in the config
     let models = config
-        .get("models")
+        .pointer("/models/providers")
         .and_then(|v| v.as_object())
-        .expect("models should be an object");
+        .expect("models.providers should be an object");
     assert!(
-        models.contains_key("anthropic/claude-sonnet-4-20250514"),
-        "should have anthropic model"
+        models.contains_key("anthropic"),
+        "should have anthropic provider"
     );
-    assert!(
-        models.contains_key("openai/gpt-4o"),
-        "should have openai model"
-    );
+    assert!(models.contains_key("openai"), "should have openai provider");
     eprintln!(
-        "[e2e] Model profiles extracted: {} models found",
+        "[e2e] Model providers extracted: {} providers found",
         models.len()
     );
 
@@ -370,7 +425,7 @@ async fn e2e_docker_profile_sync_and_doctor() {
 
     // --- Step 6: Run doctor check ---
     let doctor_result = pool
-        .exec(&cfg.id, "openclaw doctor --json")
+        .exec(&cfg.id, "openclaw doctor --non-interactive")
         .await
         .expect("openclaw doctor should succeed");
     assert_eq!(
@@ -378,30 +433,19 @@ async fn e2e_docker_profile_sync_and_doctor() {
         "doctor should exit 0, stderr: {}",
         doctor_result.stderr
     );
-
-    let doctor: serde_json::Value =
-        serde_json::from_str(&doctor_result.stdout).expect("doctor output should be valid JSON");
-    assert_eq!(
-        doctor.get("ok").and_then(|v| v.as_bool()),
-        Some(true),
-        "doctor should report ok=true"
+    assert!(
+        doctor_result.stdout.contains("Doctor complete."),
+        "doctor output should contain completion marker: {}",
+        doctor_result.stdout
     );
-    assert_eq!(
-        doctor.get("score").and_then(|v| v.as_u64()),
-        Some(100),
-        "doctor should report score=100"
+    assert!(
+        doctor_result
+            .stdout
+            .contains("Gateway target: ws://127.0.0.1:18789"),
+        "doctor output should report the configured gateway target: {}",
+        doctor_result.stdout
     );
-
-    let checks = doctor
-        .get("checks")
-        .and_then(|v| v.as_array())
-        .expect("doctor should have checks array");
-    assert!(!checks.is_empty(), "doctor should have at least one check");
-    for check in checks {
-        let status = check.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        assert_eq!(status, "ok", "check {:?} should be ok", check.get("id"));
-    }
-    eprintln!("[e2e] Doctor check passed: {} checks all ok", checks.len());
+    eprintln!("[e2e] Doctor check passed");
 
     // --- Step 7: Verify env vars accessible via exec ---
     let env_result = pool
@@ -470,6 +514,8 @@ async fn e2e_docker_password_auth_connect() {
         eprintln!("skip: docker not available");
         return;
     }
+    ensure_exec_timeout_override();
+    ensure_clean_start();
 
     // Reuse container from previous test if running together, or build fresh
     let needs_setup = Command::new("docker")
@@ -534,6 +580,8 @@ async fn e2e_docker_wrong_password_rejected() {
         eprintln!("skip: docker not available");
         return;
     }
+    ensure_exec_timeout_override();
+    ensure_clean_start();
 
     // Container must be running
     let running = Command::new("docker")

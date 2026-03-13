@@ -30,12 +30,17 @@ export interface RecipeParam {
   placeholder?: string;
   dependsOn?: string;
   defaultValue?: string;
+  options?: Array<{ value: string; label: string }>;
 }
 
 export interface RecipeStep {
   action: string;
   label: string;
   args: Record<string, unknown>;
+}
+
+export interface RecipePresentation {
+  resultSummary?: string;
 }
 
 export interface Recipe {
@@ -45,8 +50,136 @@ export interface Recipe {
   version: string;
   tags: string[];
   difficulty: "easy" | "normal" | "advanced";
+  presentation?: RecipePresentation;
   params: RecipeParam[];
   steps: RecipeStep[];
+}
+
+export interface RecipeWorkspaceEntry {
+  slug: string;
+  path: string;
+  recipeId?: string;
+  version?: string;
+  sourceKind?: "bundled" | "localImport" | "remoteUrl";
+  bundledVersion?: string;
+  bundledState?:
+    | "missing"
+    | "upToDate"
+    | "updateAvailable"
+    | "localModified"
+    | "conflictedUpdate";
+  trustLevel: "trusted" | "caution" | "untrusted";
+  riskLevel: "low" | "medium" | "high";
+  approvalRequired: boolean;
+}
+
+export interface RecipeActionCatalogEntry {
+  kind: string;
+  title: string;
+  group: string;
+  category: string;
+  backend: string;
+  description: string;
+  readOnly: boolean;
+  interactive: boolean;
+  runnerSupported: boolean;
+  recommended: boolean;
+  cliCommand?: string;
+  legacyAliasOf?: string;
+  capabilities: string[];
+  resourceKinds: string[];
+}
+
+export interface RecipeSourceSaveResult {
+  slug: string;
+  path: string;
+}
+
+export interface ImportedRecipe {
+  slug: string;
+  recipeId: string;
+  path: string;
+}
+
+export interface SkippedRecipeImport {
+  recipeDir: string;
+  reason: string;
+}
+
+export interface RecipeLibraryImportResult {
+  imported: ImportedRecipe[];
+  skipped: SkippedRecipeImport[];
+  warnings: string[];
+}
+
+export type RecipeImportSourceKind =
+  | "localFile"
+  | "localRecipeDirectory"
+  | "localRecipeLibrary"
+  | "remoteUrl";
+
+export interface RecipeImportConflict {
+  slug: string;
+  recipeId: string;
+  path: string;
+}
+
+export interface SkippedRecipeSourceImport {
+  source: string;
+  reason: string;
+}
+
+export interface RecipeSourceImportResult {
+  sourceKind?: RecipeImportSourceKind | null;
+  imported: ImportedRecipe[];
+  skipped: SkippedRecipeSourceImport[];
+  warnings: string[];
+  conflicts: RecipeImportConflict[];
+}
+
+export interface RecipeSourceDiagnostic {
+  category: string;
+  severity: string;
+  recipeId?: string;
+  path?: string;
+  message: string;
+}
+
+export interface RecipeSourceDiagnostics {
+  errors: RecipeSourceDiagnostic[];
+  warnings: RecipeSourceDiagnostic[];
+}
+
+export type RecipeEditorOrigin = "builtin" | "workspace" | "external";
+
+export interface RecipeStudioDraft {
+  recipeId: string;
+  recipeName: string;
+  source: string;
+  origin: RecipeEditorOrigin;
+  workspaceSlug?: string;
+}
+
+export interface RecipeEditorActionRow {
+  kind: string;
+  name: string;
+  argsText: string;
+}
+
+export interface RecipeEditorModel {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  tagsText: string;
+  difficulty: Recipe["difficulty"];
+  params: RecipeParam[];
+  steps: RecipeStep[];
+  actionRows: RecipeEditorActionRow[];
+  bundleCapabilities: string[];
+  bundleResources: string[];
+  executionKind: RecipeExecutionKind;
+  sourceDocument: unknown;
 }
 
 export interface ChangeItem {
@@ -75,6 +208,144 @@ export interface ApplyResult {
   backupPath?: string;
   warnings: string[];
   errors: string[];
+}
+
+export type RecipeExecutionKind = "job" | "service" | "schedule" | "attachment";
+
+export interface RecipeBundle {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name?: string;
+    version?: string;
+    description?: string;
+  };
+  compatibility: {
+    minRunnerVersion?: string;
+    targetPlatforms?: string[];
+  };
+  inputs: Record<string, unknown>[];
+  capabilities: {
+    allowed: string[];
+  };
+  resources: {
+    supportedKinds: string[];
+  };
+  execution: {
+    supportedKinds: RecipeExecutionKind[];
+  };
+  runner: {
+    name?: string;
+    version?: string;
+  };
+  outputs: Record<string, unknown>[];
+}
+
+export interface ExecutionResourceClaim {
+  kind: string;
+  id?: string;
+  target?: string;
+  path?: string;
+}
+
+export interface ExecutionSecretBinding {
+  id: string;
+  source: string;
+  mount?: string;
+}
+
+export interface ExecutionSpec {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name?: string;
+    digest?: string;
+  };
+  source: Record<string, unknown>;
+  target: Record<string, unknown>;
+  execution: {
+    kind: RecipeExecutionKind;
+  };
+  capabilities: {
+    usedCapabilities: string[];
+  };
+  resources: {
+    claims: ExecutionResourceClaim[];
+  };
+  secrets: {
+    bindings: ExecutionSecretBinding[];
+  };
+  desiredState: Record<string, unknown>;
+  actions: Record<string, unknown>[];
+  outputs: Record<string, unknown>[];
+}
+
+export interface RecipePlanSummary {
+  recipeId: string;
+  recipeName: string;
+  executionKind: RecipeExecutionKind;
+  actionCount: number;
+  skippedStepCount: number;
+}
+
+export interface RecipePlan {
+  summary: RecipePlanSummary;
+  usedCapabilities: string[];
+  concreteClaims: ExecutionResourceClaim[];
+  executionSpecDigest: string;
+  executionSpec: ExecutionSpec;
+  warnings: string[];
+}
+
+export type RecipeSourceOrigin = "saved" | "draft";
+
+export interface ExecuteRecipeRequest {
+  spec: ExecutionSpec;
+  sourceOrigin?: RecipeSourceOrigin;
+  sourceText?: string;
+  workspaceSlug?: string;
+}
+
+export interface ExecuteRecipeResult {
+  runId: string;
+  instanceId: string;
+  summary: string;
+  warnings: string[];
+}
+
+export interface RecipeRuntimeArtifact {
+  id: string;
+  kind: string;
+  label: string;
+  path?: string;
+}
+
+export interface RecipeRuntimeRun {
+  id: string;
+  instanceId: string;
+  recipeId: string;
+  executionKind: string;
+  runner: string;
+  status: string;
+  summary: string;
+  startedAt: string;
+  finishedAt?: string;
+  artifacts: RecipeRuntimeArtifact[];
+  resourceClaims: ExecutionResourceClaim[];
+  warnings: string[];
+  sourceOrigin?: string;
+  sourceDigest?: string;
+  workspacePath?: string;
+}
+
+export interface RecipeRuntimeInstance {
+  id: string;
+  recipeId: string;
+  executionKind: string;
+  runner: string;
+  status: string;
+  lastRunId?: string;
+  updatedAt: string;
 }
 
 export interface SystemStatus {
@@ -255,7 +526,9 @@ export interface HistoryItem {
   createdAt: string;
   source: string;
   canRollback: boolean;
+  runId?: string;
   rollbackOf?: string;
+  artifacts?: RecipeRuntimeArtifact[];
 }
 
 export interface DoctorIssue {

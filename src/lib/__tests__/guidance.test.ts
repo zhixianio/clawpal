@@ -167,22 +167,24 @@ describe("shouldEmitAgentGuidance", () => {
 describe("explainAndBuildGuidanceError", () => {
   let explainSpy: ReturnType<typeof spyOn>;
   let dispatchSpy: ReturnType<typeof spyOn> | undefined;
+  let originalWindow: typeof globalThis.window;
+  let originalCustomEvent: typeof globalThis.CustomEvent;
 
   beforeEach(() => {
     explainSpy = spyOn(api, "explainOperationError");
-    // Provide a minimal window if it doesn't exist (bun test has no DOM)
-    if (typeof globalThis.window === "undefined") {
-      (globalThis as any).window = {
-        dispatchEvent: () => true,
-        CustomEvent: class CustomEvent extends Event {
-          detail: any;
-          constructor(type: string, init?: { detail?: any }) {
-            super(type);
-            this.detail = init?.detail;
-          }
-        },
-      };
-    }
+    originalWindow = globalThis.window;
+    originalCustomEvent = globalThis.CustomEvent;
+    const existingWindow =
+      typeof globalThis.window === "object" && globalThis.window !== null
+        ? (globalThis.window as unknown as Record<string, unknown>)
+        : {};
+    (globalThis as any).window = {
+      ...existingWindow,
+      dispatchEvent:
+        typeof existingWindow.dispatchEvent === "function"
+          ? existingWindow.dispatchEvent
+          : () => true,
+    };
     if (typeof globalThis.CustomEvent === "undefined") {
       (globalThis as any).CustomEvent = class CustomEvent extends Event {
         detail: any;
@@ -198,6 +200,16 @@ describe("explainAndBuildGuidanceError", () => {
   afterEach(() => {
     explainSpy.mockRestore();
     dispatchSpy?.mockRestore();
+    if (typeof originalWindow === "undefined") {
+      delete (globalThis as any).window;
+    } else {
+      (globalThis as any).window = originalWindow;
+    }
+    if (typeof originalCustomEvent === "undefined") {
+      delete (globalThis as any).CustomEvent;
+    } else {
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
   });
 
   test("returns original error for cooldown errors without calling API", async () => {
@@ -255,6 +267,34 @@ describe("explainAndBuildGuidanceError", () => {
     expect(result.message).toBe("Explained: something went wrong");
     // emitEvent defaults to true, so _guidanceEmitted should be set
     expect((result as any)._guidanceEmitted).toBe(true);
+  });
+
+  test("keeps explained error when window exists but cannot dispatch events", async () => {
+    const uniqueErr = `window-stub-${Date.now()}-${Math.random()}`;
+    (globalThis as any).window = {
+      localStorage: {
+        getItem: () => null,
+      },
+    };
+    explainSpy.mockResolvedValueOnce({
+      message: "Explained despite missing dispatchEvent",
+      summary: "summary",
+      actions: [],
+      structuredActions: [],
+      source: "zeroclaw",
+    });
+
+    const result = await explainAndBuildGuidanceError({
+      method: "listAgents",
+      instanceId: "stub-inst",
+      transport: "local",
+      rawError: uniqueErr,
+      emitEvent: true,
+    });
+
+    expect(explainSpy).toHaveBeenCalledTimes(1);
+    expect(result.message).toBe("Explained despite missing dispatchEvent");
+    expect((result as any)._guidanceEmitted).toBeUndefined();
   });
 
   test("dispatches CustomEvent when emitEvent is true", async () => {

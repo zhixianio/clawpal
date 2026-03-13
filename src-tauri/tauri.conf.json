@@ -40,7 +40,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/watchdog.js"],
+    "resources": ["resources/watchdog.js", "../examples/recipe-library"],
     "targets": "all",
     "macOS": {
       "minimumSystemVersion": "10.15",

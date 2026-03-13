@@ -39,7 +39,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn, formatBytes } from "@/lib/utils";
 import { toast, Toaster } from "sonner";
-import type { ChannelNode, DiscordGuildChannel, DiscoveredInstance, DockerInstance, InstallSession, PrecheckIssue, RegisteredInstance, SshHost, SshTransferStats } from "./lib/types";
+import type {
+  ChannelNode,
+  DiscordGuildChannel,
+  DiscoveredInstance,
+  DockerInstance,
+  InstallSession,
+  PrecheckIssue,
+  RecipeEditorOrigin,
+  RecipeStudioDraft,
+  RecipeSourceOrigin,
+  RegisteredInstance,
+  SshHost,
+  SshTransferStats,
+} from "./lib/types";
 import { SshFormWidget } from "./components/SshFormWidget";
 import { closeWorkspaceTab } from "@/lib/tabWorkspace";
 import {
@@ -48,9 +61,11 @@ import {
   buildSshPassphraseConnectErrorMessage,
 } from "@/lib/sshConnectErrors";
 import { buildFriendlySshError, extractErrorText } from "@/lib/sshDiagnostic";
+import { shouldShowPendingChangesBar } from "@/lib/route-ui";
 
 const Home = lazy(() => import("./pages/Home").then((m) => ({ default: m.Home })));
 const Recipes = lazy(() => import("./pages/Recipes").then((m) => ({ default: m.Recipes })));
+const RecipeStudio = lazy(() => import("./pages/RecipeStudio").then((m) => ({ default: m.RecipeStudio })));
 const Cook = lazy(() => import("./pages/Cook").then((m) => ({ default: m.Cook })));
 const History = lazy(() => import("./pages/History").then((m) => ({ default: m.History })));
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
@@ -66,6 +81,7 @@ const preloadRouteModules = () =>
     import("./pages/Home"),
     import("./pages/Channels"),
     import("./pages/Recipes"),
+    import("./pages/RecipeStudio"),
     import("./pages/Cron"),
     import("./pages/Doctor"),
     import("./pages/OpenclawContext"),
@@ -80,7 +96,7 @@ const DEFAULT_DOCKER_OPENCLAW_HOME = "~/.clawpal/docker-local";
 const DEFAULT_DOCKER_CLAWPAL_DATA_DIR = "~/.clawpal/docker-local/data";
 const DEFAULT_DOCKER_INSTANCE_ID = "docker:local";
 
-type Route = "home" | "recipes" | "cook" | "history" | "channels" | "cron" | "doctor" | "context" | "orchestrator";
+type Route = "home" | "recipes" | "recipe-studio" | "cook" | "history" | "channels" | "cron" | "doctor" | "context" | "orchestrator";
 const INSTANCE_ROUTES: Route[] = ["home", "channels", "recipes", "cron", "doctor", "context", "history"];
 const OPEN_TABS_STORAGE_KEY = "clawpal_open_tabs";
 const APP_PREFERENCES_CACHE_KEY = buildCacheKey("__global__", "getAppPreferences", []);
@@ -159,6 +175,15 @@ export function App() {
   const [route, setRoute] = useState<Route>("home");
   const [recipeId, setRecipeId] = useState<string | null>(null);
   const [recipeSource, setRecipeSource] = useState<string | undefined>(undefined);
+  const [recipeSourceText, setRecipeSourceText] = useState<string | undefined>(undefined);
+  const [recipeSourceOrigin, setRecipeSourceOrigin] = useState<RecipeSourceOrigin>("saved");
+  const [recipeSourceWorkspaceSlug, setRecipeSourceWorkspaceSlug] = useState<string | undefined>(undefined);
+  const [recipeEditorRecipeId, setRecipeEditorRecipeId] = useState<string | null>(null);
+  const [recipeEditorRecipeName, setRecipeEditorRecipeName] = useState("");
+  const [recipeEditorSource, setRecipeEditorSource] = useState("");
+  const [recipeEditorOrigin, setRecipeEditorOrigin] = useState<RecipeEditorOrigin>("builtin");
+  const [recipeEditorWorkspaceSlug, setRecipeEditorWorkspaceSlug] = useState<string | undefined>(undefined);
+  const [cookReturnRoute, setCookReturnRoute] = useState<Route>("recipes");
   const [channelNodes, setChannelNodes] = useState<ChannelNode[] | null>(null);
   const [discordGuildChannels, setDiscordGuildChannels] = useState<DiscordGuildChannel[] | null>(null);
   const [channelsLoading, setChannelsLoading] = useState(false);
@@ -191,6 +216,14 @@ export function App() {
   const navigateRoute = useCallback((next: Route) => {
     startTransition(() => setRoute(next));
   }, []);
+  const openRecipeStudio = useCallback((draft: RecipeStudioDraft) => {
+    setRecipeEditorRecipeId(draft.recipeId);
+    setRecipeEditorRecipeName(draft.recipeName);
+    setRecipeEditorSource(draft.source);
+    setRecipeEditorOrigin(draft.origin);
+    setRecipeEditorWorkspaceSlug(draft.workspaceSlug);
+    navigateRoute("recipe-studio");
+  }, [navigateRoute]);
 
   const handleEditSsh = useCallback((host: SshHost) => {
     setEditingSshHost(host);
@@ -1466,6 +1499,7 @@ export function App() {
       />
       <InstanceContext.Provider value={{
         instanceId: activeInstance,
+        instanceLabel: openTabs.find((t) => t.id === activeInstance)?.label || activeInstance,
         instanceViewToken: activeInstance,
         instanceToken,
         persistenceScope,
@@ -1558,7 +1592,7 @@ export function App() {
           )}
         </div>
 
-        {!inStart && (
+        {shouldShowPendingChangesBar({ inStart, route }) && (
           <Suspense fallback={null}>
             <PendingChangesBar
               showToast={showToast}
@@ -1668,19 +1702,57 @@ export function App() {
           )}
           {!inStart && route === "recipes" && (
             <Recipes
-              onCook={(id, source) => {
+              onCook={(id, options) => {
                 setRecipeId(id);
-                setRecipeSource(source);
+                setRecipeSource(options?.source);
+                setRecipeSourceText(options?.sourceText);
+                setRecipeSourceOrigin(options?.sourceOrigin ?? "saved");
+                setRecipeSourceWorkspaceSlug(options?.workspaceSlug);
+                setCookReturnRoute("recipes");
                 navigateRoute("cook");
               }}
+              onOpenStudio={openRecipeStudio}
+              onOpenRuntimeDashboard={() => navigateRoute("orchestrator")}
             />
+          )}
+          {!inStart && route === "recipe-studio" && recipeEditorRecipeId && (
+            <RecipeStudio
+              recipeId={recipeEditorRecipeId}
+              recipeName={recipeEditorRecipeName}
+              initialSource={recipeEditorSource}
+              origin={recipeEditorOrigin}
+              workspaceSlug={recipeEditorWorkspaceSlug}
+              onCookDraft={(draft) => {
+                setRecipeId(draft.recipeId);
+                setRecipeSource(undefined);
+                setRecipeSourceText(draft.source);
+                setRecipeSourceOrigin("draft");
+                setRecipeSourceWorkspaceSlug(draft.workspaceSlug);
+                setCookReturnRoute("recipe-studio");
+                setRecipeEditorRecipeId(draft.recipeId);
+                setRecipeEditorRecipeName(draft.recipeName);
+                setRecipeEditorSource(draft.source);
+                setRecipeEditorOrigin(draft.origin);
+                setRecipeEditorWorkspaceSlug(draft.workspaceSlug);
+                navigateRoute("cook");
+              }}
+              onBack={() => navigateRoute("recipes")}
+            />
+          )}
+          {!inStart && route === "recipe-studio" && !recipeEditorRecipeId && (
+            <p>{t("recipeStudio.noRecipeSelected")}</p>
           )}
           {!inStart && route === "cook" && recipeId && (
             <Cook
               recipeId={recipeId}
               recipeSource={recipeSource}
+              recipeSourceText={recipeSourceText}
+              recipeSourceOrigin={recipeSourceOrigin}
+              recipeWorkspaceSlug={recipeSourceWorkspaceSlug}
+              onOpenHistory={() => navigateRoute("history")}
+              onOpenRuntimeDashboard={() => navigateRoute("orchestrator")}
               onDone={() => {
-                navigateRoute("recipes");
+                navigateRoute(cookReturnRoute);
               }}
             />
           )}
@@ -1692,7 +1764,12 @@ export function App() {
             />
           )}
           {!inStart && route === "cron" && <Cron key={`cron-${activeInstance}-${configVersion}-${persistenceResolved ? "ready" : "pending"}-${persistenceScope ?? "none"}`} />}
-          {!inStart && route === "history" && <History key={`history-${activeInstance}-${configVersion}`} />}
+          {!inStart && route === "history" && (
+            <History
+              key={`history-${activeInstance}-${configVersion}`}
+              onOpenRuntimeDashboard={() => navigateRoute("orchestrator")}
+            />
+          )}
           {!inStart && route === "doctor" && (
             <Doctor key={activeInstance} />
           )}

@@ -66,7 +66,7 @@ fn extract_default_model_and_fallbacks(cfg: &Value) -> (Option<String>, Vec<Stri
     (default_model, fallback_models)
 }
 
-fn collect_agent_overviews_from_config(cfg: &Value) -> Vec<AgentOverview> {
+pub(crate) fn collect_agent_overviews_from_config(cfg: &Value) -> Vec<AgentOverview> {
     cfg.pointer("/agents/list")
         .and_then(Value::as_array)
         .map(|agents| {
@@ -80,11 +80,13 @@ fn collect_agent_overviews_from_config(cfg: &Value) -> Vec<AgentOverview> {
                     Some(AgentOverview {
                         id,
                         name: agent
-                            .get("name")
+                            .get("identityName")
+                            .or_else(|| agent.get("name"))
                             .and_then(Value::as_str)
                             .map(|value| value.to_string()),
                         emoji: agent
-                            .get("emoji")
+                            .get("identityEmoji")
+                            .or_else(|| agent.get("emoji"))
                             .and_then(Value::as_str)
                             .map(|value| value.to_string()),
                         model: agent.get("model").and_then(read_model_value),
@@ -441,6 +443,29 @@ mod tests {
         assert_eq!(snapshot.agents.len(), 1);
         assert_eq!(snapshot.agents[0].id, "main");
         assert!(!snapshot.agents[0].online);
+    }
+
+    #[test]
+    fn agent_overviews_from_config_accept_identity_fields() {
+        let cfg = serde_json::json!({
+            "agents": {
+                "list": [
+                    {
+                        "id": "helper",
+                        "identityName": "Helper",
+                        "identityEmoji": "🛟",
+                        "model": "openai/gpt-4o"
+                    }
+                ]
+            }
+        });
+
+        let agents = collect_agent_overviews_from_config(&cfg);
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, "helper");
+        assert_eq!(agents[0].name.as_deref(), Some("Helper"));
+        assert_eq!(agents[0].emoji.as_deref(), Some("🛟"));
     }
 
     #[test]
