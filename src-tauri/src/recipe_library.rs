@@ -194,6 +194,20 @@ pub(crate) fn bundled_recipe_library_candidates(app_handle: &tauri::AppHandle) -
         candidates.push(resource_root);
     }
 
+    if let Ok(resource_root) = app_handle
+        .path()
+        .resolve("_up_/recipe-library", tauri::path::BaseDirectory::Resource)
+    {
+        candidates.push(resource_root);
+    }
+
+    if let Ok(resource_root) = app_handle.path().resolve(
+        "_up_/examples/recipe-library",
+        tauri::path::BaseDirectory::Resource,
+    ) {
+        candidates.push(resource_root);
+    }
+
     candidates.push(dev_recipe_library_root());
     dedupe_paths(candidates)
 }

@@ -245,9 +245,13 @@ fn import_recipe_library_compiles_preset_assets_into_workspace_recipe() {
 }
 
 #[test]
-fn select_recipe_library_root_accepts_packaged_examples_layout() {
+fn select_recipe_library_root_accepts_packaged_up_examples_layout() {
     let resource_root = temp_dir("recipe-library-resource-root");
-    let packaged_root = resource_root.path().join("examples").join("recipe-library");
+    let packaged_root = resource_root
+        .path()
+        .join("_up_")
+        .join("examples")
+        .join("recipe-library");
     write_recipe(
         &packaged_root,
         "agent-persona-pack",
@@ -266,6 +270,11 @@ fn select_recipe_library_root_accepts_packaged_examples_layout() {
     let resolved = select_recipe_library_root(vec![
         resource_root.path().join("recipe-library"),
         resource_root.path().join("examples").join("recipe-library"),
+        resource_root
+            .path()
+            .join("_up_")
+            .join("examples")
+            .join("recipe-library"),
     ])
     .expect("resolve packaged recipe library");
 
