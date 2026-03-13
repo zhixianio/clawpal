@@ -117,6 +117,8 @@ mod recipe_library_tests;
 #[cfg(test)]
 mod recipe_planner_tests;
 #[cfg(test)]
+mod recipe_source_tests;
+#[cfg(test)]
 mod recipe_store_tests;
 #[cfg(test)]
 mod recipe_workspace_tests;
