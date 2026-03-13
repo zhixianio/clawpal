@@ -36,6 +36,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { isHttpRecipeSource } from "@/lib/recipe-source-input";
 import { useApi } from "@/lib/use-api";
 import { formatTime } from "@/lib/utils";
 
@@ -159,8 +160,14 @@ export function Recipes({
       setRuns(nextRuns);
       setWorkspaceEntries(nextWorkspaceEntries);
       setWorkspaceDrafts(nextWorkspaceDrafts);
+      setImportNotice(null);
     } catch (e) {
       console.error("Failed to load recipes:", e);
+      setImportNotice(
+        t("recipes.loadFailed", {
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      );
     }
   };
 
@@ -168,6 +175,10 @@ export function Recipes({
     const value = source.trim();
     if (!value) {
       setImportNotice(t("recipes.importRequiresPath"));
+      return;
+    }
+    if (isHttpRecipeSource(value)) {
+      setImportNotice(t("recipes.importRequiresLocalDirectory"));
       return;
     }
     try {
@@ -340,7 +351,7 @@ export function Recipes({
         <Input
           value={source}
           onChange={(event) => setSource(event.target.value)}
-          placeholder="/path/recipes.json or /path/recipe-library or https://example.com/recipes.json"
+          placeholder={t("recipes.sourcePlaceholder")}
           className="w-[380px]"
         />
         <AsyncActionButton
@@ -361,6 +372,7 @@ export function Recipes({
       <p className="text-sm text-muted-foreground mt-0">
         {t("recipes.loadedFrom", { source: loadedSource || t("recipes.builtinSource") })}
       </p>
+      <p className="text-sm text-muted-foreground mt-2">{t("recipes.sourceHelp")}</p>
       {importNotice && <p className="text-sm text-muted-foreground mt-2">{importNotice}</p>}
       <Card className="mt-4 mb-4">
         <CardContent className="space-y-3">

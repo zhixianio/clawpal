@@ -173,6 +173,11 @@ pub fn seed_bundled_recipe_library(
 }
 
 fn resolve_bundled_recipe_library_root(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let candidates = bundled_recipe_library_candidates(app_handle);
+    select_recipe_library_root(candidates)
+}
+
+pub(crate) fn bundled_recipe_library_candidates(app_handle: &tauri::AppHandle) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(resource_root) = app_handle
@@ -182,17 +187,68 @@ fn resolve_bundled_recipe_library_root(app_handle: &tauri::AppHandle) -> Result<
         candidates.push(resource_root);
     }
 
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("examples")
-            .join("recipe-library"),
-    );
+    if let Ok(resource_root) = app_handle.path().resolve(
+        "examples/recipe-library",
+        tauri::path::BaseDirectory::Resource,
+    ) {
+        candidates.push(resource_root);
+    }
 
+    candidates.push(dev_recipe_library_root());
+    dedupe_paths(candidates)
+}
+
+pub(crate) fn dev_recipe_library_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("examples")
+        .join("recipe-library")
+}
+
+pub(crate) fn select_recipe_library_root(candidates: Vec<PathBuf>) -> Result<PathBuf, String> {
     candidates
-        .into_iter()
-        .find(|path| path.is_dir())
-        .ok_or_else(|| "bundled recipe library resource not found".to_string())
+        .iter()
+        .find(|path| looks_like_recipe_library_root(path))
+        .cloned()
+        .ok_or_else(|| {
+            let joined = candidates
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "bundled recipe library resource not found; checked: {}",
+                joined
+            )
+        })
+}
+
+fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut deduped = Vec::new();
+    for path in paths {
+        let key = path.to_string_lossy().to_string();
+        if seen.insert(key) {
+            deduped.push(path);
+        }
+    }
+    deduped
+}
+
+pub(crate) fn looks_like_recipe_library_root(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+
+    entries.flatten().any(|entry| {
+        let recipe_dir = entry.path();
+        recipe_dir.is_dir() && recipe_dir.join("recipe.json").is_file()
+    })
 }
 
 fn collect_recipe_dirs(root: &Path) -> Result<Vec<std::path::PathBuf>, String> {

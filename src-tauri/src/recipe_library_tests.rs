@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 use crate::recipe::load_recipes_from_source_text;
 use crate::recipe_adapter::compile_recipe_to_spec;
-use crate::recipe_library::{import_recipe_library, seed_recipe_library};
+use crate::recipe_library::{
+    dev_recipe_library_root, import_recipe_library, looks_like_recipe_library_root,
+    seed_recipe_library, select_recipe_library_root,
+};
 use crate::recipe_workspace::RecipeWorkspace;
 
 struct TempDir(PathBuf);
@@ -239,6 +242,54 @@ fn import_recipe_library_compiles_preset_assets_into_workspace_recipe() {
         spec.actions[0].args.get("persona").and_then(Value::as_str),
         Some("You are warm, concise, and practical.\n")
     );
+}
+
+#[test]
+fn select_recipe_library_root_accepts_packaged_examples_layout() {
+    let resource_root = temp_dir("recipe-library-resource-root");
+    let packaged_root = resource_root.path().join("examples").join("recipe-library");
+    write_recipe(
+        &packaged_root,
+        "agent-persona-pack",
+        r#"{
+          "id": "agent-persona-pack",
+          "name": "Agent Persona Pack",
+          "description": "Packaged test recipe",
+          "version": "1.0.0",
+          "tags": ["agent"],
+          "difficulty": "easy",
+          "params": [],
+          "steps": []
+        }"#,
+    );
+
+    let resolved = select_recipe_library_root(vec![
+        resource_root.path().join("recipe-library"),
+        resource_root.path().join("examples").join("recipe-library"),
+    ])
+    .expect("resolve packaged recipe library");
+
+    assert_eq!(resolved, packaged_root);
+    assert!(looks_like_recipe_library_root(&resolved));
+}
+
+#[test]
+fn select_recipe_library_root_reports_checked_candidates() {
+    let first = PathBuf::from("/tmp/missing-recipe-library");
+    let second = PathBuf::from("/tmp/missing-examples-recipe-library");
+
+    let error = select_recipe_library_root(vec![first.clone(), second.clone()])
+        .expect_err("missing candidates should fail");
+
+    assert!(error.contains("bundled recipe library resource not found"));
+    assert!(error.contains(first.to_string_lossy().as_ref()));
+    assert!(error.contains(second.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn dev_recipe_library_root_points_to_repo_examples() {
+    let root = dev_recipe_library_root();
+    assert!(looks_like_recipe_library_root(&root));
 }
 
 #[test]

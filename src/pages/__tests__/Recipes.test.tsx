@@ -100,6 +100,8 @@ describe("Recipes runtime summary", () => {
     expect(html).toContain("Fork to workspace");
     expect(html).toContain("digest-123");
     expect(html).toContain("Import");
+    expect(html).toContain("Load supports a local recipes.json file");
+    expect(html).toContain("/path/recipe.json");
     expect(html).toContain("Agent Persona Pack");
     expect(html).toContain('title="Cook"');
     expect(html).toContain('title="Open Agent Persona Pack"');
