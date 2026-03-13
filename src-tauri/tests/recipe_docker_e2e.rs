@@ -9,8 +9,8 @@ use clawpal::cli_runner::{
     RemoteCommandQueues,
 };
 use clawpal::commands::{
-    execute_recipe_with_services, import_recipe_library, list_recipe_runs,
-    read_recipe_workspace_source,
+    approve_recipe_workspace_source, execute_recipe_with_services, import_recipe_library,
+    list_recipe_runs, read_recipe_workspace_source,
 };
 use clawpal::recipe_executor::ExecuteRecipeRequest;
 use clawpal::recipe_planner::build_recipe_plan_from_source_text;
@@ -368,6 +368,7 @@ async fn execute_workspace_recipe(
     recipe_id: &str,
     params: Map<String, Value>,
 ) -> Result<clawpal::recipe_executor::ExecuteRecipeResult, String> {
+    approve_recipe_workspace_source(workspace_slug.to_string())?;
     let source = read_recipe_workspace_source(workspace_slug.to_string())?;
     let mut plan = build_recipe_plan_from_source_text(recipe_id, &params, &source)?;
     plan.execution_spec.target = json!({
@@ -513,10 +514,22 @@ async fn e2e_recipe_library_import_and_execute_against_docker_openclaw() {
         .sftp_read(&host.id, &format!("{dedicated_workspace}/IDENTITY.md"))
         .await
         .expect("read dedicated agent identity");
-    assert!(dedicated_identity.contains("- Name: Ops Bot"));
-    assert!(dedicated_identity.contains("- Emoji: 🛰️"));
-    assert!(dedicated_identity.contains("## Persona"));
-    assert!(dedicated_identity.contains("incident response"));
+    assert!(
+        dedicated_identity.contains("Ops Bot"),
+        "expected identity to preserve display name, got:\n{dedicated_identity}"
+    );
+    assert!(
+        dedicated_identity.contains("🛰️"),
+        "expected identity to preserve emoji, got:\n{dedicated_identity}"
+    );
+    assert!(
+        dedicated_identity.contains("## Persona"),
+        "expected identity to include persona section, got:\n{dedicated_identity}"
+    );
+    assert!(
+        dedicated_identity.contains("incident response"),
+        "expected identity to include persona content, got:\n{dedicated_identity}"
+    );
 
     let agent_persona_result = execute_workspace_recipe(
         &queue,

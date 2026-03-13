@@ -250,7 +250,7 @@ fn format_heading(heading: &str) -> String {
     }
 }
 
-fn upsert_markdown_section(existing: &str, heading: &str, content: &str) -> String {
+pub(crate) fn upsert_markdown_section(existing: &str, heading: &str, content: &str) -> String {
     let normalized = existing.replace("\r\n", "\n");
     let header = format_heading(heading);
     let lines: Vec<&str> = normalized.lines().collect();

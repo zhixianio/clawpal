@@ -108,6 +108,56 @@ fn identity_content(
     Ok(content)
 }
 
+fn upsert_persona_content(
+    existing: Option<&str>,
+    explicit_name: Option<&str>,
+    explicit_emoji: Option<&str>,
+    default_name: Option<&str>,
+    default_emoji: Option<&str>,
+    persona: PersonaChange<'_>,
+) -> Result<String, String> {
+    match existing {
+        Some(existing_text) => {
+            let parsed = parse_identity_content(existing_text);
+            let has_structured_identity = parsed.name.is_some() || parsed.emoji.is_some();
+            if !has_structured_identity
+                && (normalize_optional_text(explicit_name).is_some()
+                    || normalize_optional_text(explicit_emoji).is_some())
+            {
+                return identity_content(
+                    None,
+                    default_name,
+                    default_emoji,
+                    explicit_name,
+                    explicit_emoji,
+                    persona,
+                );
+            }
+            Ok(match persona {
+                PersonaChange::Preserve => existing_text.to_string(),
+                PersonaChange::Set(persona_text) => {
+                    crate::markdown_document::upsert_markdown_section(
+                        existing_text,
+                        "Persona",
+                        persona_text,
+                    )
+                }
+                PersonaChange::Clear => {
+                    crate::markdown_document::upsert_markdown_section(existing_text, "Persona", "")
+                }
+            })
+        }
+        None => identity_content(
+            existing,
+            default_name,
+            default_emoji,
+            explicit_name,
+            explicit_emoji,
+            persona,
+        ),
+    }
+}
+
 fn resolve_workspace(
     cfg: &Value,
     agent_id: &str,
@@ -129,17 +179,25 @@ fn resolve_agent_entry<'a>(cfg: &'a Value, agent_id: &str) -> Result<&'a Value, 
         .ok_or_else(|| format!("Agent '{}' not found", agent_id))
 }
 
-fn resolve_identity_defaults(cfg: &Value, agent_id: &str) -> Result<IdentityDocument, String> {
+fn resolve_identity_explicit_defaults(
+    cfg: &Value,
+    agent_id: &str,
+) -> Result<IdentityDocument, String> {
     let agent = resolve_agent_entry(cfg, agent_id)?;
     let name = agent
-        .get("identityName")
+        .get("identity")
+        .and_then(|value| value.get("name"))
+        .or_else(|| agent.get("identityName"))
+        .or_else(|| agent.get("name"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| Some(agent_id.to_string()));
+        .map(str::to_string);
     let emoji = agent
-        .get("identityEmoji")
+        .get("identity")
+        .and_then(|value| value.get("emoji"))
+        .or_else(|| agent.get("identityEmoji"))
+        .or_else(|| agent.get("emoji"))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -150,6 +208,14 @@ fn resolve_identity_defaults(cfg: &Value, agent_id: &str) -> Result<IdentityDocu
         emoji,
         persona: None,
     })
+}
+
+fn resolve_identity_defaults(cfg: &Value, agent_id: &str) -> Result<IdentityDocument, String> {
+    let mut defaults = resolve_identity_explicit_defaults(cfg, agent_id)?;
+    if defaults.name.is_none() {
+        defaults.name = Some(agent_id.to_string());
+    }
+    Ok(defaults)
 }
 
 fn push_unique_candidate(candidates: &mut Vec<String>, candidate: Option<String>) {
@@ -358,6 +424,7 @@ pub fn set_local_agent_persona(
 ) -> Result<(), String> {
     let cfg = read_openclaw_config(paths)?;
     let identity_path = resolve_local_identity_path(&cfg, paths, agent_id)?;
+    let explicit_defaults = resolve_identity_explicit_defaults(&cfg, agent_id)?;
     let defaults = resolve_identity_defaults(&cfg, agent_id)?;
     let identity_dir = identity_path
         .parent()
@@ -366,12 +433,12 @@ pub fn set_local_agent_persona(
     let existing = fs::read_to_string(&identity_path).ok();
     fs::write(
         &identity_path,
-        identity_content(
+        upsert_persona_content(
             existing.as_deref(),
+            explicit_defaults.name.as_deref(),
+            explicit_defaults.emoji.as_deref(),
             defaults.name.as_deref(),
             defaults.emoji.as_deref(),
-            None,
-            None,
             PersonaChange::Set(persona),
         )?,
     )
@@ -382,6 +449,7 @@ pub fn set_local_agent_persona(
 pub fn clear_local_agent_persona(paths: &OpenClawPaths, agent_id: &str) -> Result<(), String> {
     let cfg = read_openclaw_config(paths)?;
     let identity_path = resolve_local_identity_path(&cfg, paths, agent_id)?;
+    let explicit_defaults = resolve_identity_explicit_defaults(&cfg, agent_id)?;
     let defaults = resolve_identity_defaults(&cfg, agent_id)?;
     let identity_dir = identity_path
         .parent()
@@ -390,12 +458,12 @@ pub fn clear_local_agent_persona(paths: &OpenClawPaths, agent_id: &str) -> Resul
     let existing = fs::read_to_string(&identity_path).ok();
     fs::write(
         &identity_path,
-        identity_content(
+        upsert_persona_content(
             existing.as_deref(),
+            explicit_defaults.name.as_deref(),
+            explicit_defaults.emoji.as_deref(),
             defaults.name.as_deref(),
             defaults.emoji.as_deref(),
-            None,
-            None,
             PersonaChange::Clear,
         )?,
     )
@@ -414,6 +482,7 @@ pub async fn set_remote_agent_persona(
             .await
             .map_err(|error| format!("Failed to parse config: {error}"))?;
     let identity_path = resolve_remote_identity_path(pool, host_id, &cfg, agent_id).await?;
+    let explicit_defaults = resolve_identity_explicit_defaults(&cfg, agent_id)?;
     let defaults = resolve_identity_defaults(&cfg, agent_id)?;
     let remote_workspace = identity_path
         .strip_suffix("/IDENTITY.md")
@@ -431,12 +500,12 @@ pub async fn set_remote_agent_persona(
     pool.sftp_write(
         host_id,
         &identity_path,
-        &identity_content(
+        &upsert_persona_content(
             existing.as_deref(),
+            explicit_defaults.name.as_deref(),
+            explicit_defaults.emoji.as_deref(),
             defaults.name.as_deref(),
             defaults.emoji.as_deref(),
-            None,
-            None,
             PersonaChange::Set(persona),
         )?,
     )
@@ -454,6 +523,7 @@ pub async fn clear_remote_agent_persona(
             .await
             .map_err(|error| format!("Failed to parse config: {error}"))?;
     let identity_path = resolve_remote_identity_path(pool, host_id, &cfg, agent_id).await?;
+    let explicit_defaults = resolve_identity_explicit_defaults(&cfg, agent_id)?;
     let defaults = resolve_identity_defaults(&cfg, agent_id)?;
     let remote_workspace = identity_path
         .strip_suffix("/IDENTITY.md")
@@ -471,12 +541,12 @@ pub async fn clear_remote_agent_persona(
     pool.sftp_write(
         host_id,
         &identity_path,
-        &identity_content(
+        &upsert_persona_content(
             existing.as_deref(),
+            explicit_defaults.name.as_deref(),
+            explicit_defaults.emoji.as_deref(),
             defaults.name.as_deref(),
             defaults.emoji.as_deref(),
-            None,
-            None,
             PersonaChange::Clear,
         )?,
     )
@@ -486,7 +556,7 @@ pub async fn clear_remote_agent_persona(
 
 #[cfg(test)]
 mod tests {
-    use super::write_local_agent_identity;
+    use super::{set_local_agent_persona, write_local_agent_identity};
     use crate::cli_runner::{
         lock_active_override_test_state, set_active_clawpal_data_override,
         set_active_openclaw_home_override,
@@ -701,6 +771,112 @@ mod tests {
         assert_eq!(
             fs::read_to_string(workspace.join("IDENTITY.md")).expect("read identity file"),
             "- Name: test-agent\n\n## Persona\nNew persona.\n"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn set_local_agent_persona_rewrites_openclaw_identity_template_with_explicit_defaults() {
+        let _override_guard = lock_active_override_test_state();
+        let temp_root = std::env::temp_dir().join(format!("clawpal-identity-{}", Uuid::new_v4()));
+        let openclaw_home = temp_root.join("home");
+        let clawpal_data = temp_root.join("data");
+        let openclaw_dir = openclaw_home.join(".openclaw");
+        let workspace = temp_root.join("workspace").join("ops-bot");
+        fs::create_dir_all(&openclaw_dir).expect("create openclaw dir");
+        fs::create_dir_all(&clawpal_data).expect("create clawpal data dir");
+        fs::create_dir_all(&workspace).expect("create workspace dir");
+        fs::write(
+            workspace.join("IDENTITY.md"),
+            "# IDENTITY.md - Who Am I?\n\n_Fill this in during your first conversation._\n",
+        )
+        .expect("write identity seed");
+        fs::write(
+            openclaw_dir.join("openclaw.json"),
+            serde_json::to_string_pretty(&json!({
+                "agents": {
+                    "list": [
+                        {
+                            "id": "ops-bot",
+                            "workspace": workspace.to_string_lossy(),
+                            "identity": {
+                                "name": "Ops Bot",
+                                "emoji": "🛰️"
+                            }
+                        }
+                    ]
+                }
+            }))
+            .expect("serialize config"),
+        )
+        .expect("write config");
+
+        set_active_openclaw_home_override(Some(openclaw_home.to_string_lossy().to_string()))
+            .expect("set openclaw override");
+        set_active_clawpal_data_override(Some(clawpal_data.to_string_lossy().to_string()))
+            .expect("set clawpal override");
+
+        let result = set_local_agent_persona(&resolve_paths(), "ops-bot", "Keep systems green.");
+
+        set_active_openclaw_home_override(None).expect("clear openclaw override");
+        set_active_clawpal_data_override(None).expect("clear clawpal override");
+
+        assert!(result.is_ok());
+        assert_eq!(
+            fs::read_to_string(workspace.join("IDENTITY.md")).expect("read identity file"),
+            "- Name: Ops Bot\n- Emoji: 🛰️\n\n## Persona\nKeep systems green.\n"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn set_local_agent_persona_preserves_non_clawpal_identity_header() {
+        let _override_guard = lock_active_override_test_state();
+        let temp_root = std::env::temp_dir().join(format!("clawpal-identity-{}", Uuid::new_v4()));
+        let openclaw_home = temp_root.join("home");
+        let clawpal_data = temp_root.join("data");
+        let openclaw_dir = openclaw_home.join(".openclaw");
+        let workspace = temp_root.join("workspace").join("ops-bot");
+        fs::create_dir_all(&openclaw_dir).expect("create openclaw dir");
+        fs::create_dir_all(&clawpal_data).expect("create clawpal data dir");
+        fs::create_dir_all(&workspace).expect("create workspace dir");
+        fs::write(
+            workspace.join("IDENTITY.md"),
+            "# Ops Bot\n\nOpenClaw managed identity header.\n",
+        )
+        .expect("write identity seed");
+        fs::write(
+            openclaw_dir.join("openclaw.json"),
+            serde_json::to_string_pretty(&json!({
+                "agents": {
+                    "list": [
+                        {
+                            "id": "ops-bot",
+                            "workspace": workspace.to_string_lossy(),
+                        }
+                    ]
+                }
+            }))
+            .expect("serialize config"),
+        )
+        .expect("write config");
+
+        set_active_openclaw_home_override(Some(openclaw_home.to_string_lossy().to_string()))
+            .expect("set openclaw override");
+        set_active_clawpal_data_override(Some(clawpal_data.to_string_lossy().to_string()))
+            .expect("set clawpal override");
+
+        let result = set_local_agent_persona(&resolve_paths(), "ops-bot", "Keep systems green.");
+
+        set_active_openclaw_home_override(None).expect("clear openclaw override");
+        set_active_clawpal_data_override(None).expect("clear clawpal override");
+
+        assert!(result.is_ok());
+        assert_eq!(
+            fs::read_to_string(workspace.join("IDENTITY.md")).expect("read identity file"),
+            "# Ops Bot\n\nOpenClaw managed identity header.\n\n## Persona\nKeep systems green.\n"
         );
 
         let _ = fs::remove_dir_all(temp_root);
