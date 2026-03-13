@@ -95,6 +95,11 @@ docs/plans/    Design and implementation plans
 - [`docs/recipe-cli-action-catalog.md`](docs/recipe-cli-action-catalog.md) — full CLI-backed recipe action catalog and support matrix
 - [`docs/recipe-runner-boundaries.md`](docs/recipe-runner-boundaries.md) — runner/backend boundaries and OpenClaw-first design rules
 
+## Testing docs
+
+- [`docs/testing/business-flow-test-matrix.md`](docs/testing/business-flow-test-matrix.md) — local and CI validation layers
+- [`docs/testing/local-docker-openclaw-debug.md`](docs/testing/local-docker-openclaw-debug.md) — rebuild the isolated Ubuntu/OpenClaw Docker target used for recipe debugging
+
 ## License
 
 Proprietary. All rights reserved.
