@@ -31,8 +31,10 @@ import {
   type CookStepStatus,
 } from "./cook-execution";
 import {
+  buildCookAuthProfileScope,
   buildCookContextWarnings,
   buildCookRouteSummary,
+  filterCookAuthIssues,
   hasBlockingAuthIssues,
 } from "./cook-plan-context";
 type Phase = "params" | "confirm" | "execute" | "done";
@@ -237,7 +239,11 @@ export function Cook({
         ua.readRawConfig(),
       ]);
       const steps = resolveSteps(recipe.steps, params);
-      const nextAuthIssues = authResult.status === "fulfilled" ? authResult.value : [];
+      const authScope = buildCookAuthProfileScope(nextPlan);
+      const nextAuthIssues =
+        authResult.status === "fulfilled"
+          ? filterCookAuthIssues(authResult.value, authScope)
+          : [];
       const nextContextWarnings =
         configResult.status === "fulfilled"
           ? buildCookContextWarnings(nextPlan, configResult.value)

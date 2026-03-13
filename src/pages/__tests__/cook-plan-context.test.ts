@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { RecipePlan } from "@/lib/types";
 import {
+  buildCookAuthProfileScope,
   buildCookContextWarnings,
   buildCookRouteSummary,
+  filterCookAuthIssues,
   hasBlockingAuthIssues,
 } from "../cook-plan-context";
 
@@ -56,6 +58,48 @@ const samplePlan: RecipePlan = {
               },
             },
           },
+        },
+      },
+    ],
+    outputs: [],
+  },
+  warnings: [],
+};
+
+const authPlan: RecipePlan = {
+  summary: {
+    recipeId: "dedicated-agent",
+    recipeName: "Dedicated Agent",
+    executionKind: "job",
+    actionCount: 4,
+    skippedStepCount: 0,
+  },
+  usedCapabilities: ["model.manage", "secret.sync", "agent.manage"],
+  concreteClaims: [{ kind: "modelProfile", id: "profile-openai" }],
+  executionSpecDigest: "digest-auth-123",
+  executionSpec: {
+    apiVersion: "strategy.platform/v1",
+    kind: "ExecutionSpec",
+    metadata: { name: "dedicated-agent" },
+    source: {},
+    target: {},
+    execution: { kind: "job" as const },
+    capabilities: { usedCapabilities: ["model.manage"] },
+    resources: { claims: [{ kind: "modelProfile", id: "profile-openai" }] },
+    secrets: { bindings: [] },
+    desiredState: {},
+    actions: [
+      {
+        kind: "ensure_model_profile",
+        args: {
+          profileId: "profile-openai",
+        },
+      },
+      {
+        kind: "create_agent",
+        args: {
+          agentId: "ops-bot",
+          modelProfileId: "profile-openai",
         },
       },
     ],
@@ -132,5 +176,35 @@ describe("cook plan context helpers", () => {
         },
       ]),
     ).toBe(true);
+  });
+
+  test("builds auth scope from claimed and auto-prepared model profiles", () => {
+    expect(buildCookAuthProfileScope(authPlan)).toEqual({
+      requiredProfileIds: ["profile-openai"],
+      autoPrepareProfileIds: ["profile-openai"],
+    });
+  });
+
+  test("filters out unrelated auth blockers and suppresses auto-prepared profile issues", () => {
+    const scope = buildCookAuthProfileScope(authPlan);
+    const issues = filterCookAuthIssues(
+      [
+        {
+          code: "AUTH_CREDENTIAL_UNRESOLVED",
+          severity: "error",
+          message: "Profile 'profile-openai' has no resolved credential for provider 'openai'",
+          autoFixable: false,
+        },
+        {
+          code: "AUTH_CREDENTIAL_UNRESOLVED",
+          severity: "error",
+          message: "Profile 'profile-anthropic' has no resolved credential for provider 'anthropic'",
+          autoFixable: false,
+        },
+      ],
+      scope,
+    );
+
+    expect(issues).toEqual([]);
   });
 });

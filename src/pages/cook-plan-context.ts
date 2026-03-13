@@ -12,6 +12,11 @@ export type CookRouteSummary = {
   targetLabel: string;
 };
 
+export type CookAuthProfileScope = {
+  requiredProfileIds: string[];
+  autoPrepareProfileIds: string[];
+};
+
 type BindingEntry = {
   agentId?: string;
   match?: {
@@ -137,6 +142,98 @@ export function buildCookRouteSummary(context: CookRouteContext): CookRouteSumma
     kind: context.isRemote ? "ssh" : context.isDocker ? "docker" : "local",
     targetLabel: normalizeRouteTarget(context),
   };
+}
+
+function readStringArg(args: unknown, key: string): string | null {
+  if (!isRecord(args)) {
+    return null;
+  }
+  const value = args[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function extractProfileIdFromIssue(issue: PrecheckIssue): string | null {
+  const match = issue.message.match(/Profile '([^']+)'/);
+  return match?.[1] ?? null;
+}
+
+export function buildCookAuthProfileScope(plan: RecipePlan): CookAuthProfileScope {
+  const requiredProfileIds = new Set<string>();
+  const autoPrepareProfileIds = new Set<string>();
+
+  for (const claim of plan.concreteClaims) {
+    if (claim.kind === "modelProfile" && typeof claim.id === "string" && claim.id.trim().length > 0) {
+      requiredProfileIds.add(claim.id.trim());
+    }
+  }
+
+  for (const action of plan.executionSpec.actions.filter(isRecord) as ActionRecord[]) {
+    const kind = typeof action.kind === "string" ? action.kind : null;
+    if (!kind) {
+      continue;
+    }
+
+    if (kind === "ensure_model_profile") {
+      const profileId = readStringArg(action.args, "profileId");
+      if (!profileId) {
+        continue;
+      }
+      requiredProfileIds.add(profileId);
+      autoPrepareProfileIds.add(profileId);
+      continue;
+    }
+
+    if (kind === "set_agent_model") {
+      const profileId = readStringArg(action.args, "profileId");
+      if (!profileId) {
+        continue;
+      }
+      requiredProfileIds.add(profileId);
+      const ensureProfile = isRecord(action.args) ? action.args.ensureProfile : undefined;
+      if (ensureProfile !== false) {
+        autoPrepareProfileIds.add(profileId);
+      }
+      continue;
+    }
+
+    if (kind === "create_agent") {
+      const profileId = readStringArg(action.args, "modelProfileId");
+      if (profileId) {
+        requiredProfileIds.add(profileId);
+      }
+    }
+  }
+
+  return {
+    requiredProfileIds: Array.from(requiredProfileIds),
+    autoPrepareProfileIds: Array.from(autoPrepareProfileIds),
+  };
+}
+
+export function filterCookAuthIssues(
+  issues: PrecheckIssue[],
+  scope: CookAuthProfileScope,
+): PrecheckIssue[] {
+  if (scope.requiredProfileIds.length === 0) {
+    return [];
+  }
+
+  const required = new Set(scope.requiredProfileIds);
+  const autoPrepare = new Set(scope.autoPrepareProfileIds);
+
+  return issues.filter((issue) => {
+    const profileId = extractProfileIdFromIssue(issue);
+    if (!profileId) {
+      return true;
+    }
+    if (!required.has(profileId)) {
+      return false;
+    }
+    if (autoPrepare.has(profileId) && issue.code === "AUTH_CREDENTIAL_UNRESOLVED") {
+      return false;
+    }
+    return true;
+  });
 }
 
 export function buildCookContextWarnings(
