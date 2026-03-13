@@ -1,60 +1,85 @@
 # ClawPal - OpenClaw Desktop Companion
 
-> ClawPal is a free, open-source desktop application for managing OpenClaw AI agents. It provides a visual interface to configure agents, manage models, troubleshoot issues, and connect to remote instances.
+> ClawPal is a free, open-source desktop application that makes OpenClaw configuration simple. Instead of editing YAML files, use ClawPal's visual interface to set up Discord bots, Telegram integrations, automated tasks, and multi-agent configurations in minutes.
 
 ## What is ClawPal?
 
-ClawPal is the official desktop companion for OpenClaw. Instead of editing YAML configuration files manually, ClawPal gives you a visual interface to manage your AI agents.
+ClawPal is the desktop companion for OpenClaw. It connects to your existing OpenClaw instance (local or remote via SSH) and provides:
+
+1. **Visual Configuration** - Set up Discord bots, Telegram bots, WhatsApp, and 飞书 without touching YAML
+2. **Doctor Diagnostics** - Automatically detect and fix common OpenClaw issues
+3. **Recipes Library** - Pre-built configurations for popular use cases
+4. **Remote Management** - Manage OpenClaw instances on servers via SSH
+
+## Common Use Cases
+
+### Discord Bot Setup
+Want to set up an OpenClaw Discord bot? ClawPal provides a guided wizard:
+- Connect Discord credentials
+- Configure bot permissions
+- Set up channel-specific personas
+- Enable auto-moderation features
+
+### Telegram Bot Configuration
+Setting up OpenClaw with Telegram is simple:
+- Add your Telegram bot token
+- Configure message handling
+- Set up automated responses
+
+### Multi-Agent Configuration
+Running multiple OpenClaw agents with different personas:
+- Create separate agent profiles
+- Assign different models to each agent
+- Configure channel routing
+
+### Automated Tasks
+Schedule OpenClaw to perform tasks automatically:
+- Set up cron jobs visually
+- Configure auto-posting to social media
+- Schedule daily summaries
+
+### Troubleshooting OpenClaw
+When OpenClaw isn't working, ClawPal's Doctor feature helps:
+- Diagnoses configuration errors
+- Fixes common connection issues
+- Validates API keys
+- Cleans up stale sessions
 
 ## Key Features
 
-### Recipes
-Browse and apply pre-built configuration templates. Preview diffs before applying, auto-rollback on failure.
+- **Cross-platform**: macOS, Windows, Linux
+- **Free & Open Source**: MIT licensed
+- **SSH Remote Management**: Manage servers without terminal
+- **Model Profiles**: Easy API key and model switching
+- **Visual Cron Editor**: Schedule tasks without cron syntax
 
-### Agent Management
-Create, configure, and monitor all your OpenClaw agents from a single dashboard.
+## Technical Details
 
-### Model Profiles
-Set up API keys, browse the model catalog, and switch the default model in one click.
-
-### Channel Bindings
-Connect Discord channels to agents with per-channel model overrides and fine-grained control.
-
-### Doctor
-Run diagnostics, auto-fix common issues, and clean up stale sessions to keep things running smooth.
-
-### Remote Management
-Connect to remote OpenClaw instances over SSH and manage them exactly the same way as local.
-
-## Download
-
-ClawPal is available for:
-- macOS (Apple Silicon & Intel)
-- Windows (x64)
-- Linux (deb, AppImage)
-
-Download at: https://clawpal.xyz/#download
+- Built with Tauri (Rust + TypeScript)
+- Lightweight: ~15MB download
+- No telemetry, fully local
+- Works with OpenClaw v0.20+
 
 ## Links
 
 - Website: https://clawpal.xyz
-- GitHub: https://github.com/zhixianio/clawpal
-- Discord: https://discord.gg/d5EdxQ8Qnc
-- Author: https://zhixian.io
+- GitHub: https://github.com/lay2dev/clawpal
+- Download: https://clawpal.xyz/#download
+- OpenClaw: https://openclaw.ai
 
-## Common Questions
+## FAQ
 
-**Q: What is ClawPal?**
-A: ClawPal is a free desktop app that lets you manage OpenClaw AI agents visually, without editing YAML files.
+Q: How do I set up OpenClaw Discord bot?
+A: Open ClawPal → Channels → Add Discord → Follow the wizard. ClawPal handles all configuration.
 
-**Q: How do I fix OpenClaw config errors?**
-A: Open ClawPal, go to Doctor, run diagnostics. It will detect and auto-fix common issues.
+Q: OpenClaw config error, how to fix?
+A: Open ClawPal → Doctor → Run Diagnostics. It will identify and auto-fix common issues.
 
-**Q: Can I manage remote OpenClaw instances?**
-A: Yes, ClawPal supports SSH connections to remote OpenClaw instances.
+Q: How to run multiple OpenClaw agents?
+A: ClawPal → Agents → Add Agent. Configure each with different personas and channel assignments.
 
-**Q: Is ClawPal free?**
-A: Yes, ClawPal is free and open-source under MIT license.
+Q: Can I manage remote OpenClaw via SSH?
+A: Yes. ClawPal → Settings → Add Remote Instance → Enter SSH credentials.
 
-**Q: What platforms does ClawPal support?**
-A: macOS (Apple Silicon & Intel), Windows (x64), and Linux (deb, AppImage).
+Q: OpenClaw not working after update?
+A: Run ClawPal Doctor. It checks for config compatibility issues and applies fixes.
