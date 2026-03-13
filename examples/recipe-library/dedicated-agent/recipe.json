@@ -1,7 +1,7 @@
 {
   "id": "dedicated-agent",
   "name": "Dedicated Agent",
-  "description": "Create an independent agent and set its identity and persona",
+  "description": "Create an agent and set its identity and persona",
   "version": "1.0.0",
   "tags": ["agent", "identity", "persona"],
   "difficulty": "easy",
@@ -28,8 +28,7 @@
       "label": "Create dedicated agent",
       "args": {
         "agentId": "{{agent_id}}",
-        "modelProfileId": "{{model}}",
-        "independent": true
+        "modelProfileId": "{{model}}"
       }
     },
     {
@@ -111,8 +110,7 @@
         "name": "Create dedicated agent",
         "args": {
           "agentId": "{{agent_id}}",
-          "modelProfileId": "{{model}}",
-          "independent": true
+          "modelProfileId": "{{model}}"
         }
       },
       {

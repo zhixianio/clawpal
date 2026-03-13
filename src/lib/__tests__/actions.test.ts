@@ -146,6 +146,21 @@ describe("stepToCommands", () => {
     };
     await expect(stepToCommands(step)).rejects.toThrow("Unknown action type: unknown_action");
   });
+
+  test("create_agent does not force a workspace when independent is present", async () => {
+    const commands = await stepToCommands({
+      index: 0,
+      action: "create_agent",
+      label: "Create",
+      args: { agentId: "mybot", independent: true },
+      description: "Create agent",
+      skippable: false,
+    });
+
+    expect(commands).toEqual([
+      ["Create agent: mybot", ["openclaw", "agents", "add", "mybot", "--non-interactive"]],
+    ]);
+  });
 });
 
 describe("Action describe functions", () => {
@@ -163,10 +178,11 @@ describe("Action describe functions", () => {
     expect(desc).toContain("gpt-4");
   });
 
-  test("create_agent describe with independent flag", () => {
+  test("create_agent describe ignores legacy independent flag", () => {
     const action = getAction("create_agent")!;
     const desc = action.describe({ agentId: "mybot", independent: true });
-    expect(desc).toContain("independent");
+    expect(desc).toContain('Create agent "mybot"');
+    expect(desc).not.toContain("independent");
   });
 
   test("setup_identity describe", () => {

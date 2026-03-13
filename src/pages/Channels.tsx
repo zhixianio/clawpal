@@ -437,6 +437,7 @@ export function Channels({
           if (!open) setPendingChannel(null);
         }}
         modelProfiles={modelProfiles}
+        allowPersona
         onCreated={(result: CreateAgentResult) => {
           void loadChannelsRuntime();
           if (pendingChannel) {

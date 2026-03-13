@@ -83,6 +83,12 @@ backend 是 runner 最终调用的能力来源。
 - 降低未来兼容性风险
 - 避免把 Recipe 系统做成第二套 OpenClaw 配置内核
 
+对 `create_agent` 还有一条额外约束：
+- workspace 策略由 OpenClaw 决定
+- 由于 `agents add --non-interactive` 需要显式 `--workspace`，runner 只会传入当前实例解析出的 OpenClaw 默认 workspace
+- runner 不再为新 agent 推导 `--workspace <agent_id>` 这类 ClawPal 自定义路径
+- 旧 source 里如果仍带 `independent`，当前只做兼容解析，不再影响 workspace 结果
+
 ## 3. 为什么不支持任意 shell
 
 runner 刻意不支持：

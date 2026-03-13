@@ -133,7 +133,7 @@ examples/recipe-library/
 {
   "id": "dedicated-agent",
   "name": "Dedicated Agent",
-  "description": "Create an independent agent and set its identity and persona",
+  "description": "Create an agent and set its identity and persona",
   "version": "1.0.0",
   "tags": ["agent", "identity", "persona"],
   "difficulty": "easy",
@@ -179,7 +179,7 @@ examples/recipe-library/
   "minLength": 3,
   "maxLength": 32,
   "defaultValue": "main",
-  "dependsOn": "independent",
+  "dependsOn": "advanced",
   "options": [
     { "value": "coach", "label": "Coach" }
   ]
@@ -328,11 +328,14 @@ UI 规则：
   "kind": "create_agent",
   "args": {
     "agentId": "{{agent_id}}",
-    "modelProfileId": "{{model}}",
-    "independent": true
+    "modelProfileId": "{{model}}"
   }
 }
 ```
+
+说明：
+- 旧的 `independent` 字段仍可被兼容读取，但不再推荐使用
+- workspace 由 OpenClaw 默认策略决定；runner 不再把 `agentId` 直接当成 workspace 路径
 
 ### `set_agent_identity`
 
@@ -579,8 +582,7 @@ UI 规则：
       "name": "Create dedicated agent",
       "args": {
         "agentId": "{{agent_id}}",
-        "modelProfileId": "{{model}}",
-        "independent": true
+        "modelProfileId": "{{model}}"
       }
     },
     {

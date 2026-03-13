@@ -43,6 +43,7 @@ RUN echo "root:ROOTPASS" | chpasswd && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
 RUN mkdir -p /root/.openclaw/agents/main/agent
+RUN mkdir -p /root/.openclaw/instances/openclaw-recipe-e2e/workspace
 
 RUN cat > /root/.openclaw/openclaw.json <<'OCEOF'
 {
@@ -72,10 +73,15 @@ RUN cat > /root/.openclaw/openclaw.json <<'OCEOF'
   },
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-sonnet-4-20250514"
+      "model": "anthropic/claude-sonnet-4-20250514",
+      "workspace": "~/.openclaw/instances/openclaw-recipe-e2e/workspace"
     },
     "list": [
-      { "id": "main", "model": "anthropic/claude-sonnet-4-20250514" }
+      {
+        "id": "main",
+        "model": "anthropic/claude-sonnet-4-20250514",
+        "workspace": "~/.openclaw/instances/openclaw-recipe-e2e/workspace"
+      }
     ]
   },
   "channels": {
@@ -501,7 +507,10 @@ async fn e2e_recipe_library_import_and_execute_against_docker_openclaw() {
         .get("workspace")
         .and_then(Value::as_str)
         .expect("dedicated agent should have workspace");
-    assert_eq!(dedicated_workspace, "/root/ops-bot");
+    assert!(
+        dedicated_workspace.starts_with('/') || dedicated_workspace.starts_with("~/"),
+        "expected OpenClaw to return an absolute or home-relative workspace, got: {dedicated_workspace}"
+    );
     assert_eq!(
         dedicated_agent.get("agentDir").and_then(Value::as_str),
         Some("/root/.openclaw/agents/ops-bot/agent")
@@ -510,10 +519,16 @@ async fn e2e_recipe_library_import_and_execute_against_docker_openclaw() {
         assert_eq!(model, "anthropic/claude-sonnet-4-20250514");
     }
 
-    let dedicated_identity = pool
-        .sftp_read(&host.id, &format!("{dedicated_workspace}/IDENTITY.md"))
+    let dedicated_identity = match pool
+        .sftp_read(&host.id, "~/.openclaw/agents/ops-bot/agent/IDENTITY.md")
         .await
-        .expect("read dedicated agent identity");
+    {
+        Ok(identity) => identity,
+        Err(_) => pool
+            .sftp_read(&host.id, &format!("{dedicated_workspace}/IDENTITY.md"))
+            .await
+            .expect("read dedicated agent identity"),
+    };
     assert!(
         dedicated_identity.contains("Ops Bot"),
         "expected identity to preserve display name, got:\n{dedicated_identity}"

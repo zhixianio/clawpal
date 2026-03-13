@@ -666,6 +666,7 @@ export function useApi() {
         api.listAgentsOverview,
         api.remoteListAgentsOverview,
       ),
+      createAgent: api.createAgent,
       setupAgentIdentity: dispatch(
         api.setupAgentIdentity,
         api.remoteSetupAgentIdentity,

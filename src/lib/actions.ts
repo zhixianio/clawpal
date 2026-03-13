@@ -106,47 +106,43 @@ const registry: Record<string, ActionDef> = {
         args.modelProfileId as string | undefined,
         ctx,
       );
-      // --non-interactive requires --workspace; for non-independent agents
-      // we must resolve the default workspace from config.
       let workspace: string | undefined;
-      if (args.independent) {
-        workspace = args.agentId as string;
-      } else {
-        // Read default workspace from config
-        const rawConfig = await callWithLobsterGuidance(
-          "readRawConfig",
-          ctx,
-          () => (ctx?.isRemote
-            ? api.remoteReadRawConfig(ctx.instanceId)
-            : api.readRawConfig()),
-        );
+      if (ctx) {
         try {
+          const rawConfig = await callWithLobsterGuidance(
+            "readRawConfig",
+            ctx,
+            () => (ctx.isRemote ? api.remoteReadRawConfig(ctx.instanceId) : api.readRawConfig()),
+          );
           const cfg = JSON.parse(rawConfig);
           workspace = cfg?.agents?.defaults?.workspace ?? cfg?.agents?.default?.workspace;
-        } catch { /* ignore parse errors */ }
+        } catch {
+          // ignore and fall back to agent overview
+        }
         if (!workspace) {
-          // Fallback: use workspace of first existing agent
           try {
             const agents = await callWithLobsterGuidance(
               "listAgentsOverview",
               ctx,
-              () => (ctx?.isRemote
+              () => (ctx.isRemote
                 ? api.remoteListAgentsOverview(ctx.instanceId)
                 : api.listAgentsOverview()),
             );
-            workspace = agents.find((a) => a.workspace)?.workspace;
-          } catch { /* ignore */ }
+            workspace = agents.find((agent) => agent.workspace)?.workspace ?? undefined;
+          } catch {
+            // ignore and surface a precise error below if still unresolved
+          }
         }
       }
       const cmd: string[] = ["openclaw", "agents", "add", args.agentId as string, "--non-interactive"];
-      if (modelValue) cmd.push("--model", modelValue);
       if (workspace) cmd.push("--workspace", workspace);
+      if (modelValue) cmd.push("--model", modelValue);
       return [[`Create agent: ${args.agentId}`, cmd]];
     },
     describe: (args) => {
       const model = args.modelProfileId as string | undefined;
       const modelLabel = !model || model === "__default__" ? "default model" : model;
-      return `Create ${args.independent ? "independent " : ""}agent "${args.agentId}" (${modelLabel})`;
+      return `Create agent "${args.agentId}" (${modelLabel})`;
     },
   },
   setup_identity: {

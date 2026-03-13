@@ -239,23 +239,23 @@ fn resolve_identity_dir_candidates(
     push_unique_candidate(
         &mut candidates,
         agent
-            .get("workspace")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    );
-    push_unique_candidate(
-        &mut candidates,
-        agent
             .get("agentDir")
             .and_then(Value::as_str)
             .map(str::to_string),
     );
-    push_unique_candidate(&mut candidates, resolve_workspace(cfg, agent_id, None).ok());
     push_unique_candidate(
         &mut candidates,
         fallback_agent_root
             .map(|root| format!("{}/{}/agent", root.trim_end_matches('/'), agent_id)),
     );
+    push_unique_candidate(
+        &mut candidates,
+        agent
+            .get("workspace")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    );
+    push_unique_candidate(&mut candidates, resolve_workspace(cfg, agent_id, None).ok());
 
     if candidates.is_empty() {
         return Err(format!(
@@ -291,9 +291,22 @@ fn resolve_local_identity_path(
         return Ok(existing);
     }
 
-    candidate_paths
-        .first()
-        .map(|dir| dir.join("IDENTITY.md"))
+    let agent = resolve_agent_entry(cfg, agent_id)?;
+    let create_dir = agent
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| resolve_workspace(cfg, agent_id, None).ok())
+        .or_else(|| {
+            agent
+                .get("agentDir")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| Some(format!("{}/{}/agent", fallback_root, agent_id)));
+
+    create_dir
+        .map(|dir| PathBuf::from(shellexpand::tilde(&dir).to_string()).join("IDENTITY.md"))
         .ok_or_else(|| format!("Agent '{}' has no identity path candidates", agent_id))
 }
 
@@ -311,8 +324,8 @@ async fn resolve_remote_identity_path(
     cfg: &Value,
     agent_id: &str,
 ) -> Result<String, String> {
-    let candidate_dirs =
-        resolve_identity_dir_candidates(cfg, agent_id, Some("~/.openclaw/agents"))?;
+    let fallback_root = "~/.openclaw/agents";
+    let candidate_dirs = resolve_identity_dir_candidates(cfg, agent_id, Some(fallback_root))?;
     let candidate_dirs: Vec<String> = candidate_dirs
         .into_iter()
         .map(|dir| normalize_remote_dir(&dir))
@@ -327,9 +340,22 @@ async fn resolve_remote_identity_path(
         }
     }
 
-    candidate_dirs
-        .first()
-        .map(|dir| format!("{dir}/IDENTITY.md"))
+    let agent = resolve_agent_entry(cfg, agent_id)?;
+    let create_dir = agent
+        .get("workspace")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| resolve_workspace(cfg, agent_id, None).ok())
+        .or_else(|| {
+            agent
+                .get("agentDir")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| Some(format!("{fallback_root}/{agent_id}/agent")));
+
+    create_dir
+        .map(|dir| format!("{}/IDENTITY.md", normalize_remote_dir(&dir)))
         .ok_or_else(|| format!("Agent '{}' has no identity path candidates", agent_id))
 }
 

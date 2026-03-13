@@ -19,7 +19,7 @@
 | --- | --- | --- | --- | --- |
 | `list_agents` | `openclaw agents list` | yes | no | 只读检查动作 |
 | `list_agent_bindings` | `openclaw agents bindings` | yes | no | 只读检查动作 |
-| `create_agent` | `openclaw agents add` | yes | yes | 推荐业务动作 |
+| `create_agent` | `openclaw agents add` | yes | yes | 推荐业务动作；runner 只会传入当前实例解析出的 OpenClaw 默认 workspace，不再使用 `agent_id` 这类自定义路径 |
 | `delete_agent` | `openclaw agents delete` | yes | yes | 会先做 binding 引用检查 |
 | `bind_agent` | `openclaw agents bind` | yes | yes | 推荐替代旧 `bind_channel` |
 | `unbind_agent` | `openclaw agents unbind` | yes | yes | 支持 `binding` 或 `all=true` |

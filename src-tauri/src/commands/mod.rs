@@ -2073,17 +2073,48 @@ fn resolve_model_value_from_profiles(
     ))
 }
 
-async fn resolve_workspace_for_route(
-    cache: &crate::cli_runner::CliCache,
+fn resolve_openclaw_default_workspace_from_config(cfg: &Value) -> Option<String> {
+    cfg.pointer("/agents/defaults/workspace")
+        .or_else(|| cfg.pointer("/agents/default/workspace"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            collect_agent_overviews_from_config(cfg)
+                .into_iter()
+                .find_map(|agent| agent.workspace.filter(|value| !value.trim().is_empty()))
+        })
+}
+
+async fn expand_workspace_for_route(
     pool: &SshConnectionPool,
     route: &crate::recipe_executor::ExecutionRoute,
-    independent: bool,
-    agent_id: &str,
-) -> Result<Option<String>, String> {
-    if independent {
-        return Ok(Some(agent_id.to_string()));
+    workspace: &str,
+) -> Result<String, String> {
+    match route.runner.as_str() {
+        "remote_ssh" => {
+            let host_id = route
+                .host_id
+                .clone()
+                .ok_or_else(|| "remote execution target missing hostId".to_string())?;
+            let home = pool.get_home_dir(&host_id).await?;
+            if workspace == "~" {
+                Ok(home)
+            } else if let Some(relative) = workspace.strip_prefix("~/") {
+                Ok(format!("{}/{}", home.trim_end_matches('/'), relative))
+            } else {
+                Ok(workspace.to_string())
+            }
+        }
+        _ => Ok(shellexpand::tilde(workspace).to_string()),
     }
+}
 
+async fn resolve_openclaw_default_workspace_for_route(
+    pool: &SshConnectionPool,
+    route: &crate::recipe_executor::ExecutionRoute,
+) -> Result<String, String> {
     match route.runner.as_str() {
         "remote_ssh" => {
             let host_id = route
@@ -2091,38 +2122,19 @@ async fn resolve_workspace_for_route(
                 .clone()
                 .ok_or_else(|| "remote execution target missing hostId".to_string())?;
             let (_, _, cfg) = remote_read_openclaw_config_text_and_json(pool, &host_id).await?;
-            if let Some(workspace) = cfg
-                .pointer("/agents/defaults/workspace")
-                .or_else(|| cfg.pointer("/agents/default/workspace"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                return Ok(Some(workspace.to_string()));
-            }
-
-            Ok(remote_list_agents_overview_with_pool(pool, host_id)
-                .await?
-                .into_iter()
-                .find_map(|agent| agent.workspace.filter(|value| !value.trim().is_empty())))
+            let workspace = resolve_openclaw_default_workspace_from_config(&cfg).ok_or_else(|| {
+                "OpenClaw default workspace could not be resolved for non-interactive agent creation"
+                    .to_string()
+            })?;
+            expand_workspace_for_route(pool, route, &workspace).await
         }
         _ => {
-            let paths = resolve_paths();
-            let cfg = read_openclaw_config(&paths)?;
-            if let Some(workspace) = cfg
-                .pointer("/agents/defaults/workspace")
-                .or_else(|| cfg.pointer("/agents/default/workspace"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                return Ok(Some(workspace.to_string()));
-            }
-
-            Ok(list_agents_overview_with_cache(cache)
-                .await?
-                .into_iter()
-                .find_map(|agent| agent.workspace.filter(|value| !value.trim().is_empty())))
+            let cfg = read_openclaw_config(&resolve_paths())?;
+            let workspace = resolve_openclaw_default_workspace_from_config(&cfg).ok_or_else(|| {
+                "OpenClaw default workspace could not be resolved for non-interactive agent creation"
+                    .to_string()
+            })?;
+            expand_workspace_for_route(pool, route, &workspace).await
         }
     }
 }
@@ -2184,12 +2196,10 @@ async fn materialize_recipe_action_commands(
         "create_agent" => {
             let agent_id = action_string(args.get("agentId"))
                 .ok_or_else(|| "create_agent requires agentId".to_string())?;
-            let independent = action_bool(args.get("independent"));
             let model_profile_id = action_string(args.get("modelProfileId"));
             let model_value =
                 resolve_model_value_for_route(pool, route, model_profile_id.as_deref()).await?;
-            let workspace =
-                resolve_workspace_for_route(cache, pool, route, independent, &agent_id).await?;
+            let workspace = resolve_openclaw_default_workspace_for_route(pool, route).await?;
 
             let mut command = vec![
                 "openclaw".into(),
@@ -2197,14 +2207,12 @@ async fn materialize_recipe_action_commands(
                 "add".into(),
                 agent_id.clone(),
                 "--non-interactive".into(),
+                "--workspace".into(),
+                workspace,
             ];
             if let Some(model_value) = model_value {
                 command.push("--model".into());
                 command.push(model_value);
-            }
-            if let Some(workspace) = workspace {
-                command.push("--workspace".into());
-                command.push(workspace);
             }
 
             Ok(vec![(format!("Create agent: {}", agent_id), command)])
@@ -2874,8 +2882,9 @@ mod recipe_action_materializer_tests {
     use super::{
         materialize_recipe_action_commands, recipe_action_agent_persona_command,
         recipe_action_markdown_document_command, recipe_action_setup_identity_command,
-        remove_binding_entries, INTERNAL_AGENT_PERSONA_COMMAND,
-        INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND, INTERNAL_SETUP_IDENTITY_COMMAND,
+        remove_binding_entries, resolve_openclaw_default_workspace_from_config,
+        INTERNAL_AGENT_PERSONA_COMMAND, INTERNAL_MARKDOWN_DOCUMENT_WRITE_COMMAND,
+        INTERNAL_SETUP_IDENTITY_COMMAND,
     };
     use crate::{
         cli_runner::CliCache, execution_spec::ExecutionAction, recipe_executor::ExecutionRoute,
@@ -3048,6 +3057,25 @@ mod recipe_action_materializer_tests {
                     "avatars/lobster.png".into(),
                 ],
             )]
+        );
+    }
+
+    #[test]
+    fn resolve_openclaw_default_workspace_prefers_defaults_before_existing_agents() {
+        let cfg = json!({
+            "agents": {
+                "defaults": {
+                    "workspace": "~/.openclaw/instances/demo/workspace"
+                },
+                "list": [
+                    { "id": "main", "workspace": "/tmp/other" }
+                ]
+            }
+        });
+
+        assert_eq!(
+            resolve_openclaw_default_workspace_from_config(&cfg).as_deref(),
+            Some("~/.openclaw/instances/demo/workspace")
         );
     }
 

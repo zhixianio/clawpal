@@ -173,8 +173,8 @@ export const api = {
     invoke("resolve_api_keys", {}),
   listAgentsOverview: (): Promise<AgentOverview[]> =>
     invoke("list_agents_overview", {}),
-  createAgent: (agentId: string, modelValue?: string, independent?: boolean): Promise<AgentOverview> =>
-    invoke("create_agent", { agentId, modelValue, independent }),
+  createAgent: (agentId: string, modelValue?: string): Promise<AgentOverview> =>
+    invoke("create_agent", { agentId, modelValue }),
   deleteAgent: (agentId: string): Promise<boolean> =>
     invoke("delete_agent", { agentId }),
   setupAgentIdentity: (agentId: string, name: string, emoji?: string): Promise<boolean> =>
