@@ -12,6 +12,7 @@ use std::{
 };
 
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::access_discovery::probe_engine::{build_probe_plan_for_local, run_probe_with_redaction};
 use crate::access_discovery::store::AccessDiscoveryStore;
@@ -1250,6 +1251,19 @@ pub fn list_recipes_from_source_text(
     source_text: String,
 ) -> Result<Vec<crate::recipe::Recipe>, String> {
     load_recipes_from_source_text(&source_text)
+}
+
+#[tauri::command]
+pub fn pick_recipe_source_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let selected_path: Option<String> = match app.dialog().file().blocking_pick_folder() {
+        Some(folder_path) => {
+            let resolved_path = folder_path.into_path().map_err(|error| error.to_string())?;
+            Some(resolved_path.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+
+    Ok(selected_path)
 }
 
 #[tauri::command]

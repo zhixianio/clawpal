@@ -227,20 +227,7 @@ fn import_recipe_dir(
     seen_recipe_ids: &mut std::collections::BTreeSet<String>,
     seen_slugs: &mut std::collections::BTreeSet<String>,
 ) -> Result<ImportedRecipe, String> {
-    let recipe_path = recipe_dir.join("recipe.json");
-    if !recipe_path.exists() {
-        return Err("recipe.json not found".into());
-    }
-
-    let source = fs::read_to_string(&recipe_path).map_err(|error| {
-        format!(
-            "failed to read recipe source '{}': {}",
-            recipe_path.to_string_lossy(),
-            error
-        )
-    })?;
-
-    let (recipe_id, compiled_source) = compile_recipe_source(recipe_dir, &source)?;
+    let (recipe_id, compiled_source) = compile_recipe_directory_source(recipe_dir)?;
     let slug = crate::recipe_workspace::normalize_recipe_slug(&recipe_id)?;
     if !seen_recipe_ids.insert(recipe_id.clone()) {
         return Err(format!("duplicate recipe id '{}'", recipe_id));
@@ -264,6 +251,25 @@ fn import_recipe_dir(
         recipe_id,
         path: saved.path,
     })
+}
+
+pub(crate) fn compile_recipe_directory_source(
+    recipe_dir: &Path,
+) -> Result<(String, String), String> {
+    let recipe_path = recipe_dir.join("recipe.json");
+    if !recipe_path.exists() {
+        return Err("recipe.json not found".into());
+    }
+
+    let source = fs::read_to_string(&recipe_path).map_err(|error| {
+        format!(
+            "failed to read recipe source '{}': {}",
+            recipe_path.to_string_lossy(),
+            error
+        )
+    })?;
+
+    compile_recipe_source(recipe_dir, &source)
 }
 
 fn compile_recipe_source(recipe_dir: &Path, source: &str) -> Result<(String, String), String> {

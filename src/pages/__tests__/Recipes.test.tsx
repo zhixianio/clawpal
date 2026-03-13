@@ -99,7 +99,9 @@ describe("Recipes runtime summary", () => {
     expect(html).toContain("View source");
     expect(html).toContain("Fork to workspace");
     expect(html).toContain("digest-123");
-    expect(html).toContain("Import");
+    expect(html).toContain("Open Recipe Folder");
+    expect(html).toContain("Import Library Folder");
+    expect(html).toContain("Press Enter to load the current recipe folder, file path, or URL.");
     expect(html).toContain("Agent Persona Pack");
     expect(html).toContain('title="Cook"');
     expect(html).toContain('title="Open Agent Persona Pack"');

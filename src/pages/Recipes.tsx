@@ -1,6 +1,7 @@
+import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PencilIcon, Trash2Icon } from "lucide-react";
+import { FolderOpenIcon, FolderTreeIcon, PencilIcon, Trash2Icon } from "lucide-react";
 
 import { RecipeCard } from "../components/RecipeCard";
 import type {
@@ -111,7 +112,7 @@ export function Recipes({
   const [sourcePreview, setSourcePreview] = useState<string | null>(null);
   const [sourcePreviewName, setSourcePreviewName] = useState<string>("");
   const [copiedSource, setCopiedSource] = useState(false);
-  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const hydrateWorkspaceDrafts = async (
     entries: RecipeWorkspaceEntry[],
@@ -167,13 +168,13 @@ export function Recipes({
   const handleImport = async () => {
     const value = source.trim();
     if (!value) {
-      setImportNotice(t("recipes.importRequiresPath"));
+      setNotice(t("recipes.importRequiresPath"));
       return;
     }
     try {
       const result = await ua.importRecipeLibrary(value);
       await load(loadedSource ?? "");
-      setImportNotice(
+      setNotice(
         t("recipes.importSummary", {
           imported: result.imported.length,
           skipped: result.skipped.length,
@@ -181,12 +182,35 @@ export function Recipes({
       );
     } catch (error) {
       console.error("Failed to import recipe library:", error);
-      setImportNotice(
+      setNotice(
         t("recipes.importFailed", {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
     }
+  };
+
+  const handlePickRecipeDirectory = async () => {
+    try {
+      const selectedPath = await ua.pickRecipeSourceDirectory();
+      if (!selectedPath) {
+        return;
+      }
+      setSource(selectedPath);
+      setNotice(null);
+    } catch (error) {
+      console.error("Failed to open recipe directory picker:", error);
+      setNotice(
+        t("recipes.loadFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  };
+
+  const handleSourceSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void load(source);
   };
 
   useEffect(() => {
@@ -308,12 +332,12 @@ export function Recipes({
       setWorkspaceDrafts((current) => {
         const next = { ...current };
         delete next[entry.slug];
-        return next;
+      return next;
       });
-      setImportNotice(t("recipes.workspaceDeleteSuccess", { slug: entry.slug }));
+      setNotice(t("recipes.workspaceDeleteSuccess", { slug: entry.slug }));
     } catch (error) {
       console.error("Failed to delete workspace recipe:", error);
-      setImportNotice(
+      setNotice(
         t("recipes.workspaceDeleteFailed", {
           error: error instanceof Error ? error.message : String(error),
         }),
@@ -335,33 +359,43 @@ export function Recipes({
   return (
     <section>
       <h2 className="text-2xl font-bold mb-4">{t("recipes.title")}</h2>
-      <div className="mb-2 flex items-center gap-2">
-        <Label>{t("recipes.sourceLabel")}</Label>
-        <Input
-          value={source}
-          onChange={(event) => setSource(event.target.value)}
-          placeholder="/path/recipes.json or /path/recipe-library or https://example.com/recipes.json"
-          className="w-[380px]"
-        />
-        <AsyncActionButton
-          className="ml-2"
-          onClick={() => load(source)}
-          loadingText={t("recipes.loading")}
-        >
-          {t("recipes.load")}
-        </AsyncActionButton>
-        <AsyncActionButton
-          variant="outline"
-          onClick={handleImport}
-          loadingText={t("recipes.importing")}
-        >
-          {t("recipes.import")}
-        </AsyncActionButton>
-      </div>
+      <form onSubmit={handleSourceSubmit} className="mb-2 rounded-2xl border bg-muted/10 p-4">
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label htmlFor="recipe-source-input">{t("recipes.sourceLabel")}</Label>
+            <p className="text-xs text-muted-foreground">{t("recipes.sourceHint")}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              id="recipe-source-input"
+              value={source}
+              onChange={(event) => setSource(event.target.value)}
+              placeholder={t("recipes.sourcePlaceholder")}
+              className="min-w-[320px] flex-1"
+            />
+            <AsyncActionButton
+              variant="secondary"
+              onClick={handlePickRecipeDirectory}
+              loadingText={t("recipes.loading")}
+            >
+              <FolderOpenIcon className="size-4" />
+              {t("recipes.load")}
+            </AsyncActionButton>
+            <AsyncActionButton
+              variant="outline"
+              onClick={handleImport}
+              loadingText={t("recipes.importing")}
+            >
+              <FolderTreeIcon className="size-4" />
+              {t("recipes.import")}
+            </AsyncActionButton>
+          </div>
+        </div>
+      </form>
       <p className="text-sm text-muted-foreground mt-0">
         {t("recipes.loadedFrom", { source: loadedSource || t("recipes.builtinSource") })}
       </p>
-      {importNotice && <p className="text-sm text-muted-foreground mt-2">{importNotice}</p>}
+      {notice && <p className="text-sm text-muted-foreground mt-2">{notice}</p>}
       <Card className="mt-4 mb-4">
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">

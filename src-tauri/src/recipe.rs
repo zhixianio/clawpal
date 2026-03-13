@@ -200,6 +200,11 @@ pub fn load_recipes_from_source(source: &str) -> Result<Vec<Recipe>, String> {
         if !path.exists() {
             return Err(format!("recipe file not found: {}", path.to_string_lossy()));
         }
+        if path.is_dir() {
+            let (_, compiled_source) =
+                crate::recipe_library::compile_recipe_directory_source(path)?;
+            return load_recipes_from_source_text(&compiled_source);
+        }
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
         load_recipes_from_source_text(&text)
     }

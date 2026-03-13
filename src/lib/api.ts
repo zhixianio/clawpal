@@ -102,6 +102,8 @@ export const api = {
     invoke("list_recipes", source ? { source } : {}),
   listRecipesFromSourceText: (sourceText: string): Promise<Recipe[]> =>
     invoke("list_recipes_from_source_text", { sourceText }),
+  pickRecipeSourceDirectory: (): Promise<string | null> =>
+    invoke("pick_recipe_source_directory", {}),
   listRecipeActions: (): Promise<RecipeActionCatalogEntry[]> =>
     invoke("list_recipe_actions", {}),
   listRecipeWorkspaceEntries: (): Promise<RecipeWorkspaceEntry[]> =>
