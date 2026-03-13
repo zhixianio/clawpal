@@ -92,6 +92,7 @@ docs/plans/    Design and implementation plans
 ## Recipe docs
 
 - [`docs/recipe-authoring.md`](docs/recipe-authoring.md) — how to write and package a ClawPal recipe
+- [`docs/recipe-cli-action-catalog.md`](docs/recipe-cli-action-catalog.md) — full CLI-backed recipe action catalog and support matrix
 - [`docs/recipe-runner-boundaries.md`](docs/recipe-runner-boundaries.md) — runner/backend boundaries and OpenClaw-first design rules
 
 ## License

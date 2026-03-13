@@ -71,7 +71,8 @@ backend 是 runner 最终调用的能力来源。
 
 当前典型映射：
 - `create_agent` -> OpenClaw CLI
-- `bind_channel` / `unbind_channel` -> OpenClaw config rewrite
+- `bind_agent` / `unbind_agent` -> OpenClaw CLI
+- `set_agent_identity` -> OpenClaw CLI
 - `set_channel_persona` / `clear_channel_persona` -> OpenClaw config rewrite
 - `ensure_model_profile` / `ensure_provider_auth` -> 复用现有 profile/auth 同步能力
 - `upsert_markdown_document` / `delete_markdown_document` -> ClawPal fallback
@@ -101,20 +102,41 @@ runner 刻意不支持：
 
 ## 4. action 白名单
 
-当前 Recipe DSL 的 action surface 分三组。
+当前 Recipe DSL 的 action surface 分两层主路径，再加两组底座/兼容动作。
 
-### 业务动作
+### 推荐的业务动作
 
 - `create_agent`
 - `delete_agent`
-- `setup_identity`
-- `bind_channel`
-- `unbind_channel`
+- `bind_agent`
+- `unbind_agent`
+- `set_agent_identity`
 - `set_agent_model`
 - `set_agent_persona`
 - `clear_agent_persona`
 - `set_channel_persona`
 - `clear_channel_persona`
+
+### CLI 原语动作
+
+这层按 OpenClaw CLI 子命令 1:1 暴露，适合高级 recipe 或只读检查 recipe。
+
+当前 catalog 覆盖：
+- `agents`
+- `config`
+- `models`
+- `channels`
+- `secrets`
+
+例子：
+- `list_agents`
+- `show_config_file`
+- `get_config_value`
+- `models_status`
+- `list_channels`
+- `audit_secrets`
+
+完整列表见：[recipe-cli-action-catalog.md](./recipe-cli-action-catalog.md)
 
 ### 文档动作
 
@@ -131,8 +153,16 @@ runner 刻意不支持：
 ### 兼容 / escape hatch
 
 - `config_patch`
+- `setup_identity`
+- `bind_channel`
+- `unbind_channel`
 
-新增 action 之前，先确认它不能被这三组合理表达。
+新增 action 之前，先确认它不能被：
+- 推荐的业务动作
+- CLI 原语动作
+- 文档动作
+- 环境动作
+合理表达。
 
 ## 5. 什么时候新增业务动作
 
@@ -146,6 +176,7 @@ runner 刻意不支持：
 例如：
 - `set_channel_persona` 比直接写 `config_patch` 更合适
 - `set_agent_model` 比让 recipe 自己拼 config path 更合适
+- `set_agent_identity` 比继续依赖 legacy `setup_identity` 更合适
 
 ## 6. 什么时候复用文档动作
 
@@ -253,6 +284,24 @@ runner 不适合作为：
 
 如果这些问题答不清楚，不要先写 runner。
 
-## 12. 相关文档
+## 12. 关于 CLI 原语动作的边界
+
+不是每个出现在 OpenClaw CLI 文档里的子命令，都适合直接由 Recipe runner 执行。
+
+当前 catalog 会把它们分成两类：
+- `runner supported = yes`
+- `runner supported = no`
+
+典型不能直接执行的情况：
+- interactive 命令
+- 需要明文 token / secret payload 的命令
+- provider-specific flags 还没有稳定 schema 的命令
+
+这些命令仍然会记录在 catalog 里，原因是：
+- 文档和实现保持同一个事实源
+- 作者能明确知道“这个 CLI 子命令存在，但当前不能写进 recipe”
+
+## 13. 相关文档
 
 - 作者指南：[recipe-authoring.md](./recipe-authoring.md)
+- CLI catalog：[recipe-cli-action-catalog.md](./recipe-cli-action-catalog.md)
