@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::recipe::load_recipes_from_source_text;
 use crate::recipe_adapter::compile_recipe_to_spec;
 use crate::recipe_library::{
-    dev_recipe_library_root, import_recipe_library, looks_like_recipe_library_root,
-    seed_recipe_library, select_recipe_library_root,
+    dev_recipe_library_root, import_recipe_library, import_recipe_source,
+    looks_like_recipe_library_root, seed_recipe_library, select_recipe_library_root,
 };
 use crate::recipe_workspace::RecipeWorkspace;
 
@@ -36,6 +36,13 @@ fn write_recipe(dir: &Path, name: &str, source: &str) {
     let recipe_dir = dir.join(name);
     fs::create_dir_all(&recipe_dir).expect("create recipe dir");
     fs::write(recipe_dir.join("recipe.json"), source).expect("write recipe");
+}
+
+fn write_recipe_source_file(path: &Path, source: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent");
+    }
+    fs::write(path, source).expect("write recipe source file");
 }
 
 #[test]
@@ -242,6 +249,186 @@ fn import_recipe_library_compiles_preset_assets_into_workspace_recipe() {
         spec.actions[0].args.get("persona").and_then(Value::as_str),
         Some("You are warm, concise, and practical.\n")
     );
+}
+
+#[test]
+fn import_recipe_source_reports_conflicts_without_overwriting_workspace_recipe() {
+    let source_root = temp_dir("recipe-source-file");
+    let workspace_root = temp_dir("recipe-import-workspace");
+    let workspace = RecipeWorkspace::new(workspace_root.path().to_path_buf());
+    let source_path = source_root.path().join("recipes.json");
+
+    workspace
+        .save_recipe_source(
+            "agent-persona-pack",
+            r#"{
+              "id": "agent-persona-pack",
+              "name": "Existing Agent Persona Pack",
+              "description": "Existing workspace recipe",
+              "version": "1.0.0",
+              "tags": ["agent"],
+              "difficulty": "easy",
+              "params": [],
+              "steps": [],
+              "bundle": {
+                "apiVersion": "strategy.platform/v1",
+                "kind": "StrategyBundle",
+                "metadata": {},
+                "compatibility": {},
+                "inputs": [],
+                "capabilities": { "allowed": [] },
+                "resources": { "supportedKinds": [] },
+                "execution": { "supportedKinds": ["job"] },
+                "runner": {},
+                "outputs": []
+              },
+              "executionSpecTemplate": {
+                "apiVersion": "strategy.platform/v1",
+                "kind": "ExecutionSpec",
+                "metadata": {},
+                "source": {},
+                "target": {},
+                "execution": { "kind": "job" },
+                "capabilities": { "usedCapabilities": [] },
+                "resources": { "claims": [] },
+                "secrets": { "bindings": [] },
+                "desiredState": {},
+                "actions": [],
+                "outputs": []
+              }
+            }"#,
+        )
+        .expect("save existing workspace recipe");
+
+    write_recipe_source_file(
+        &source_path,
+        r#"{
+          "recipes": [
+            {
+              "id": "agent-persona-pack",
+              "name": "Imported Agent Persona Pack",
+              "description": "Imported from source",
+              "version": "1.0.0",
+              "tags": ["agent", "persona"],
+              "difficulty": "easy",
+              "params": [],
+              "steps": [],
+              "bundle": {
+                "apiVersion": "strategy.platform/v1",
+                "kind": "StrategyBundle",
+                "metadata": {},
+                "compatibility": {},
+                "inputs": [],
+                "capabilities": { "allowed": [] },
+                "resources": { "supportedKinds": [] },
+                "execution": { "supportedKinds": ["job"] },
+                "runner": {},
+                "outputs": []
+              },
+              "executionSpecTemplate": {
+                "apiVersion": "strategy.platform/v1",
+                "kind": "ExecutionSpec",
+                "metadata": {},
+                "source": {},
+                "target": {},
+                "execution": { "kind": "job" },
+                "capabilities": { "usedCapabilities": [] },
+                "resources": { "claims": [] },
+                "secrets": { "bindings": [] },
+                "desiredState": {},
+                "actions": [],
+                "outputs": []
+              }
+            }
+          ]
+        }"#,
+    );
+
+    let result = import_recipe_source(source_path.to_string_lossy().as_ref(), &workspace, false)
+        .expect("import recipe source");
+
+    assert!(result.imported.is_empty());
+    assert_eq!(result.conflicts.len(), 1);
+    assert_eq!(result.conflicts[0].slug, "agent-persona-pack");
+    assert!(workspace
+        .read_recipe_source("agent-persona-pack")
+        .expect("read workspace recipe")
+        .contains("Existing workspace recipe"));
+}
+
+#[test]
+fn seed_recipe_library_upgrades_unchanged_bundled_recipe_but_preserves_user_edits() {
+    let library_root = temp_dir("bundled-seed-library");
+    let workspace_root = temp_dir("bundled-seed-workspace");
+    let workspace = RecipeWorkspace::new(workspace_root.path().to_path_buf());
+
+    let v1 = r#"{
+      "id": "agent-persona-pack",
+      "name": "Agent Persona Pack",
+      "description": "Version one",
+      "version": "1.0.0",
+      "tags": ["agent", "persona"],
+      "difficulty": "easy",
+      "params": [],
+      "steps": [],
+      "bundle": {
+        "apiVersion": "strategy.platform/v1",
+        "kind": "StrategyBundle",
+        "metadata": {},
+        "compatibility": {},
+        "inputs": [],
+        "capabilities": { "allowed": [] },
+        "resources": { "supportedKinds": [] },
+        "execution": { "supportedKinds": ["job"] },
+        "runner": {},
+        "outputs": []
+      },
+      "executionSpecTemplate": {
+        "apiVersion": "strategy.platform/v1",
+        "kind": "ExecutionSpec",
+        "metadata": {},
+        "source": {},
+        "target": {},
+        "execution": { "kind": "job" },
+        "capabilities": { "usedCapabilities": [] },
+        "resources": { "claims": [] },
+        "secrets": { "bindings": [] },
+        "desiredState": {},
+        "actions": [],
+        "outputs": []
+      }
+    }"#;
+    write_recipe(library_root.path(), "agent-persona-pack", v1);
+    seed_recipe_library(library_root.path(), &workspace).expect("seed v1");
+    assert!(workspace
+        .read_recipe_source("agent-persona-pack")
+        .expect("read seeded v1")
+        .contains("Version one"));
+
+    let v2 = v1.replace("Version one", "Version two");
+    write_recipe(library_root.path(), "agent-persona-pack", &v2);
+    seed_recipe_library(library_root.path(), &workspace).expect("seed v2");
+    assert!(workspace
+        .read_recipe_source("agent-persona-pack")
+        .expect("read seeded v2")
+        .contains("Version two"));
+
+    workspace
+        .save_recipe_source(
+            "agent-persona-pack",
+            &v1.replace("Version one", "User customized"),
+        )
+        .expect("save user customized recipe");
+    let v3 = v1.replace("Version one", "Version three");
+    write_recipe(library_root.path(), "agent-persona-pack", &v3);
+    let result = seed_recipe_library(library_root.path(), &workspace).expect("seed v3");
+
+    assert!(result.imported.is_empty());
+    assert_eq!(result.warnings.len(), 1);
+    assert!(workspace
+        .read_recipe_source("agent-persona-pack")
+        .expect("read preserved user recipe")
+        .contains("User customized"));
 }
 
 #[test]

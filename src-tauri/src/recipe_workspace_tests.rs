@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
-use crate::recipe_workspace::RecipeWorkspace;
+use crate::recipe_workspace::{BundledSeedStatus, RecipeWorkspace};
 
 const SAMPLE_SOURCE: &str = r#"{
   "id": "channel-persona",
@@ -122,4 +122,35 @@ fn list_workspace_entries_returns_saved_recipes() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].slug, "alpha");
     assert_eq!(entries[1].slug, "zeta");
+}
+
+#[test]
+fn bundled_seeded_recipe_is_tracked_until_user_saves_a_workspace_copy() {
+    let root = temp_workspace_root();
+    let store = RecipeWorkspace::new(root.path().clone());
+
+    store
+        .save_bundled_recipe_source("channel-persona", SAMPLE_SOURCE, "channel-persona")
+        .expect("save bundled recipe");
+
+    assert_eq!(
+        store
+            .bundled_seed_status("channel-persona")
+            .expect("bundled seed status"),
+        BundledSeedStatus::Unchanged
+    );
+
+    store
+        .save_recipe_source(
+            "channel-persona",
+            SAMPLE_SOURCE.replace("easy", "normal").as_str(),
+        )
+        .expect("save user recipe");
+
+    assert_eq!(
+        store
+            .bundled_seed_status("channel-persona")
+            .expect("bundled seed status after manual save"),
+        BundledSeedStatus::UntrackedExisting
+    );
 }

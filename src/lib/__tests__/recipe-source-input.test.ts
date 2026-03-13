@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { isHttpRecipeSource } from "../recipe-source-input";
+import { firstDroppedRecipeSource, isHttpRecipeSource } from "../recipe-source-input";
 
 describe("isHttpRecipeSource", () => {
   test("accepts http and https recipe URLs", () => {
@@ -15,3 +15,12 @@ describe("isHttpRecipeSource", () => {
   });
 });
 
+describe("firstDroppedRecipeSource", () => {
+  test("returns the first non-empty dropped path", () => {
+    expect(firstDroppedRecipeSource(["", "  ", "/tmp/recipe.json"])).toBe("/tmp/recipe.json");
+  });
+
+  test("returns null when every dropped path is blank", () => {
+    expect(firstDroppedRecipeSource(["", "  "])).toBeNull();
+  });
+});

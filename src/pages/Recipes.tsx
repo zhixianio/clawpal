@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PencilIcon, Trash2Icon } from "lucide-react";
+import { FolderOpenIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 import { RecipeCard } from "../components/RecipeCard";
 import type {
   Recipe,
   RecipeEditorOrigin,
+  RecipeSourceImportResult,
   RecipeRuntimeInstance,
   RecipeRuntimeRun,
   RecipeStudioDraft,
@@ -22,7 +24,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { AsyncActionButton } from "@/components/ui/AsyncActionButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,9 +37,9 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { isHttpRecipeSource } from "@/lib/recipe-source-input";
+import { firstDroppedRecipeSource } from "@/lib/recipe-source-input";
 import { useApi } from "@/lib/use-api";
-import { formatTime } from "@/lib/utils";
+import { cn, formatTime } from "@/lib/utils";
 
 function displayRunStatus(status: string): string {
   return status.replace(/_/g, " ");
@@ -53,6 +54,11 @@ function formatRunSourceTrace(run: RecipeRuntimeRun): string | null {
 type WorkspaceDraftPreview = {
   sourceText?: string;
   recipe: Recipe | null;
+};
+
+type PendingRecipeImportConflicts = {
+  source: string;
+  result: RecipeSourceImportResult;
 };
 
 function humanizeWorkspaceSlug(slug: string): string {
@@ -102,7 +108,6 @@ export function Recipes({
   const [instances, setInstances] = useState<RecipeRuntimeInstance[]>(() => initialInstances ?? []);
   const [runs, setRuns] = useState<RecipeRuntimeRun[]>(() => initialRuns ?? []);
   const [source, setSource] = useState("");
-  const [loadedSource, setLoadedSource] = useState<string | undefined>(undefined);
   const [workspaceEntries, setWorkspaceEntries] = useState<RecipeWorkspaceEntry[]>(
     () => initialWorkspaceEntries ?? [],
   );
@@ -113,6 +118,12 @@ export function Recipes({
   const [sourcePreviewName, setSourcePreviewName] = useState<string>("");
   const [copiedSource, setCopiedSource] = useState(false);
   const [importNotice, setImportNotice] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [pickingDirectory, setPickingDirectory] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const [pendingImportConflicts, setPendingImportConflicts] =
+    useState<PendingRecipeImportConflicts | null>(null);
+  const sourceDropTargetRef = useRef<HTMLDivElement | null>(null);
 
   const hydrateWorkspaceDrafts = async (
     entries: RecipeWorkspaceEntry[],
@@ -144,23 +155,20 @@ export function Recipes({
     return Object.fromEntries(previews);
   };
 
-  const load = async (nextSource: string) => {
-    const value = nextSource.trim();
+  const refreshPage = async () => {
     try {
       const [nextRecipes, nextInstances, nextRuns, nextWorkspaceEntries] = await Promise.all([
-        ua.listRecipes(value || undefined),
+        ua.listRecipes(),
         ua.listRecipeInstances(),
         ua.listRecipeRuns(),
         ua.listRecipeWorkspaceEntries(),
       ]);
       const nextWorkspaceDrafts = await hydrateWorkspaceDrafts(nextWorkspaceEntries);
-      setLoadedSource(value || undefined);
       setRecipes(nextRecipes);
       setInstances(nextInstances);
       setRuns(nextRuns);
       setWorkspaceEntries(nextWorkspaceEntries);
       setWorkspaceDrafts(nextWorkspaceDrafts);
-      setImportNotice(null);
     } catch (e) {
       console.error("Failed to load recipes:", e);
       setImportNotice(
@@ -171,32 +179,79 @@ export function Recipes({
     }
   };
 
-  const handleImport = async () => {
-    const value = source.trim();
+  const buildImportNotice = (result: RecipeSourceImportResult): string => {
+    const parts = [
+      t("recipes.importSummary", {
+        imported: result.imported.length,
+        skipped: result.skipped.length,
+      }),
+    ];
+    if (result.warnings.length > 0) {
+      parts.push(
+        t("recipes.importWarnings", {
+          count: result.warnings.length,
+        }),
+      );
+    }
+    return parts.join(" ");
+  };
+
+  const runImport = async (requestedSource: string, overwriteExisting = false) => {
+    const value = requestedSource.trim();
     if (!value) {
       setImportNotice(t("recipes.importRequiresPath"));
       return;
     }
-    if (isHttpRecipeSource(value)) {
-      setImportNotice(t("recipes.importRequiresLocalDirectory"));
-      return;
-    }
+    setImporting(true);
     try {
-      const result = await ua.importRecipeLibrary(value);
-      await load(loadedSource ?? "");
-      setImportNotice(
-        t("recipes.importSummary", {
-          imported: result.imported.length,
-          skipped: result.skipped.length,
-        }),
-      );
+      const result = await ua.importRecipeSource(value, overwriteExisting);
+      if (!overwriteExisting && result.conflicts.length > 0) {
+        setPendingImportConflicts({
+          source: value,
+          result,
+        });
+        setImportNotice(
+          t("recipes.importConflictSummary", {
+            count: result.conflicts.length,
+          }),
+        );
+        return;
+      }
+
+      setPendingImportConflicts(null);
+      await refreshPage();
+      setImportNotice(buildImportNotice(result));
     } catch (error) {
-      console.error("Failed to import recipe library:", error);
+      console.error("Failed to import recipe source:", error);
       setImportNotice(
         t("recipes.importFailed", {
           error: error instanceof Error ? error.message : String(error),
         }),
       );
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleImport = async () => runImport(source);
+
+  const handlePickDirectory = async () => {
+    setPickingDirectory(true);
+    try {
+      const selected = await ua.pickRecipeSourceDirectory();
+      if (selected) {
+        setSource(selected);
+        setImportNotice(null);
+      }
+    } catch (error) {
+      console.error("Failed to pick recipe source directory:", error);
+      setImportNotice(
+        t("recipes.pickDirectoryFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setPickingDirectory(false);
     }
   };
 
@@ -204,8 +259,75 @@ export function Recipes({
     if (initialRecipes || initialInstances || initialRuns || initialWorkspaceEntries) {
       return;
     }
-    void load("");
+    void refreshPage();
   }, [initialRecipes, initialInstances, initialRuns, initialWorkspaceEntries]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+
+    const isDropInsideTarget = (position?: { x: number; y: number }) => {
+      if (!position || !sourceDropTargetRef.current) {
+        return false;
+      }
+      const rect = sourceDropTargetRef.current.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      const x = position.x / ratio;
+      const y = position.y / ratio;
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
+
+    void getCurrentWebviewWindow()
+      .onDragDropEvent((event: any) => {
+        const payload = event?.payload;
+        if (!payload?.type) {
+          return;
+        }
+
+        if (payload.type === "leave") {
+          setDragActive(false);
+          return;
+        }
+
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragActive(isDropInsideTarget(payload.position));
+          return;
+        }
+
+        if (payload.type === "drop") {
+          const isInside = isDropInsideTarget(payload.position);
+          setDragActive(false);
+          if (!isInside) {
+            return;
+          }
+          const nextPath = firstDroppedRecipeSource(payload.paths ?? []);
+          if (!nextPath) {
+            return;
+          }
+          setSource(nextPath);
+          setImportNotice(
+            (payload.paths?.length ?? 0) > 1
+              ? t("recipes.dropMultipleNotice")
+              : t("recipes.dropReadyNotice"),
+          );
+        }
+      })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch((error) => {
+        console.warn("Failed to bind recipe drag-drop listener:", error);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [t]);
 
   const latestRun = useMemo(
     () => [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0],
@@ -251,7 +373,7 @@ export function Recipes({
 
   const handleViewSource = async (recipe: Recipe) => {
     try {
-      const exported = await ua.exportRecipeSource(recipe.id, loadedSource);
+      const exported = await ua.exportRecipeSource(recipe.id);
       setSourcePreviewName(recipe.name);
       setSourcePreview(exported);
       setCopiedSource(false);
@@ -265,7 +387,7 @@ export function Recipes({
       return;
     }
     try {
-      const exported = await ua.exportRecipeSource(recipe.id, loadedSource);
+      const exported = await ua.exportRecipeSource(recipe.id);
       onOpenStudio({
         recipeId: recipe.id,
         recipeName: recipe.name,
@@ -348,32 +470,76 @@ export function Recipes({
       <h2 className="text-2xl font-bold mb-4">{t("recipes.title")}</h2>
       <div className="mb-2 flex items-center gap-2">
         <Label>{t("recipes.sourceLabel")}</Label>
-        <Input
-          value={source}
-          onChange={(event) => setSource(event.target.value)}
-          placeholder={t("recipes.sourcePlaceholder")}
-          className="w-[380px]"
-        />
-        <AsyncActionButton
-          className="ml-2"
-          onClick={() => load(source)}
-          loadingText={t("recipes.loading")}
+        <div
+          ref={sourceDropTargetRef}
+          className={cn(
+            "flex items-center gap-2 rounded-xl border p-1 transition-colors",
+            dragActive && "border-primary bg-primary/5",
+          )}
         >
-          {t("recipes.load")}
-        </AsyncActionButton>
-        <AsyncActionButton
-          variant="outline"
-          onClick={handleImport}
-          loadingText={t("recipes.importing")}
-        >
-          {t("recipes.import")}
-        </AsyncActionButton>
+          <Input
+            value={source}
+            onChange={(event) => setSource(event.target.value)}
+            placeholder={t("recipes.sourcePlaceholder")}
+            className="w-[380px] border-0 shadow-none focus-visible:ring-0"
+          />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            type="button"
+            title={t("recipes.pickDirectory")}
+            aria-label={t("recipes.pickDirectory")}
+            disabled={pickingDirectory}
+            onClick={() => void handlePickDirectory()}
+          >
+            <FolderOpenIcon className="size-4" />
+          </Button>
+        </div>
+        <Button type="button" onClick={() => void handleImport()} disabled={importing}>
+          {importing ? t("recipes.importing") : t("recipes.import")}
+        </Button>
       </div>
-      <p className="text-sm text-muted-foreground mt-0">
-        {t("recipes.loadedFrom", { source: loadedSource || t("recipes.builtinSource") })}
-      </p>
       <p className="text-sm text-muted-foreground mt-2">{t("recipes.sourceHelp")}</p>
       {importNotice && <p className="text-sm text-muted-foreground mt-2">{importNotice}</p>}
+      <AlertDialog
+        open={!!pendingImportConflicts}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingImportConflicts(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("recipes.importConflictTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("recipes.importConflictDescription", {
+                count: pendingImportConflicts?.result.conflicts.length ?? 0,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex flex-wrap gap-2">
+            {pendingImportConflicts?.result.conflicts.map((conflict) => (
+              <Badge key={conflict.slug} variant="outline">
+                {conflict.recipeId}
+              </Badge>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("config.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!pendingImportConflicts) {
+                  return;
+                }
+                void runImport(pendingImportConflicts.source, true);
+              }}
+            >
+              {t("recipes.importOverwrite")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Card className="mt-4 mb-4">
         <CardContent className="space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -535,14 +701,9 @@ export function Recipes({
           <div key={recipe.id} className="space-y-2">
             <RecipeCard
               recipe={recipe}
-              onCook={() => onCook(recipe.id, { source: loadedSource })}
+              onCook={() => onCook(recipe.id)}
               onViewSource={() => void handleViewSource(recipe)}
-              onEditSource={
-                loadedSource ? () => void handleOpenStudio(recipe, "external") : undefined
-              }
-              onForkToWorkspace={
-                !loadedSource ? () => void handleOpenStudio(recipe, "workspace") : undefined
-              }
+              onForkToWorkspace={() => void handleOpenStudio(recipe, "workspace")}
             />
             {(latestRunByRecipe.has(recipe.id) || instanceCountByRecipe.has(recipe.id)) && (
               <div className="rounded-xl border bg-muted/20 px-3 py-2 text-xs">

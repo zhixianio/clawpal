@@ -99,6 +99,31 @@ export interface RecipeLibraryImportResult {
   warnings: string[];
 }
 
+export type RecipeImportSourceKind =
+  | "localFile"
+  | "localRecipeDirectory"
+  | "localRecipeLibrary"
+  | "remoteUrl";
+
+export interface RecipeImportConflict {
+  slug: string;
+  recipeId: string;
+  path: string;
+}
+
+export interface SkippedRecipeSourceImport {
+  source: string;
+  reason: string;
+}
+
+export interface RecipeSourceImportResult {
+  sourceKind?: RecipeImportSourceKind | null;
+  imported: ImportedRecipe[];
+  skipped: SkippedRecipeSourceImport[];
+  warnings: string[];
+  conflicts: RecipeImportConflict[];
+}
+
 export interface RecipeSourceDiagnostic {
   category: string;
   severity: string;

@@ -1003,6 +1003,7 @@ export function useApi() {
       ),
       listRecipes: localCached("listRecipes", 20_000, api.listRecipes),
       listRecipesFromSourceText: api.listRecipesFromSourceText,
+      pickRecipeSourceDirectory: api.pickRecipeSourceDirectory,
       listRecipeWorkspaceEntries: localCached(
         "listRecipeWorkspaceEntries",
         4_000,
@@ -1015,6 +1016,10 @@ export function useApi() {
       ),
       importRecipeLibrary: withInvalidation(
         api.importRecipeLibrary,
+        ["listRecipeWorkspaceEntries", "readRecipeWorkspaceSource"],
+      ),
+      importRecipeSource: withInvalidation(
+        api.importRecipeSource,
         ["listRecipeWorkspaceEntries", "readRecipeWorkspaceSource"],
       ),
       saveRecipeWorkspaceSource: withInvalidation(

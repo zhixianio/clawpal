@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::Manager;
 
-use crate::recipe::validate_recipe_source;
+use crate::recipe::{load_recipes_from_source, validate_recipe_source};
+use crate::recipe_adapter::export_recipe_source as export_recipe_source_document;
+use crate::recipe_workspace::BundledSeedStatus;
 use crate::recipe_workspace::RecipeWorkspace;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +35,51 @@ pub struct RecipeLibraryImportResult {
     pub skipped: Vec<SkippedRecipeImport>,
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeImportConflict {
+    pub slug: String,
+    pub recipe_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedRecipeSourceImport {
+    pub source: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecipeImportSourceKind {
+    LocalFile,
+    LocalRecipeDirectory,
+    LocalRecipeLibrary,
+    RemoteUrl,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecipeSourceImportResult {
+    pub source_kind: Option<RecipeImportSourceKind>,
+    #[serde(default)]
+    pub imported: Vec<ImportedRecipe>,
+    #[serde(default)]
+    pub skipped: Vec<SkippedRecipeSourceImport>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub conflicts: Vec<RecipeImportConflict>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedRecipeImport {
+    slug: String,
+    recipe_id: String,
+    source_text: String,
 }
 
 pub fn import_recipe_library(
@@ -70,11 +117,7 @@ pub fn seed_recipe_library(
     workspace: &RecipeWorkspace,
 ) -> Result<RecipeLibraryImportResult, String> {
     let recipe_dirs = collect_recipe_dirs(root)?;
-    let mut seen_slugs = workspace
-        .list_entries()?
-        .into_iter()
-        .map(|entry| entry.slug)
-        .collect::<std::collections::BTreeSet<_>>();
+    let mut seen_slugs = std::collections::BTreeSet::new();
     let mut seen_recipe_ids = std::collections::BTreeSet::new();
     let mut result = RecipeLibraryImportResult::default();
 
@@ -132,10 +175,10 @@ pub fn seed_recipe_library(
         }
 
         if !seen_slugs.insert(slug.clone()) {
-            result.warnings.push(format!(
-                "Skipped bundled recipe '{}' because workspace recipe '{}' already exists.",
-                recipe_id, slug
-            ));
+            result.skipped.push(SkippedRecipeImport {
+                recipe_dir: recipe_dir.to_string_lossy().to_string(),
+                reason: format!("duplicate recipe slug '{}'", slug),
+            });
             continue;
         }
 
@@ -153,10 +196,80 @@ pub fn seed_recipe_library(
             continue;
         }
 
-        let saved = workspace.save_recipe_source(&slug, &compiled_source)?;
+        match workspace.bundled_seed_status(&slug)? {
+            BundledSeedStatus::Missing => {}
+            BundledSeedStatus::Unchanged => {
+                let current = workspace.read_recipe_source(&slug)?;
+                if current == compiled_source {
+                    continue;
+                }
+            }
+            BundledSeedStatus::ModifiedSinceSeed | BundledSeedStatus::UntrackedExisting => {
+                result.warnings.push(format!(
+                    "Skipped bundled recipe '{}' because workspace recipe '{}' was modified locally.",
+                    recipe_id, slug
+                ));
+                continue;
+            }
+        }
+
+        let saved = workspace.save_bundled_recipe_source(&slug, &compiled_source, &recipe_id)?;
         result.imported.push(ImportedRecipe {
             slug: saved.slug,
             recipe_id,
+            path: saved.path,
+        });
+    }
+
+    Ok(result)
+}
+
+pub fn import_recipe_source(
+    source: &str,
+    workspace: &RecipeWorkspace,
+    overwrite_existing: bool,
+) -> Result<RecipeSourceImportResult, String> {
+    let trimmed = source.trim();
+    if trimmed.is_empty() {
+        return Err("recipe import source cannot be empty".into());
+    }
+
+    let prepared = prepare_recipe_imports(trimmed)?;
+    let mut result = RecipeSourceImportResult {
+        source_kind: Some(prepared.source_kind),
+        skipped: prepared.skipped,
+        warnings: prepared.warnings,
+        ..RecipeSourceImportResult::default()
+    };
+
+    let existing = workspace
+        .list_entries()?
+        .into_iter()
+        .map(|entry| (entry.slug, entry.path))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    if !overwrite_existing {
+        result.conflicts = prepared
+            .items
+            .iter()
+            .filter_map(|item| {
+                existing.get(&item.slug).map(|path| RecipeImportConflict {
+                    slug: item.slug.clone(),
+                    recipe_id: item.recipe_id.clone(),
+                    path: path.clone(),
+                })
+            })
+            .collect();
+        if !result.conflicts.is_empty() {
+            return Ok(result);
+        }
+    }
+
+    for item in prepared.items {
+        let saved = workspace.save_recipe_source(&item.slug, &item.source_text)?;
+        result.imported.push(ImportedRecipe {
+            slug: saved.slug,
+            recipe_id: item.recipe_id,
             path: saved.path,
         });
     }
@@ -340,6 +453,155 @@ pub(crate) fn compile_recipe_directory_source(
     })?;
 
     compile_recipe_source(recipe_dir, &source)
+}
+
+fn prepare_recipe_imports(source: &str) -> Result<PreparedRecipeImports, String> {
+    if looks_like_http_source(source) {
+        return prepare_imports_from_loaded_recipes(
+            RecipeImportSourceKind::RemoteUrl,
+            source,
+            source,
+        );
+    }
+
+    let path = PathBuf::from(shellexpand::tilde(source).to_string());
+    if path.is_dir() {
+        if looks_like_recipe_library_root(&path) {
+            return prepare_imports_from_recipe_library(&path);
+        }
+        if path.join("recipe.json").is_file() {
+            return prepare_imports_from_loaded_recipes(
+                RecipeImportSourceKind::LocalRecipeDirectory,
+                source,
+                &path.to_string_lossy(),
+            );
+        }
+        return Err(format!(
+            "recipe source directory is neither a recipe folder nor a recipe library root: {}",
+            path.to_string_lossy()
+        ));
+    }
+
+    prepare_imports_from_loaded_recipes(
+        RecipeImportSourceKind::LocalFile,
+        source,
+        &path.to_string_lossy(),
+    )
+}
+
+struct PreparedRecipeImports {
+    source_kind: RecipeImportSourceKind,
+    items: Vec<PreparedRecipeImport>,
+    skipped: Vec<SkippedRecipeSourceImport>,
+    warnings: Vec<String>,
+}
+
+fn prepare_imports_from_loaded_recipes(
+    source_kind: RecipeImportSourceKind,
+    raw_source: &str,
+    source_ref: &str,
+) -> Result<PreparedRecipeImports, String> {
+    let recipes = load_recipes_from_source(raw_source)?;
+    let mut seen_recipe_ids = std::collections::BTreeSet::new();
+    let mut seen_slugs = std::collections::BTreeSet::new();
+    let mut items = Vec::new();
+    let mut skipped = Vec::new();
+
+    for recipe in recipes {
+        let recipe_id = recipe.id.trim().to_string();
+        let slug = crate::recipe_workspace::normalize_recipe_slug(&recipe_id)?;
+        if !seen_recipe_ids.insert(recipe_id.clone()) {
+            skipped.push(SkippedRecipeSourceImport {
+                source: source_ref.to_string(),
+                reason: format!("duplicate recipe id '{}'", recipe_id),
+            });
+            continue;
+        }
+        if !seen_slugs.insert(slug.clone()) {
+            skipped.push(SkippedRecipeSourceImport {
+                source: source_ref.to_string(),
+                reason: format!("duplicate recipe slug '{}'", slug),
+            });
+            continue;
+        }
+        let source_text = export_recipe_source_document(&recipe)?;
+        items.push(PreparedRecipeImport {
+            slug,
+            recipe_id,
+            source_text,
+        });
+    }
+
+    Ok(PreparedRecipeImports {
+        source_kind,
+        items,
+        skipped,
+        warnings: Vec::new(),
+    })
+}
+
+fn prepare_imports_from_recipe_library(root: &Path) -> Result<PreparedRecipeImports, String> {
+    let recipe_dirs = collect_recipe_dirs(root)?;
+    let mut seen_recipe_ids = std::collections::BTreeSet::new();
+    let mut seen_slugs = std::collections::BTreeSet::new();
+    let mut items = Vec::new();
+    let mut skipped = Vec::new();
+
+    for recipe_dir in recipe_dirs {
+        match compile_recipe_directory_source(&recipe_dir) {
+            Ok((recipe_id, compiled_source)) => {
+                let slug = crate::recipe_workspace::normalize_recipe_slug(&recipe_id)?;
+                if !seen_recipe_ids.insert(recipe_id.clone()) {
+                    skipped.push(SkippedRecipeSourceImport {
+                        source: recipe_dir.to_string_lossy().to_string(),
+                        reason: format!("duplicate recipe id '{}'", recipe_id),
+                    });
+                    continue;
+                }
+                if !seen_slugs.insert(slug.clone()) {
+                    skipped.push(SkippedRecipeSourceImport {
+                        source: recipe_dir.to_string_lossy().to_string(),
+                        reason: format!("duplicate recipe slug '{}'", slug),
+                    });
+                    continue;
+                }
+                let diagnostics = validate_recipe_source(&compiled_source)?;
+                if !diagnostics.errors.is_empty() {
+                    skipped.push(SkippedRecipeSourceImport {
+                        source: recipe_dir.to_string_lossy().to_string(),
+                        reason: diagnostics
+                            .errors
+                            .iter()
+                            .map(|diagnostic| diagnostic.message.clone())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    });
+                    continue;
+                }
+                items.push(PreparedRecipeImport {
+                    slug,
+                    recipe_id,
+                    source_text: compiled_source,
+                });
+            }
+            Err(error) => skipped.push(SkippedRecipeSourceImport {
+                source: recipe_dir.to_string_lossy().to_string(),
+                reason: error,
+            }),
+        }
+    }
+
+    Ok(PreparedRecipeImports {
+        source_kind: RecipeImportSourceKind::LocalRecipeLibrary,
+        items,
+        skipped,
+        warnings: Vec::new(),
+    })
+}
+
+fn looks_like_http_source(source: &str) -> bool {
+    let trimmed = source.trim();
+    trimmed.starts_with("http://") || trimmed.starts_with("https://")
 }
 
 fn compile_recipe_source(recipe_dir: &Path, source: &str) -> Result<(String, String), String> {

@@ -21,13 +21,14 @@ use crate::commands::{
     get_cron_runs, get_cron_runtime_snapshot, get_instance_config_snapshot,
     get_instance_runtime_snapshot, get_rescue_bot_status, get_session_model_override,
     get_ssh_transfer_stats, get_status_extra, get_status_light, get_system_status,
-    get_watchdog_status, import_recipe_library, list_agents_overview, list_backups, list_bindings,
-    list_channels_minimal, list_cron_jobs, list_discord_guild_channels, list_history,
-    list_model_profiles, list_recipe_actions, list_recipe_instances, list_recipe_runs,
-    list_recipe_workspace_entries, list_recipes, list_recipes_from_source_text,
-    list_registered_instances, list_session_files, list_ssh_config_hosts, list_ssh_hosts,
-    local_openclaw_cli_available, local_openclaw_config_exists, log_app_event, manage_rescue_bot,
-    migrate_legacy_instances, open_url, plan_recipe, plan_recipe_source, precheck_auth,
+    get_watchdog_status, import_recipe_library, import_recipe_source, list_agents_overview,
+    list_backups, list_bindings, list_channels_minimal, list_cron_jobs,
+    list_discord_guild_channels, list_history, list_model_profiles, list_recipe_actions,
+    list_recipe_instances, list_recipe_runs, list_recipe_workspace_entries, list_recipes,
+    list_recipes_from_source_text, list_registered_instances, list_session_files,
+    list_ssh_config_hosts, list_ssh_hosts, local_openclaw_cli_available,
+    local_openclaw_config_exists, log_app_event, manage_rescue_bot, migrate_legacy_instances,
+    open_url, pick_recipe_source_directory, plan_recipe, plan_recipe_source, precheck_auth,
     precheck_instance, precheck_registry, precheck_transport, preview_rollback, preview_session,
     probe_ssh_connection_profile, push_model_profiles_to_local_openclaw,
     push_model_profiles_to_remote_openclaw, push_related_secrets_to_remote, read_app_log,
@@ -125,6 +126,7 @@ mod recipe_workspace_tests;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(SshConnectionPool::new())
@@ -169,12 +171,14 @@ pub fn run() {
             clear_session_model_override,
             list_recipes,
             list_recipes_from_source_text,
+            pick_recipe_source_directory,
             list_recipe_actions,
             validate_recipe_source_text,
             list_recipe_workspace_entries,
             read_recipe_workspace_source,
             save_recipe_workspace_source,
             import_recipe_library,
+            import_recipe_source,
             delete_recipe_workspace_source,
             export_recipe_source,
             execute_recipe,

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, ChannelsConfigSnapshot, ChannelsRuntimeSnapshot, CronConfigSnapshot, CronJob, CronRun, CronRuntimeSnapshot, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, ExecuteRecipeRequest, ExecuteRecipeResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceConfigSnapshot, InstanceRuntimeSnapshot, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecipeActionCatalogEntry, RecipeLibraryImportResult, RecipePlan, RecipeRuntimeInstance, RecipeRuntimeRun, RecipeSourceDiagnostics, RecipeSourceSaveResult, RecipeWorkspaceEntry, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus } from "./types";
+import type { AgentOverview, AgentSessionAnalysis, AppPreferences, ApplyQueueResult, ApplyResult, BackupInfo, Binding, BugReportSettings, BugReportStats, ChannelNode, ChannelsConfigSnapshot, ChannelsRuntimeSnapshot, CronConfigSnapshot, CronJob, CronRun, CronRuntimeSnapshot, DiscordGuildChannel, DiscoveredInstance, DockerInstance, EnsureAccessResult, ExecuteRecipeRequest, ExecuteRecipeResult, GuidanceAction, HistoryItem, InstallMethodCapability, InstallOrchestratorDecision, InstallSession, InstallStepResult, InstallTargetDecision, InstanceConfigSnapshot, InstanceRuntimeSnapshot, InstanceStatus, StatusExtra, ModelCatalogProvider, ModelProfile, PendingCommand, PrecheckIssue, PreviewQueueResult, PreviewResult, ProfilePushResult, ProviderAuthSuggestion, Recipe, RecipeActionCatalogEntry, RecipeLibraryImportResult, RecipePlan, RecipeRuntimeInstance, RecipeRuntimeRun, RecipeSourceDiagnostics, RecipeSourceImportResult, RecipeSourceSaveResult, RecipeWorkspaceEntry, RecordInstallExperienceResult, RegisteredInstance, RelatedSecretPushResult, RemoteAuthSyncResult, RescueBotAction, RescueBotManageResult, RescuePrimaryDiagnosisResult, RescuePrimaryRepairResult, ResolvedApiKey, SshConfigHostSuggestion, SshConnectionProfile, SshDiagnosticReport, SshHost, SshIntent, SshTransferStats, SystemStatus, DoctorReport, SessionFile, WatchdogStatus } from "./types";
 
 export const api = {
   setActiveOpenclawHome: (path: string | null): Promise<boolean> =>
@@ -102,6 +102,8 @@ export const api = {
     invoke("list_recipes", source ? { source } : {}),
   listRecipesFromSourceText: (sourceText: string): Promise<Recipe[]> =>
     invoke("list_recipes_from_source_text", { sourceText }),
+  pickRecipeSourceDirectory: (): Promise<string | null> =>
+    invoke("pick_recipe_source_directory", {}),
   listRecipeActions: (): Promise<RecipeActionCatalogEntry[]> =>
     invoke("list_recipe_actions", {}),
   listRecipeWorkspaceEntries: (): Promise<RecipeWorkspaceEntry[]> =>
@@ -112,6 +114,11 @@ export const api = {
     invoke("save_recipe_workspace_source", { slug, source }),
   importRecipeLibrary: (rootPath: string): Promise<RecipeLibraryImportResult> =>
     invoke("import_recipe_library", { rootPath }),
+  importRecipeSource: (
+    source: string,
+    overwriteExisting = false,
+  ): Promise<RecipeSourceImportResult> =>
+    invoke("import_recipe_source", { source, overwriteExisting }),
   deleteRecipeWorkspaceSource: (slug: string): Promise<boolean> =>
     invoke("delete_recipe_workspace_source", { slug }),
   exportRecipeSource: (recipeId: string, source?: string): Promise<string> =>

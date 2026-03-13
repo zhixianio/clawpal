@@ -12,6 +12,7 @@ use std::{
 };
 
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::access_discovery::probe_engine::{build_probe_plan_for_local, run_probe_with_redaction};
 use crate::access_discovery::store::AccessDiscoveryStore;
@@ -110,7 +111,7 @@ use crate::recipe_action_catalog::{
     RecipeActionCatalogEntry,
 };
 use crate::recipe_adapter::export_recipe_source as export_recipe_source_document;
-use crate::recipe_library::RecipeLibraryImportResult;
+use crate::recipe_library::{RecipeLibraryImportResult, RecipeSourceImportResult};
 use crate::recipe_planner::{build_recipe_plan, build_recipe_plan_from_source_text, RecipePlan};
 use crate::recipe_workspace::{RecipeSourceSaveResult, RecipeWorkspace, RecipeWorkspaceEntry};
 
@@ -1253,6 +1254,19 @@ pub fn list_recipes_from_source_text(
 }
 
 #[tauri::command]
+pub fn pick_recipe_source_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let selected_path: Option<String> = match app.dialog().file().blocking_pick_folder() {
+        Some(folder_path) => {
+            let resolved_path = folder_path.into_path().map_err(|error| error.to_string())?;
+            Some(resolved_path.to_string_lossy().to_string())
+        }
+        None => None,
+    };
+
+    Ok(selected_path)
+}
+
+#[tauri::command]
 pub fn list_recipe_actions() -> Result<Vec<RecipeActionCatalogEntry>, String> {
     Ok(catalog_actions())
 }
@@ -1284,6 +1298,18 @@ pub fn save_recipe_workspace_source(
 pub fn import_recipe_library(root_path: String) -> Result<RecipeLibraryImportResult, String> {
     let root = std::path::PathBuf::from(shellexpand::tilde(root_path.trim()).to_string());
     RecipeWorkspace::from_resolved_paths().import_recipe_library(&root)
+}
+
+#[tauri::command]
+pub fn import_recipe_source(
+    source: String,
+    overwrite_existing: bool,
+) -> Result<RecipeSourceImportResult, String> {
+    crate::recipe_library::import_recipe_source(
+        &source,
+        &RecipeWorkspace::from_resolved_paths(),
+        overwrite_existing,
+    )
 }
 
 #[tauri::command]
