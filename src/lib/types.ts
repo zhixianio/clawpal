@@ -60,6 +60,23 @@ export interface RecipeWorkspaceEntry {
   path: string;
 }
 
+export interface RecipeActionCatalogEntry {
+  kind: string;
+  title: string;
+  group: string;
+  category: string;
+  backend: string;
+  description: string;
+  readOnly: boolean;
+  interactive: boolean;
+  runnerSupported: boolean;
+  recommended: boolean;
+  cliCommand?: string;
+  legacyAliasOf?: string;
+  capabilities: string[];
+  resourceKinds: string[];
+}
+
 export interface RecipeSourceSaveResult {
   slug: string;
   path: string;

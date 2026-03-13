@@ -105,6 +105,10 @@ use crate::recipe::{
     format_diff, load_recipes_from_source_text, load_recipes_with_fallback, validate_recipe_source,
     ApplyResult, PreviewResult, RecipeSourceDiagnostics,
 };
+use crate::recipe_action_catalog::{
+    find_recipe_action as find_recipe_action_catalog_entry, list_recipe_actions as catalog_actions,
+    RecipeActionCatalogEntry,
+};
 use crate::recipe_adapter::export_recipe_source as export_recipe_source_document;
 use crate::recipe_library::RecipeLibraryImportResult;
 use crate::recipe_planner::{build_recipe_plan, build_recipe_plan_from_source_text, RecipePlan};
@@ -1249,6 +1253,11 @@ pub fn list_recipes_from_source_text(
 }
 
 #[tauri::command]
+pub fn list_recipe_actions() -> Result<Vec<RecipeActionCatalogEntry>, String> {
+    Ok(catalog_actions())
+}
+
+#[tauri::command]
 pub fn validate_recipe_source_text(source_text: String) -> Result<RecipeSourceDiagnostics, String> {
     validate_recipe_source(&source_text)
 }
@@ -1693,6 +1702,45 @@ fn action_bool(value: Option<&Value>) -> bool {
     }
 }
 
+fn action_string_list(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(value)) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn config_set_value_and_flag(
+    value: &Value,
+    strict_json: bool,
+) -> Result<(String, Option<String>), String> {
+    match value {
+        Value::String(text) if !strict_json => Ok((text.clone(), None)),
+        _ => Ok((
+            serde_json::to_string(value).map_err(|error| error.to_string())?,
+            Some("--strict-json".into()),
+        )),
+    }
+}
+
 fn recipe_action_setup_identity_command(
     agent_id: &str,
     name: Option<&str>,
@@ -2054,8 +2102,29 @@ async fn materialize_recipe_action_commands(
         .args
         .as_object()
         .ok_or_else(|| format!("legacy action '{}' is missing object args", kind))?;
+    let catalog_entry = find_recipe_action_catalog_entry(kind)
+        .ok_or_else(|| format!("recipe action '{}' is not recognized", kind))?;
+    if !catalog_entry.runner_supported {
+        return Err(format!(
+            "recipe action '{}' is documented but not supported by the Recipe runner",
+            kind
+        ));
+    }
 
     match kind {
+        "list_agents" => Ok(vec![(
+            "List agents".into(),
+            vec![
+                "openclaw".into(),
+                "agents".into(),
+                "list".into(),
+                "--json".into(),
+            ],
+        )]),
+        "list_agent_bindings" => Ok(vec![(
+            "List agent bindings".into(),
+            vec!["openclaw".into(), "agents".into(), "bindings".into()],
+        )]),
         "create_agent" => {
             let agent_id = action_string(args.get("agentId"))
                 .ok_or_else(|| "create_agent requires agentId".to_string())?;
@@ -2128,6 +2197,74 @@ async fn materialize_recipe_action_commands(
                 persona.as_deref(),
             )])
         }
+        "set_agent_identity" => {
+            let from_identity = action_bool(args.get("fromIdentity"));
+            let agent_id = action_string(args.get("agentId"));
+            let workspace = action_string(args.get("workspace"));
+            let name = action_string(args.get("name"));
+            let theme = action_string(args.get("theme"));
+            let emoji = action_string(args.get("emoji"));
+            let avatar = action_string(args.get("avatar"));
+
+            if from_identity {
+                if workspace.is_none() {
+                    return Err(
+                        "set_agent_identity with fromIdentity requires workspace".to_string()
+                    );
+                }
+            } else if agent_id.is_none()
+                || (name.is_none() && theme.is_none() && emoji.is_none() && avatar.is_none())
+            {
+                return Err(
+                    "set_agent_identity requires agentId and at least one of name, theme, emoji, or avatar".to_string(),
+                );
+            }
+
+            let mut command = vec!["openclaw".into(), "agents".into(), "set-identity".into()];
+            if let Some(agent_id) = &agent_id {
+                command.push("--agent".into());
+                command.push(agent_id.clone());
+            }
+            if let Some(workspace) = &workspace {
+                command.push("--workspace".into());
+                command.push(workspace.clone());
+            }
+            if from_identity {
+                command.push("--from-identity".into());
+            }
+            if let Some(name) = &name {
+                command.push("--name".into());
+                command.push(name.clone());
+            }
+            if let Some(theme) = &theme {
+                command.push("--theme".into());
+                command.push(theme.clone());
+            }
+            if let Some(emoji) = &emoji {
+                command.push("--emoji".into());
+                command.push(emoji.clone());
+            }
+            if let Some(avatar) = &avatar {
+                command.push("--avatar".into());
+                command.push(avatar.clone());
+            }
+
+            Ok(vec![(
+                action
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        agent_id
+                            .clone()
+                            .map(|agent_id| format!("Set identity: {}", agent_id))
+                            .unwrap_or_else(|| "Set identity from workspace".into())
+                    }),
+                command,
+            )])
+        }
         "set_agent_persona" => {
             let agent_id = action_string(args.get("agentId"))
                 .ok_or_else(|| "set_agent_persona requires agentId".to_string())?;
@@ -2145,6 +2282,58 @@ async fn materialize_recipe_action_commands(
             Ok(vec![recipe_action_agent_persona_command(
                 &agent_id, None, true,
             )?])
+        }
+        "bind_agent" => {
+            let agent_id = action_string(args.get("agentId"))
+                .ok_or_else(|| "bind_agent requires agentId".to_string())?;
+            let binding = action_string(args.get("binding"))
+                .ok_or_else(|| "bind_agent requires binding".to_string())?;
+            Ok(vec![(
+                format!("Bind {} -> {}", binding, agent_id),
+                vec![
+                    "openclaw".into(),
+                    "agents".into(),
+                    "bind".into(),
+                    "--agent".into(),
+                    agent_id,
+                    "--bind".into(),
+                    binding,
+                ],
+            )])
+        }
+        "unbind_agent" => {
+            let agent_id = action_string(args.get("agentId"))
+                .ok_or_else(|| "unbind_agent requires agentId".to_string())?;
+            let remove_all = action_bool(args.get("all"));
+            let binding = action_string(args.get("binding"));
+            if !remove_all && binding.is_none() {
+                return Err("unbind_agent requires binding or all=true".to_string());
+            }
+
+            let mut command = vec![
+                "openclaw".into(),
+                "agents".into(),
+                "unbind".into(),
+                "--agent".into(),
+                agent_id.clone(),
+            ];
+            if remove_all {
+                command.push("--all".into());
+            } else if let Some(binding) = binding {
+                command.push("--bind".into());
+                command.push(binding);
+            }
+
+            Ok(vec![(
+                action
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("Unbind agent: {}", agent_id)),
+                command,
+            )])
         }
         "bind_channel" => {
             let channel_type = action_string(args.get("channelType"))
@@ -2245,6 +2434,53 @@ async fn materialize_recipe_action_commands(
             append_config_patch_commands(&patch, "", &mut commands)?;
             Ok(commands)
         }
+        "show_config_file" => Ok(vec![(
+            "Show config file".into(),
+            vec!["openclaw".into(), "config".into(), "file".into()],
+        )]),
+        "get_config_value" => {
+            let path = action_string(args.get("path"))
+                .ok_or_else(|| "get_config_value requires path".to_string())?;
+            Ok(vec![(
+                format!("Get config value: {}", path),
+                vec!["openclaw".into(), "config".into(), "get".into(), path],
+            )])
+        }
+        "set_config_value" => {
+            let path = action_string(args.get("path"))
+                .ok_or_else(|| "set_config_value requires path".to_string())?;
+            let value = args
+                .get("value")
+                .ok_or_else(|| "set_config_value requires value".to_string())?;
+            let (serialized, strict_flag) =
+                config_set_value_and_flag(value, action_bool(args.get("strictJson")))?;
+            let mut command = vec![
+                "openclaw".into(),
+                "config".into(),
+                "set".into(),
+                path.clone(),
+                serialized,
+            ];
+            if let Some(flag) = strict_flag {
+                command.push(flag);
+            }
+            Ok(vec![(format!("Set config value: {}", path), command)])
+        }
+        "unset_config_value" => {
+            let path = action_string(args.get("path"))
+                .ok_or_else(|| "unset_config_value requires path".to_string())?;
+            Ok(vec![(
+                format!("Unset config value: {}", path),
+                vec!["openclaw".into(), "config".into(), "unset".into(), path],
+            )])
+        }
+        "validate_config" => {
+            let mut command = vec!["openclaw".into(), "config".into(), "validate".into()];
+            if action_bool(args.get("jsonOutput")) {
+                command.push("--json".into());
+            }
+            Ok(vec![("Validate config".into(), command)])
+        }
         "config_patch" => {
             let patch = if let Some(patch) = args.get("patch") {
                 patch.clone()
@@ -2278,6 +2514,85 @@ async fn materialize_recipe_action_commands(
             INTERNAL_MARKDOWN_DOCUMENT_DELETE_COMMAND,
             args,
         )?]),
+        "models_status" => {
+            let mut command = vec!["openclaw".into(), "models".into(), "status".into()];
+            if action_bool(args.get("jsonOutput")) {
+                command.push("--json".into());
+            }
+            if action_bool(args.get("plain")) {
+                command.push("--plain".into());
+            }
+            if action_bool(args.get("check")) {
+                command.push("--check".into());
+            }
+            if action_bool(args.get("probe")) {
+                command.push("--probe".into());
+            }
+            if let Some(provider) = action_string(args.get("probeProvider")) {
+                command.push("--probe-provider".into());
+                command.push(provider);
+            }
+            for profile_id in action_string_list(args.get("probeProfile")) {
+                command.push("--probe-profile".into());
+                command.push(profile_id);
+            }
+            if let Some(timeout_ms) = action_string(args.get("probeTimeoutMs")) {
+                command.push("--probe-timeout".into());
+                command.push(timeout_ms);
+            }
+            if let Some(concurrency) = action_string(args.get("probeConcurrency")) {
+                command.push("--probe-concurrency".into());
+                command.push(concurrency);
+            }
+            if let Some(max_tokens) = action_string(args.get("probeMaxTokens")) {
+                command.push("--probe-max-tokens".into());
+                command.push(max_tokens);
+            }
+            if let Some(agent_id) = action_string(args.get("agentId")) {
+                command.push("--agent".into());
+                command.push(agent_id);
+            }
+            Ok(vec![("Inspect model status".into(), command)])
+        }
+        "list_models" => Ok(vec![(
+            "List models".into(),
+            vec!["openclaw".into(), "models".into(), "list".into()],
+        )]),
+        "set_default_model" => {
+            let model_or_alias = action_string(args.get("modelOrAlias"))
+                .ok_or_else(|| "set_default_model requires modelOrAlias".to_string())?;
+            Ok(vec![(
+                format!("Set default model: {}", model_or_alias),
+                vec![
+                    "openclaw".into(),
+                    "models".into(),
+                    "set".into(),
+                    model_or_alias,
+                ],
+            )])
+        }
+        "scan_models" => Ok(vec![(
+            "Scan models".into(),
+            vec!["openclaw".into(), "models".into(), "scan".into()],
+        )]),
+        "list_model_aliases" => Ok(vec![(
+            "List model aliases".into(),
+            vec![
+                "openclaw".into(),
+                "models".into(),
+                "aliases".into(),
+                "list".into(),
+            ],
+        )]),
+        "list_model_fallbacks" => Ok(vec![(
+            "List model fallbacks".into(),
+            vec![
+                "openclaw".into(),
+                "models".into(),
+                "fallbacks".into(),
+                "list".into(),
+            ],
+        )]),
         "ensure_model_profile" => {
             let profile_id = action_string(args.get("profileId"))
                 .ok_or_else(|| "ensure_model_profile requires profileId".to_string())?;
@@ -2404,6 +2719,82 @@ async fn materialize_recipe_action_commands(
                     "force": force,
                 }),
             )?])
+        }
+        "list_channels" => {
+            let mut command = vec!["openclaw".into(), "channels".into(), "list".into()];
+            if action_bool(args.get("noUsage")) {
+                command.push("--no-usage".into());
+            }
+            Ok(vec![("List channels".into(), command)])
+        }
+        "channels_status" => Ok(vec![(
+            "Inspect channel status".into(),
+            vec!["openclaw".into(), "channels".into(), "status".into()],
+        )]),
+        "inspect_channel_capabilities" => {
+            let mut command = vec!["openclaw".into(), "channels".into(), "capabilities".into()];
+            if let Some(channel) = action_string(args.get("channel")) {
+                command.push("--channel".into());
+                command.push(channel);
+            }
+            if let Some(target) = action_string(args.get("target")) {
+                command.push("--target".into());
+                command.push(target);
+            }
+            Ok(vec![("Inspect channel capabilities".into(), command)])
+        }
+        "resolve_channel_targets" => {
+            let channel = action_string(args.get("channel"))
+                .ok_or_else(|| "resolve_channel_targets requires channel".to_string())?;
+            let terms = action_string_list(args.get("terms"));
+            if terms.is_empty() {
+                return Err("resolve_channel_targets requires at least one term".to_string());
+            }
+            let mut command = vec![
+                "openclaw".into(),
+                "channels".into(),
+                "resolve".into(),
+                "--channel".into(),
+                channel,
+            ];
+            if let Some(kind) = action_string(args.get("kind")) {
+                command.push("--kind".into());
+                command.push(kind);
+            }
+            command.extend(terms);
+            Ok(vec![("Resolve channel targets".into(), command)])
+        }
+        "reload_secrets" => Ok(vec![(
+            "Reload secrets".into(),
+            vec!["openclaw".into(), "secrets".into(), "reload".into()],
+        )]),
+        "audit_secrets" => {
+            let mut command = vec!["openclaw".into(), "secrets".into(), "audit".into()];
+            if action_bool(args.get("check")) {
+                command.push("--check".into());
+            }
+            Ok(vec![("Audit secrets".into(), command)])
+        }
+        "apply_secrets_plan" => {
+            let from_path = action_string(args.get("fromPath"))
+                .ok_or_else(|| "apply_secrets_plan requires fromPath".to_string())?;
+            let mut command = vec![
+                "openclaw".into(),
+                "secrets".into(),
+                "apply".into(),
+                "--from".into(),
+                from_path.clone(),
+            ];
+            if action_bool(args.get("dryRun")) {
+                command.push("--dry-run".into());
+            }
+            if action_bool(args.get("jsonOutput")) {
+                command.push("--json".into());
+            }
+            Ok(vec![(
+                format!("Apply secrets plan: {}", from_path),
+                command,
+            )])
         }
         other => Err(format!("unsupported recipe action '{}'", other)),
     }
@@ -2553,6 +2944,155 @@ mod recipe_action_materializer_tests {
             .expect("systemPrompt config set command");
 
         assert_eq!(payload, "\"Line one\\n\\nLine two\\n\"");
+    }
+
+    #[tokio::test]
+    async fn set_agent_identity_materializes_to_openclaw_cli_command() {
+        let action = ExecutionAction {
+            kind: Some("set_agent_identity".into()),
+            name: Some("Set identity".into()),
+            args: json!({
+                "agentId": "lobster",
+                "name": "Lobster",
+                "theme": "sea captain",
+                "emoji": "🦞",
+                "avatar": "avatars/lobster.png"
+            }),
+        };
+
+        let cache = CliCache::new();
+        let pool = SshConnectionPool::default();
+        let route = ExecutionRoute {
+            runner: "local".into(),
+            target_kind: "local".into(),
+            host_id: None,
+        };
+
+        let commands = materialize_recipe_action_commands(&action, &cache, &pool, &route)
+            .await
+            .expect("materialize set_agent_identity");
+
+        assert_eq!(
+            commands,
+            vec![(
+                "Set identity".into(),
+                vec![
+                    "openclaw".into(),
+                    "agents".into(),
+                    "set-identity".into(),
+                    "--agent".into(),
+                    "lobster".into(),
+                    "--name".into(),
+                    "Lobster".into(),
+                    "--theme".into(),
+                    "sea captain".into(),
+                    "--emoji".into(),
+                    "🦞".into(),
+                    "--avatar".into(),
+                    "avatars/lobster.png".into(),
+                ],
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_agent_materializes_to_openclaw_cli_command() {
+        let action = ExecutionAction {
+            kind: Some("bind_agent".into()),
+            name: Some("Bind support".into()),
+            args: json!({
+                "agentId": "ops",
+                "binding": "discord:channel-1"
+            }),
+        };
+
+        let cache = CliCache::new();
+        let pool = SshConnectionPool::default();
+        let route = ExecutionRoute {
+            runner: "local".into(),
+            target_kind: "local".into(),
+            host_id: None,
+        };
+
+        let commands = materialize_recipe_action_commands(&action, &cache, &pool, &route)
+            .await
+            .expect("materialize bind_agent");
+
+        assert_eq!(
+            commands[0].1,
+            vec![
+                "openclaw",
+                "agents",
+                "bind",
+                "--agent",
+                "ops",
+                "--bind",
+                "discord:channel-1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_channel_targets_materializes_terms_and_kind() {
+        let action = ExecutionAction {
+            kind: Some("resolve_channel_targets".into()),
+            name: Some("Resolve Slack room".into()),
+            args: json!({
+                "channel": "slack",
+                "kind": "group",
+                "terms": ["#general", "@jane"]
+            }),
+        };
+
+        let cache = CliCache::new();
+        let pool = SshConnectionPool::default();
+        let route = ExecutionRoute {
+            runner: "local".into(),
+            target_kind: "local".into(),
+            host_id: None,
+        };
+
+        let commands = materialize_recipe_action_commands(&action, &cache, &pool, &route)
+            .await
+            .expect("materialize resolve_channel_targets");
+
+        assert_eq!(
+            commands[0].1,
+            vec![
+                "openclaw",
+                "channels",
+                "resolve",
+                "--channel",
+                "slack",
+                "--kind",
+                "group",
+                "#general",
+                "@jane",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_catalog_action_fails_fast() {
+        let action = ExecutionAction {
+            kind: Some("configure_secrets".into()),
+            name: Some("Configure secrets".into()),
+            args: json!({}),
+        };
+
+        let cache = CliCache::new();
+        let pool = SshConnectionPool::default();
+        let route = ExecutionRoute {
+            runner: "local".into(),
+            target_kind: "local".into(),
+            host_id: None,
+        };
+
+        let error = materialize_recipe_action_commands(&action, &cache, &pool, &route)
+            .await
+            .expect_err("interactive action should fail");
+
+        assert!(error.contains("documented but not supported"));
     }
 
     #[test]

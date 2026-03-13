@@ -33,16 +33,20 @@
       }
     },
     {
-      "action": "upsert_markdown_document",
-      "label": "Write agent identity",
+      "action": "set_agent_identity",
+      "label": "Set agent identity",
       "args": {
-        "target": {
-          "scope": "agent",
-          "agentId": "{{agent_id}}",
-          "path": "IDENTITY.md"
-        },
-        "mode": "replace",
-        "content": "- Name: {{name}}\n- Emoji: {{emoji}}\n\n## Persona\n{{persona}}\n"
+        "agentId": "{{agent_id}}",
+        "name": "{{name}}",
+        "emoji": "{{emoji}}"
+      }
+    },
+    {
+      "action": "set_agent_persona",
+      "label": "Set agent persona",
+      "args": {
+        "agentId": "{{agent_id}}",
+        "persona": "{{persona}}"
       }
     }
   ],
@@ -57,10 +61,10 @@
     "compatibility": {},
     "inputs": [],
     "capabilities": {
-      "allowed": ["agent.manage", "document.write", "model.manage", "secret.sync"]
+      "allowed": ["agent.manage", "agent.identity.write", "model.manage", "secret.sync"]
     },
     "resources": {
-      "supportedKinds": ["agent", "document", "modelProfile"]
+      "supportedKinds": ["agent", "modelProfile"]
     },
     "execution": {
       "supportedKinds": ["job"]
@@ -80,20 +84,19 @@
       "kind": "job"
     },
     "capabilities": {
-      "usedCapabilities": ["model.manage", "secret.sync", "agent.manage", "document.write"]
+      "usedCapabilities": ["model.manage", "secret.sync", "agent.manage", "agent.identity.write"]
     },
     "resources": {
       "claims": [
         { "kind": "modelProfile", "id": "{{model}}" },
-        { "kind": "agent", "id": "{{agent_id}}" },
-        { "kind": "document", "path": "agent:{{agent_id}}/IDENTITY.md" }
+        { "kind": "agent", "id": "{{agent_id}}" }
       ]
     },
     "secrets": {
       "bindings": []
     },
     "desiredState": {
-      "actionCount": 3
+      "actionCount": 4
     },
     "actions": [
       {
@@ -113,16 +116,20 @@
         }
       },
       {
-        "kind": "upsert_markdown_document",
-        "name": "Write agent identity",
+        "kind": "set_agent_identity",
+        "name": "Set agent identity",
         "args": {
-          "target": {
-            "scope": "agent",
-            "agentId": "{{agent_id}}",
-            "path": "IDENTITY.md"
-          },
-          "mode": "replace",
-          "content": "- Name: {{name}}\n- Emoji: {{emoji}}\n\n## Persona\n{{persona}}\n"
+          "agentId": "{{agent_id}}",
+          "name": "{{name}}",
+          "emoji": "{{emoji}}"
+        }
+      },
+      {
+        "kind": "set_agent_persona",
+        "name": "Set agent persona",
+        "args": {
+          "agentId": "{{agent_id}}",
+          "persona": "{{persona}}"
         }
       }
     ],

@@ -398,7 +398,8 @@ fn import_recipe_library_accepts_repo_example_library() {
         vec![
             "ensure_model_profile",
             "create_agent",
-            "upsert_markdown_document"
+            "set_agent_identity",
+            "set_agent_persona"
         ]
     );
 

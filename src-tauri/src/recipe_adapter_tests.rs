@@ -1072,3 +1072,29 @@ fn structured_recipe_compilation_infers_capabilities_and_claims_for_new_actions(
         claim.kind == "authProfile" && claim.id.as_deref() == Some("openai:default")
     }));
 }
+
+#[test]
+fn compile_recipe_rejects_documented_but_unsupported_actions() {
+    let recipe = load_recipes_from_source_text(
+        r##"{
+          "id": "interactive-auth",
+          "name": "Interactive auth",
+          "description": "Should fail in compile",
+          "version": "1.0.0",
+          "tags": ["models"],
+          "difficulty": "advanced",
+          "params": [],
+          "steps": [
+            { "action": "login_model_auth", "label": "Login", "args": { "provider": "openai" } }
+          ]
+        }"##,
+    )
+    .expect("load recipe")
+    .into_iter()
+    .next()
+    .expect("recipe");
+
+    let error = compile_recipe_to_spec(&recipe, &Map::new()).expect_err("compile should fail");
+
+    assert!(error.contains("not supported by the Recipe runner"));
+}

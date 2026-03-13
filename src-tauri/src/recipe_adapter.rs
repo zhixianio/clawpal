@@ -10,6 +10,7 @@ use crate::recipe::{
     render_step_args, render_template_value, step_references_empty_param, validate, Recipe,
     RecipeParam, RecipePresentation, RecipeStep,
 };
+use crate::recipe_action_catalog::find_recipe_action as find_recipe_action_catalog_entry;
 use crate::recipe_bundle::{
     validate_execution_spec_against_bundle, BundleCapabilities, BundleCompatibility,
     BundleExecution, BundleMetadata, BundleResources, BundleRunner, RecipeBundle,
@@ -92,6 +93,7 @@ fn compile_structured_recipe_to_spec(
         serde_json::from_value(rendered_template).map_err(|error| error.to_string())?;
 
     filter_optional_structured_actions(recipe, params, &mut spec)?;
+    validate_recipe_action_kinds(&spec.actions)?;
     normalize_recipe_spec(recipe, Some(params), &mut spec, "structuredTemplate");
 
     if let Some((used_capabilities, claims)) = infer_recipe_action_requirements(&spec.actions) {
@@ -372,26 +374,8 @@ fn infer_recipe_action_requirements(
     for action in actions {
         let kind = action.kind.as_deref()?;
         let args = action.args.as_object()?;
-        if !matches!(
-            kind,
-            "create_agent"
-                | "delete_agent"
-                | "setup_identity"
-                | "bind_channel"
-                | "unbind_channel"
-                | "set_agent_model"
-                | "set_agent_persona"
-                | "clear_agent_persona"
-                | "set_channel_persona"
-                | "clear_channel_persona"
-                | "config_patch"
-                | "upsert_markdown_document"
-                | "delete_markdown_document"
-                | "ensure_model_profile"
-                | "delete_model_profile"
-                | "ensure_provider_auth"
-                | "delete_provider_auth"
-        ) {
+        let entry = find_recipe_action_catalog_entry(kind)?;
+        if !entry.runner_supported {
             return None;
         }
 
@@ -405,6 +389,15 @@ fn build_recipe_action(
     step: &RecipeStep,
     mut rendered_args: Map<String, Value>,
 ) -> Result<ExecutionAction, String> {
+    let action_entry = find_recipe_action_catalog_entry(step.action.as_str())
+        .ok_or_else(|| format!("recipe action '{}' is not recognized", step.action))?;
+    if !action_entry.runner_supported {
+        return Err(format!(
+            "recipe action '{}' is documented but not supported by the Recipe runner",
+            step.action
+        ));
+    }
+
     let args = if step.action == "config_patch" {
         let mut action_args = Map::new();
         if let Some(Value::String(patch_template)) = rendered_args.remove("patchTemplate") {
@@ -426,6 +419,24 @@ fn build_recipe_action(
     })
 }
 
+fn validate_recipe_action_kinds(actions: &[ExecutionAction]) -> Result<(), String> {
+    for action in actions {
+        let kind = action
+            .kind
+            .as_deref()
+            .ok_or_else(|| "recipe action is missing kind".to_string())?;
+        let entry = find_recipe_action_catalog_entry(kind)
+            .ok_or_else(|| format!("recipe action '{}' is not recognized", kind))?;
+        if !entry.runner_supported {
+            return Err(format!(
+                "recipe action '{}' is documented but not supported by the Recipe runner",
+                kind
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn collect_action_requirements(
     action_kind: &str,
     rendered_args: &Map<String, Value>,
@@ -445,9 +456,49 @@ fn collect_action_requirements(
             push_capability(used_capabilities, "agent.identity.write");
             push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
         }
+        "set_agent_identity" => {
+            push_capability(used_capabilities, "agent.identity.write");
+            push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
+        }
         "set_agent_persona" | "clear_agent_persona" => {
             push_capability(used_capabilities, "agent.identity.write");
             push_optional_id_claim(claims, "agent", rendered_args.get("agentId"));
+        }
+        "bind_agent" => {
+            push_capability(used_capabilities, "binding.manage");
+            let channel_id = rendered_args
+                .get("binding")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            let agent_id = rendered_args
+                .get("agentId")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "channel".into(),
+                    id: channel_id,
+                    target: agent_id,
+                    path: None,
+                },
+            );
+        }
+        "unbind_agent" => {
+            push_capability(used_capabilities, "binding.manage");
+            let channel_id = rendered_args
+                .get("binding")
+                .and_then(Value::as_str)
+                .map(|value| value.to_string());
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "channel".into(),
+                    id: channel_id,
+                    target: None,
+                    path: None,
+                },
+            );
         }
         "bind_channel" => {
             push_capability(used_capabilities, "binding.manage");
@@ -525,6 +576,22 @@ fn collect_action_requirements(
                 },
             );
         }
+        "set_config_value" | "unset_config_value" => {
+            push_capability(used_capabilities, "config.write");
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "file".into(),
+                    id: action_string(rendered_args.get("path")),
+                    target: None,
+                    path: action_string(rendered_args.get("path")),
+                },
+            );
+        }
+        "set_default_model" => {
+            push_capability(used_capabilities, "model.manage");
+            push_optional_id_claim(claims, "modelProfile", rendered_args.get("modelOrAlias"));
+        }
         "upsert_markdown_document" => {
             push_capability(used_capabilities, "document.write");
             if let Some(path) = document_target_claim_path(rendered_args) {
@@ -595,6 +662,19 @@ fn collect_action_requirements(
         "delete_provider_auth" => {
             push_capability(used_capabilities, "auth.manage");
             push_optional_id_claim(claims, "authProfile", rendered_args.get("authRef"));
+        }
+        "apply_secrets_plan" => {
+            push_capability(used_capabilities, "auth.manage");
+            push_capability(used_capabilities, "secret.sync");
+            push_claim(
+                claims,
+                ExecutionResourceClaim {
+                    kind: "file".into(),
+                    id: action_string(rendered_args.get("fromPath")),
+                    target: None,
+                    path: action_string(rendered_args.get("fromPath")),
+                },
+            );
         }
         _ => {}
     }

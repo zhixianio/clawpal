@@ -119,6 +119,10 @@ describe("getAction", () => {
   test("returns defined actions", () => {
     expect(getAction("create_agent")).toBeDefined();
     expect(getAction("setup_identity")).toBeDefined();
+    expect(getAction("set_agent_identity")).toBeDefined();
+    expect(getAction("bind_agent")).toBeDefined();
+    expect(getAction("ensure_model_profile")).toBeDefined();
+    expect(getAction("list_agents")).toBeDefined();
     expect(getAction("bind_channel")).toBeDefined();
     expect(getAction("config_patch")).toBeDefined();
     expect(getAction("set_global_model")).toBeDefined();
@@ -182,6 +186,24 @@ describe("Action describe functions", () => {
     const desc = action.describe({ agentId: "mybot", channelType: "discord" });
     expect(desc).toContain("discord");
     expect(desc).toContain("mybot");
+  });
+
+  test("set_agent_identity describe", () => {
+    const action = getAction("set_agent_identity")!;
+    const desc = action.describe({ agentId: "mybot", name: "My Bot" });
+    expect(desc).toContain("mybot");
+  });
+
+  test("ensure_model_profile describe", () => {
+    const action = getAction("ensure_model_profile")!;
+    const desc = action.describe({ profileId: "openai:default" });
+    expect(desc).toContain("openai:default");
+  });
+
+  test("list_agents describe", () => {
+    const action = getAction("list_agents")!;
+    const desc = action.describe({});
+    expect(desc).toContain("List agents");
   });
 
   test("set_global_model describe", () => {
