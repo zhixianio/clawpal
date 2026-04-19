@@ -1,6 +1,12 @@
 # ClawPal
 
+[![Website](https://img.shields.io/badge/Website-clawpal.xyz-orange)](https://clawpal.xyz)
+[![Download](https://img.shields.io/github/v/release/lay2dev/clawpal?label=Download)](https://github.com/lay2dev/clawpal/releases)
+[![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+
 A desktop companion app for [OpenClaw](https://github.com/openclaw/openclaw) — manage your AI agents, models, and configurations with a visual interface instead of editing JSON by hand.
+
+**🌐 Website: [clawpal.xyz](https://clawpal.xyz)**
 
 ## Features
 
@@ -16,7 +22,7 @@ A desktop companion app for [OpenClaw](https://github.com/openclaw/openclaw) —
 
 ## Install
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/zhixianio/clawpal/releases):
+Download the latest release from **[clawpal.xyz](https://clawpal.xyz/#download)** or [GitHub Releases](https://github.com/lay2dev/clawpal/releases):
 
 | Platform | Format |
 |----------|--------|
